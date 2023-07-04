@@ -1,5 +1,5 @@
 from argparse import ArgumentParser
-from commands.run import run, run_template
+from commands.run import define_command as configure_run
 
 
 def main():
@@ -9,15 +9,8 @@ def main():
     subparser = parser.add_subparsers(dest="command", required=True)
 
     run_parser = subparser.add_parser("run", help="Collect one or more stats")
-    run_parser.add_argument("name", help="Name of the stat to collect")
-    run_parser.set_defaults(func=run)
-    # pass everything in run_template to the parser
-    for arg in run_template["args"]:
-        run_parser.add_argument(arg["name"], help=arg["help"], type=arg["type"])
-
+    configure_run(run_parser)
     args = parser.parse_args()
-    print(args)
-    print(args.func)
 
     args.func(args)
     if args.command == "run":

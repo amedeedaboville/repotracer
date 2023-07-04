@@ -75,7 +75,6 @@ def rg_count(pattern) -> int:
     filenames_with_counts = script_now(f"rg {pattern} --count")
     return sum(line.split(":")[-1] for line in filenames_with_counts.splitlines())
 
-
 def agg_percent(self):
     return self.sum() / len(self)
 
