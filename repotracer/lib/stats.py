@@ -1,6 +1,6 @@
 import subprocess
 import pandas as pd
-import git
+from .git import git
 from tqdm import tqdm
 
 
