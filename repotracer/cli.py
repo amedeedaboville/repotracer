@@ -13,10 +13,6 @@ def main():
     args = parser.parse_args()
 
     args.func(args)
-    if args.command == "run":
-        print(f"Running stat {args.name}")
-    else:
-        parser.print_help()
 
 
 if __name__ == "__main__":

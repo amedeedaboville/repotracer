@@ -9,10 +9,16 @@ git = sh.git.bake(_cwd=repodir, no_pager=True)
 def list_commits(start, end):  # -> [string, string]:
     start = start or "2000-01-01"
     end = end or datetime.now().strftime("%Y-%m-%d")
-    output = git.log(format="%H,%cd", date="iso-strict", after=start, before=end)
+    print(os.getcwd())
+    output = git.log(format="%H,%cd", date="iso-strict")  # , after=start, before=end)
+    print(output)
     # outsplitlines = output.splitlines()
     # print(outsplitlines[0].split(","))
     return [tuple(line.split(",")) for line in output.splitlines()]
+
+
+def first_commit_date():
+    return git.log("-1", "--pretty=format:%cd", "--date=iso-strict")
 
 
 def checkout(sha):

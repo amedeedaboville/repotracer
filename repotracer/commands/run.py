@@ -1,4 +1,4 @@
-from lib.stats import regex_over_time
+from lib.stats import regex_stat
 from lib.config import get_config
 import os
 
@@ -23,7 +23,7 @@ def run(args):
     repo_config, stat_config = get_config(repo_name, stat_name)
     print(repo_config, stat_config)
     print(os.getcwd())
-    stat_fn = regex_over_time
     # cd into repo_path
     os.chdir("repos/" + repo_config["path"])
-    regex_over_time()
+    # todo pass the args to the stat
+    regex_stat()()
