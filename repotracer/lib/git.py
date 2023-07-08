@@ -1,28 +1,42 @@
 from datetime import datetime
 import sh
 import os
+import logging
+
+# logging.basicConfig(level=logging.INFO)
+
 
 repodir = "/users/amedee/workspace/samplerepos/react"
-git = sh.git.bake(_cwd=repodir, no_pager=True)
+git = sh.git.bake(no_pager=True)
 
 
 def list_commits(start, end):  # -> [string, string]:
     start = start or "2000-01-01"
     end = end or datetime.now().strftime("%Y-%m-%d")
     print(os.getcwd())
-    output = git.log(format="%H,%cd", date="iso-strict")  # , after=start, before=end)
-    print(output)
-    # outsplitlines = output.splitlines()
-    # print(outsplitlines[0].split(","))
-    return [tuple(line.split(",")) for line in output.splitlines()]
+    data = []
+    for line in git.log(
+        format="%H,%cd",
+        date="iso-strict",
+        since=start,
+        until=end,
+        no_merges=True,
+        _iter=True,
+    ):
+        data.append(line.split(","))
+    return data
 
 
 def first_commit_date():
-    return git.log("-1", "--pretty=format:%cd", "--date=iso-strict")
+    return git.log("-1", "--pretty=format:%cd", "--date=format:%Y-%m-%d")
 
 
 def checkout(sha):
     return git.checkout(sha)
+
+
+def reset_hard_head():
+    return git.reset("--hard", "HEAD")
 
 
 def current_message():

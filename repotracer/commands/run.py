@@ -26,4 +26,5 @@ def run(args):
     # cd into repo_path
     os.chdir("repos/" + repo_config["path"])
     # todo pass the args to the stat
-    regex_stat()()
+    df = regex_stat()()
+    df.to_csv("output.csv")
