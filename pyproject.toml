@@ -1,0 +1,17 @@
+[tool.poetry]
+name = "repotracer"
+version = "0.1.0"
+description = ""
+authors = ["Amedee d'Aboville <amedee.daboville@gmail.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+pandas = "^1.5.3"
+tqdm = "^4.64.1"
+sh = "^2.0.4"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
