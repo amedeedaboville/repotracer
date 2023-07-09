@@ -26,5 +26,5 @@ def run(args):
     # cd into repo_path
     os.chdir("repos/" + repo_config["path"])
     # todo pass the args to the stat
-    df = regex_stat()()
-    df.to_csv("output.csv")
+    df = regex_stat("ts-ignore")()
+    df.to_csv("output.csv", date_format="%Y-%m-%d")

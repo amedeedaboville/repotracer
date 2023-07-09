@@ -37,8 +37,9 @@ def stat(stat_fn, time_window=None, start=None, end=None, agg_fn=None, agg_freq=
         print(f"Going from {start} to {end}, {len(commits)} commits")
         print(commits.head())
         for commit in tqdm(commits.itertuples(index=True)):
-            if not commit:
-                break
+            if not commit.sha:
+                commit_stats.append({"date": commit.Index})
+                continue
             git.checkout(commit.sha)
             stat = {
                 "sha": commit.sha,
@@ -64,13 +65,9 @@ def daily_stat(**kwargs):
     return stat(time_window="D", **kwargs)
 
 
-def script(cmd):
-    return lambda: subprocess.check_output(cmd, shell=True, cwd=repo_dir)
-
-
 def script_now(cmd):
     try:
-        return subprocess.check_output(cmd, shell=True)
+        return subprocess.check_output(cmd, shell=True).decode("utf-8")
         # ignore exit code 1
     except subprocess.CalledProcessError as e:
         if e.returncode == 1:
@@ -92,9 +89,13 @@ def ripgrep_count_file(pattern):
 
 def rg_count(pattern) -> int:
     filenames_with_counts = script_now(f"rg {pattern} --count")
-    return {
-        "total": sum(line.split(":")[-1] for line in filenames_with_counts.splitlines())
+    res = {
+        "total": sum(
+            int(line.split(":")[-1]) for line in filenames_with_counts.splitlines()
+        )
     }
+    print(res)
+    return res
 
 
 def agg_percent(self):
@@ -119,6 +120,5 @@ jsx_to_tsx = lambda: stat(tokei_specific(["jsx", "tsx", "js", "ts"]), time_windo
 
 # regex_over_time = stat(lambda: rg_count("time_t"), time_window="D")
 # use functools partial to leave the parameters to stat open
-regex_stat = functools.partial(
-    stat, stat_fn=lambda: rg_count("time_t"), time_window="D"
-)
+def regex_stat(pattern):
+    return functools.partial(stat(lambda: rg_count(pattern), time_window="D"))
