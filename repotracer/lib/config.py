@@ -6,9 +6,8 @@ def read_config_file():
             "type": "csv",
             "path": "./stats",  # will store stats in ./stats/<repo_name>/<stat_name>.csv
         },
-        "repos": [
-            {
-                "name": "svelte",
+        "repos": {
+            "svelte": {
                 "path": "svelte",
                 "stats": {
                     "count-ts-ignore": {
@@ -18,7 +17,7 @@ def read_config_file():
                     },
                 },
             }
-        ],
+        },
     }
     return config_data
 
@@ -29,11 +28,13 @@ def get_repo_storage_location():
 
 def get_config(repo_name, stat_name):
     config_data = read_config_file()
-    repo_config = next(
-        (x for x in config_data["repos"] if x["name"] == repo_name), None
-    )
-    if not repo_config:
-        raise Exception(f"Repo {repo_name} not found in config")
+    try:
+        repo_config = config_data["repos"][repo_name]
+    except KeyError:
+        known_repos = ", ".join(config_data["repos"].keys())
+        raise Exception(
+            f"Repo '{repo_name}' not found in config. Known repos are '{known_repos}'"
+        )
 
     try:
         stat_config = repo_config["stats"][stat_name]

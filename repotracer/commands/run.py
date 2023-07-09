@@ -1,5 +1,7 @@
 from lib.stats import regex_stat
 from lib.config import get_config
+from typing import Optional
+
 import os
 
 
@@ -7,7 +9,9 @@ def define_command(run_parser):
     run_parser.add_argument(
         "repo_name", help="Name of the repo to collect stats for", type=str
     )
-    run_parser.add_argument("stat_name", help="Name of the stat to collect", type=str)
+    run_parser.add_argument(
+        "stat_name", help="Name of the stat to collect", type=str, default="_all"
+    )
     run_parser.add_argument(
         "since", help="Date to start collecting stats from", type=str
     )
