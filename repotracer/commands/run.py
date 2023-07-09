@@ -15,16 +15,17 @@ def define_command(run_parser):
 
 
 def run(args):
-    repo_name = args.repo_name
-    stat_name = args.stat_name
-    since = args.since
+    repo_name, stat_name, since = args.repo_name, args.stat_name, args.since
     print(f"Running stat {stat_name} on repo {repo_name} since {since}")
-    repo = "svelte"
-    repo_config, stat_config = get_config(repo_name, stat_name)
-    print(repo_config, stat_config)
-    print(os.getcwd())
-    # cd into repo_path
+
+    repo_config, stat_params = get_config(repo_name, stat_name)
+
+    # todo set the /repos path in the config
     os.chdir("repos/" + repo_config["path"])
-    # todo pass the args to the stat
-    df = regex_stat("ts-ignore")()
+    print(stat_params)
+
+    # todo pick the stat function based on the type
+    # todo pass the whole stat_params to the stat function
+    # so it can be polymorphic
+    df = regex_stat(stat_params["pattern"])()
     df.to_csv("output.csv", date_format="%Y-%m-%d")

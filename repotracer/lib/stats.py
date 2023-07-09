@@ -11,7 +11,7 @@ def stat(stat_fn, time_window=None, start=None, end=None, agg_fn=None, agg_freq=
         nonlocal stat_fn, time_window, start, end, agg_fn, agg_freq
         commit_stats = []
         if start is None:
-            start = "2023-06-01"
+            start = "2022-01-01"
             # start = git.first_commit_date()
         if end is None:
             end = datetime.today().strftime("%Y-%m-%d")
@@ -29,17 +29,15 @@ def stat(stat_fn, time_window=None, start=None, end=None, agg_fn=None, agg_freq=
         )
         # todo bring this back in when doing different aggregations:
         # if time_window:
-        commits = (
-            commits.groupby(pd.Grouper(key="created_at", freq=time_window))
-            .last()
-            .ffill()
-        )
+        commits = commits.groupby(pd.Grouper(key="created_at", freq=time_window)).last()
         print(f"Going from {start} to {end}, {len(commits)} commits")
-        print(commits.head())
-        for commit in tqdm(commits.itertuples(index=True)):
+        for commit in (
+            pbar := tqdm(commits.itertuples(index=True), total=len(commits))
+        ):
             if not commit.sha:
                 commit_stats.append({"date": commit.Index})
                 continue
+            pbar.set_postfix_str(commit.Index.strftime("%Y-%m-%d"))
             git.checkout(commit.sha)
             stat = {
                 "sha": commit.sha,
@@ -47,15 +45,13 @@ def stat(stat_fn, time_window=None, start=None, end=None, agg_fn=None, agg_freq=
                 **stat_fn(),
             }
             commit_stats.append(stat)
-        df = pd.DataFrame(commit_stats).set_index("date")
+        df = pd.DataFrame(commit_stats).ffill().set_index("date")
         # single_stat = len(df.columns) == 3
         # stat_column = df.columns[2] if single_stat else None
         if agg_fn:
             df.groupby(
                 pd.Grouper(key="created_at", agg_freq=agg_freq), as_index=False
             ).agg(agg_fn)
-        print(commit_stats)
-        print(df.head())
         return df
 
     return compute
@@ -63,6 +59,10 @@ def stat(stat_fn, time_window=None, start=None, end=None, agg_fn=None, agg_freq=
 
 def daily_stat(**kwargs):
     return stat(time_window="D", **kwargs)
+
+
+def script(cmd):
+    return lambda: subprocess.check_output(cmd, shell=True)
 
 
 def script_now(cmd):
@@ -94,7 +94,6 @@ def rg_count(pattern) -> int:
             int(line.split(":")[-1]) for line in filenames_with_counts.splitlines()
         )
     }
-    print(res)
     return res
 
 

@@ -13,7 +13,6 @@ git = sh.git.bake(no_pager=True)
 def list_commits(start, end):  # -> [string, string]:
     start = start or "2000-01-01"
     end = end or datetime.now().strftime("%Y-%m-%d")
-    print(os.getcwd())
     data = []
     for line in git.log(
         format="%H,%cd",
