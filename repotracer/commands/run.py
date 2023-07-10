@@ -1,25 +1,36 @@
 from lib.stats import regex_stat
 from lib.config import get_config
 from typing import Optional
+from typing_extensions import Annotated
+import typer
 
 import os
 
 
-def define_command(run_parser):
-    run_parser.add_argument(
-        "repo_name", help="Name of the repo to collect stats for", type=str
-    )
-    run_parser.add_argument(
-        "stat_name", help="Name of the stat to collect", type=str, default="_all"
-    )
-    run_parser.add_argument(
-        "since", help="Date to start collecting stats from", type=str
-    )
-    run_parser.set_defaults(func=run)
+def run(
+    repo_name: Optional[str] = None,
+    stat_name: Annotated[Optional[str], typer.Argument()] = None,
+    since: Optional[str] = None,
+):
+    print(repo_name, stat_name, since)
+    if repo_name is None:
+        # todo, print Running x stats on y repos
+        # and run the stats grouped by repo
+        print("Running all stats on all repos")
+    if repo_name is not None and stat_name is not None:
+        print(f"Running stat {stat_name} on repo {repo_name}")
+        run_single(repo_name, stat_name, since)
 
 
-def run(args):
-    repo_name, stat_name, since = args.repo_name, args.stat_name, args.since
+def run_all_on_repo(repo_name: str):
+    print(f"Running all stats on repo {repo_name}")
+    all_stats_for_repo = get_config(repo_name)["stats"]
+    print(f"Have {len(all_stats_for_repo)} stats to run.")
+    for stat_name in all_stats_for_repo.keys():
+        run_single(repo_name, stat_name)
+
+
+def run_single(repo_name: str, stat_name: str):
     print(f"Running stat {stat_name} on repo {repo_name} since {since}")
 
     repo_config, stat_params = get_config(repo_name, stat_name)

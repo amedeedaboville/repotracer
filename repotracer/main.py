@@ -1,66 +1,46 @@
-import git
-from datetime import date, timedelta, datetime
-from tqdm import tqdm
-import json
-import os
-import pandas as pd
-import subprocess
-import sh
-import sys
-from stats import *
+import typer
+import commands.run
+
+app = typer.Typer(no_args_is_help=True)
+app.command()(commands.run.run)
 
 
-def last_year_days():
-    return [date.today() - timedelta(days=d) for d in range(365)]
+@app.command()
+def print_config():
+    import json
+    from lib.config import read_config_file
+
+    print(json.dumps(read_config_file(), indent=4))
 
 
-def tokei_runner():
-    (code, out) = subprocess.getstatusoutput(
-        "tokei -o json | jq 'with_entries(.value = .value.code)'"
-    )
-    return json.loads(out)
+@app.command()
+def add_repo():
+    # ask the user for the repo URL
+    # ask the user for the repo name if it's different
+    # add the repo to the config
+    # optionally ask the user if they want to add any stats for this repo
+    # and call add_stat() if they do
+    pass
 
 
-# example_stat = (
-#     stat_builder()
-#     .time_window("D")
-#     .agg_freq("M")
-#     .agg_fn(lambda x: x)
-#     .start()
-#     .end("tomorrow")
-# )
+@app.command()
+def add_stat():
+    # if the user didn't specify a repo, ask them for one, or create it with add_repo()
+    # ask the user for what kind of stat they want to add
+    # show them the list of built-in stats, or they can put in a custom one
+    # If there are any parameters for the stat, ask the user for them
+    # ask the user for the name of the stat
+    # store this info in the config
+    # ask the user if they want to run the stat now
+    pass
 
 
-# class stat:
-#     def start(self, start):
-#         self.start = start
-
-#     def __call__(self):
-#         commit_stats = []
-#         commits = pd.DataFrame(list_commits(start, end)).set_index("created_at")
-#         if time_window:
-#             commits = commits.groupBy(
-#                 pd.Grouper(key=created_at, freq=time_window)
-#             ).last()
-#         for commit in tqdm(commits.itertuples(index=false)):
-#             git.checkout(commit.sha)
-#             stat = {
-#                 "sha": commit,
-#                 "date": commit.created_at,  # or git.current_date()
-#                 **stat_fn(commit),
-#             }
-#             commit_stats.append(stat)
-#         df = pd.DataFrame(commit_stats).set_index("date")
-#         # single_stat = len(df.columns) == 3
-#         # stat_column = df.columns[2] if single_stat else None
-#         if agg_fn:
-#             df.groupBy(
-#                 pd.Grouper(key="created_at", agg_freq=agg_freq), as_index=False
-#             ).agg(agg_fn)
-#         return df
+@app.command()
+def plot(repo: str, stat: str):
+    # Open the storage location for the stat
+    # Plot the data
+    pass
 
 
-from stats import daily_loc
-
-example_stat = daily_stat(stat_fn=daily_loc, start="1 year ago")
-example_stat()
+if __name__ == "__main__":
+    app()
