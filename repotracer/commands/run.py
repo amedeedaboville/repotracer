@@ -1,4 +1,5 @@
 from lib.stats import regex_stat
+from lib.statrunner import StatRunner
 from lib.config import get_config
 from typing import Optional
 from typing_extensions import Annotated
@@ -42,6 +43,8 @@ def run_single(repo_name: str, stat_name: str):
     # todo pick the stat function based on the type
     # todo pass the whole stat_params to the stat function
     # so it can be polymorphic
+    stat = regex_stat(stat_params["pattern"])
+    stat_runner = StatRunner(stat)
+    df = stat_runner.run()
     os.chdir(cwd)
-    df = regex_stat(stat_params["pattern"])()
-    df.to_csv("output.csv", date_format="%Y-%m-%d")
+    df.to_csv(f"{stat_name}.csv", date_format="%Y-%m-%d")
