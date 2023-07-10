@@ -8,16 +8,26 @@ from datetime import datetime
 import functools
 
 
+# todo find a way to do polymorphism nicely
+# by having the statconfig be typed differently
+# based on the Stat itself
+# @dataclass
+# class StatConfig(object):
+#     storage: str = "csv"
+#     stat_specific_config: object = None
+
+
+# This is the computation itself
 @dataclass
-class Stat(object):
+class Computation(object):
     stat_fn: Callable
     time_window: str = "D"
     agg_fn: Callable | None = None
-    agg_freq: str | None = None
+    agg_window: str | None = None
 
 
-def daily_stat(**kwargs):
-    return Stat(time_window="D", **kwargs)
+# A user specifies a computation, some parameters to the computation, and some extra parameters (eg the storage)
+# Names for these things tbd
 
 
 def script(cmd):
@@ -59,16 +69,25 @@ def agg_percent(self):
     return self.sum() / len(self)
 
 
-revert_commit_percentage = Stat(
+revert_commit_percentage = Computation(
     stat_fn=lambda: {stat: is_revert()},
     agg_window="M",
     agg_fn=lambda df: df["stat"].avg(),
 )
 
-daily_loc = Stat(stat_fn=script("tokei --total"))
-jsx_to_tsx = Stat(tokei_specific(["jsx", "tsx", "js", "ts"]))
-authors_per_month = Stat(git.get_commit_author, time_window="M", agg_fn="count")
+daily_loc = Computation(stat_fn=script("tokei --total"))
+jsx_to_tsx = Computation(tokei_specific(["jsx", "tsx", "js", "ts"]))
+authors_per_month = Computation(git.get_commit_author, time_window="M", agg_fn="count")
 
 # run a ripgrep search for a specific string
 def regex_stat(pattern):
-    return Stat(stat_fn=(lambda: rg_count(pattern)), time_window="D")
+    return Computation(stat_fn=(lambda: rg_count(pattern)), time_window="D")
+
+
+class RegexStat(Computation):
+    def __init__(self, pattern: str):
+        self.pattern = pattern
+        super().__init__(stat_fn=self.stat, time_window="D")
+
+    def stat(self):
+        return rg_count(self.pattern)

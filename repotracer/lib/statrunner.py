@@ -3,20 +3,21 @@ from . import git
 from tqdm.auto import tqdm
 from datetime import datetime
 
-from .stats import Stat
+from .stats import Computation
 from dataclasses import dataclass
 
 
 @dataclass
 class StatRunner(object):
-    stat: Stat
+    computation: Computation
+    stat_config: dict
     start: str | None = None
     end: str | None = None
 
     def run(self):
         start = self.start
         end = self.end
-        time_window = self.stat.time_window
+        time_window = self.computation.time_window
         commit_stats = []
         if start is None:
             start = "2022-01-01"
@@ -50,17 +51,20 @@ class StatRunner(object):
             stat = {
                 "sha": commit.sha,
                 "date": commit.Index,
-                **self.stat.stat_fn(),
+                **self.computation.stat_fn(),
             }
             commit_stats.append(stat)
         df = pd.DataFrame(commit_stats).ffill().set_index("date")
         # single_stat = len(df.columns) == 3
         # stat_column = df.columns[2] if single_stat else None
-        if self.stat.agg_fn:
+        if self.computation.agg_fn:
             df.groupby(
                 pd.Grouper(key="created_at", agg_freq=agg_freq), as_index=False
-            ).agg(self.stat.agg_fn)
+            ).agg(self.computation.agg_fn)
         return df
 
-    def find_missing_days():
+    def find_missing_days(self):
+        stat_name = stat.config.name
+        # We need to ask the storage engine for the current version of the data
+        # It should give us a df, and we can use that to find the latest days missing
         pass
