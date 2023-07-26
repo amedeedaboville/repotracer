@@ -3,27 +3,37 @@ from . import git
 from tqdm.auto import tqdm
 from datetime import datetime
 
-from .stats import Computation
+from .stats import Measurement
+from typing import Callable
 from dataclasses import dataclass
 
 
 @dataclass
-class StatRunner(object):
-    computation: Computation
-    stat_config: dict
+class AggConfig(object):
+    time_window: str = "D"
+    agg_fn: Callable | None = None
+    agg_window: str | None = None
+
+
+def agg_percent(self):
+    return self.sum() / len(self)
+
+
+@dataclass()
+class Stat(object):
+    stat_name: str
     start: str | None = None
     end: str | None = None
+    measurement: Measurement | None = None
+    agg_config: AggConfig | None = None
 
     def run(self):
-        start = self.start
-        end = self.end
-        time_window = self.computation.time_window
         commit_stats = []
-        if start is None:
-            start = "2022-01-01"
-            # start = git.first_commit_date()
-        if end is None:
-            end = datetime.today().strftime("%Y-%m-%d")
+        start = self.start or "2022-01-01"  # or git.first_commit_date()
+        end = self.end or datetime.today().strftime("%Y-%m-%d")
+        agg_config = self.agg_config or AggConfig(
+            time_window="D", agg_fn=None, agg_window=None
+        )
         git.reset_hard_head()
         git.checkout("master")
         commits = pd.DataFrame(
@@ -37,8 +47,10 @@ class StatRunner(object):
             drop=False,
         )
         # todo bring this back in when doing different aggregations:
-        # if time_window:
-        commits = commits.groupby(pd.Grouper(key="created_at", freq=time_window)).last()
+        # if self.computation.time_window:
+        commits = commits.groupby(
+            pd.Grouper(key="created_at", freq=agg_config.time_window)
+        ).last()
         print(f"Going from {start} to {end}, {len(commits)} commits")
         for commit in (
             pbar := tqdm(commits.itertuples(index=True), total=len(commits))
@@ -51,20 +63,22 @@ class StatRunner(object):
             stat = {
                 "sha": commit.sha,
                 "date": commit.Index,
-                **self.computation.stat_fn(),
+                **self.measurement(),
             }
             commit_stats.append(stat)
         df = pd.DataFrame(commit_stats).ffill().set_index("date")
         # single_stat = len(df.columns) == 3
         # stat_column = df.columns[2] if single_stat else None
-        if self.computation.agg_fn:
+        if agg_config.agg_fn:
             df.groupby(
                 pd.Grouper(key="created_at", agg_freq=agg_freq), as_index=False
-            ).agg(self.computation.agg_fn)
+            ).agg(agg_config.agg_fn)
         return df
 
     def find_missing_days(self):
-        stat_name = stat.config.name
         # We need to ask the storage engine for the current version of the data
         # It should give us a df, and we can use that to find the latest days missing
-        pass
+        df = CsvStorage(self.stat_name).load()
+        last_date = df.index.max()
+        # Return a list of days missing
+        return pd.date_range(datetime.today(), current_day, freq="D").tolist()

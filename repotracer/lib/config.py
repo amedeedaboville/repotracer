@@ -13,7 +13,9 @@ def read_config_file():
                     "count-ts-ignore": {
                         "description": "The number of ts-ignores in the repo.",
                         "type": "regex_count",
-                        "pattern": "ts-ignore",
+                        "params": {
+                            "pattern": "ts-ignore",
+                        },
                     },
                 },
             }

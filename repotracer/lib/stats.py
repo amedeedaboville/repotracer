@@ -1,93 +1,72 @@
 from dataclasses import dataclass
-from typing import Callable
-import subprocess
+from typing import Callable, Generic, TypeVar, Type, Any, TypedDict
+from abc import ABC, abstractmethod
 import pandas as pd
-from . import git
 from tqdm.auto import tqdm
 from datetime import datetime
 import functools
+from typing_extensions import Protocol
+from .measurements import rg_count
 
 
-# todo find a way to do polymorphism nicely
-# by having the statconfig be typed differently
-# based on the Stat itself
-# @dataclass
-# class StatConfig(object):
-#     storage: str = "csv"
-#     stat_specific_config: object = None
+class MeasurementConfig(object):
+    pass
 
 
-# This is the computation itself
-@dataclass
-class Computation(object):
-    stat_fn: Callable
-    time_window: str = "D"
-    agg_fn: Callable | None = None
-    agg_window: str | None = None
+TConfig = TypeVar("TConfig", bound=MeasurementConfig)
 
 
-# A user specifies a computation, some parameters to the computation, and some extra parameters (eg the storage)
-# Names for these things tbd
+class Measurement(Protocol):
+    def __call__(self, Tconfig) -> list[Any]:
+        pass
 
 
-def script(cmd):
-    return lambda: subprocess.check_output(cmd, shell=True)
+class FunctionMeasurement(Generic[TConfig]):
+    """A Measurement that consists of a single function.
+    Easy to turn a function into a measurement."""
+
+    def __init__(self, fn: Callable[[TConfig], list[Any]]):
+        self.fn = fn
+
+    def __call__(self, config: TConfig):
+        def wrapper() -> list[Any]:
+            return self.fn(config)
+
+        return wrapper
 
 
-def script_now(cmd):
-    try:
-        return subprocess.check_output(cmd, shell=True).decode("utf-8")
-    except subprocess.CalledProcessError as e:
-        # ignore exit code 1
-        if e.returncode == 1:
-            return e.output
-        print("Error in script_now")
-        print(e)
-        print(e.output)
-        raise e
+class RegexConfig(TypedDict):
+    pattern: str
 
 
-def tokei_specific(languages):
-    return script(f"tokei --output json --output-file - --languages {languages}")
+def function_measurement(fn: Callable[[TConfig], list[Any]]):
+    return FunctionMeasurement(fn)
 
 
-def ripgrep_count_file(pattern):
-    return int(script(f"rg -l {pattern} | wc -l"))
+# def functional_measurement(fn: Callable[[TConfig], list[Any], config: TConfig):
+#     def fn_with_config():
+#         return fn(config)
+#     return fn_with_config()
 
 
-def rg_count(pattern) -> int:
-    filenames_with_counts = script_now(f"rg {pattern} --count")
-    res = {
-        "total": sum(
-            int(line.split(":")[-1]) for line in filenames_with_counts.splitlines()
-        )
-    }
-    return res
+def regex(pattern: str):
+    return rg_count(pattern)
 
 
-def agg_percent(self):
-    return self.sum() / len(self)
-
-
-revert_commit_percentage = Computation(
-    stat_fn=lambda: {stat: is_revert()},
-    agg_window="M",
-    agg_fn=lambda df: df["stat"].avg(),
+RegexMeasurement = FunctionMeasurement[RegexConfig](
+    lambda config: rg_count(config["pattern"])
 )
 
-daily_loc = Computation(stat_fn=script("tokei --total"))
-jsx_to_tsx = Computation(tokei_specific(["jsx", "tsx", "js", "ts"]))
-authors_per_month = Computation(git.get_commit_author, time_window="M", agg_fn="count")
-
-# run a ripgrep search for a specific string
-def regex_stat(pattern):
-    return Computation(stat_fn=(lambda: rg_count(pattern)), time_window="D")
+# jsx_to_tsx = FunctionMeasurement(tokei_specific(["jsx", "tsx", "js", "ts"]))
+# authors_per_month = FunctionMeasurement(git.get_commit_author)
 
 
-class RegexStat(Computation):
-    def __init__(self, pattern: str):
-        self.pattern = pattern
-        super().__init__(stat_fn=self.stat, time_window="D")
+# @stat("regex_count")
+# class RegexMeasurement(Measurement):
+#     config: RegexConfig
 
-    def stat(self):
-        return rg_count(self.pattern)
+#     def run(self) -> list[Any]:
+#         return rg_count(self.config.pattern)
+all_measurements = {
+    "regex_count": RegexMeasurement,
+}
