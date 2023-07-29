@@ -28,6 +28,10 @@ def get_repo_storage_location():
     return read_config_file()["storage_location"] or "./repos"
 
 
+def get_stat_storage_config():
+    return read_config_file()["stat_storage"]
+
+
 def get_config(repo_name, stat_name):
     config_data = read_config_file()
     try:

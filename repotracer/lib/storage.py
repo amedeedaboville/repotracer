@@ -1,7 +1,11 @@
 import pandas as pd
+import os
+
+from .config import get_stat_storage_config
+
 
 class Storage(object):
-    def __init__(self, config):
+    def __init__(self):
         pass
 
     def save(self, df: pd.DataFrame):
@@ -11,11 +15,26 @@ class Storage(object):
         pass
 
 
-class CSVStorage(Storage):
-    def __init__(self, config):
-        self.path = path
-        self.df = pd.read_csv(path, index_col=0)
-        self.df.index = pd.to_datetime(self.df.index)
+class CsvStorage(Storage):
+    def __init__(self):
+        self.config = get_stat_storage_config()
 
-    def save(self):
-        self.df.to_csv(self.path)
+    def build_path(self, repo_name, stat_name):
+        return self.config["path"] + f"/{repo_name}/{stat_name}.csv"
+
+    def load(self, repo_name, stat_name) -> pd.DataFrame | None:
+        path = self.build_path(repo_name, stat_name)
+        try:
+            df = pd.read_csv(path, index_col=0)
+            df.index = pd.to_datetime(df.index)
+            return df
+        except FileNotFoundError:
+            return None
+
+    def save(self, repo_name, stat_name, df: pd.DataFrame):
+        path = self.build_path(repo_name, stat_name)
+        # if the path doesn't exist, create it
+        if not os.path.exists(os.path.dirname(path)):
+            os.makedirs(os.path.dirname(path))
+        print(f"Saving {stat_name} to {path}")
+        df.to_csv(path, date_format="%Y-%m-%d")

@@ -1,9 +1,10 @@
 import pandas as pd
 from . import git
 from tqdm.auto import tqdm
-from datetime import datetime
+from datetime import datetime, date
 
 from .stats import Measurement
+from .storage import Storage, CsvStorage
 from typing import Callable
 from dataclasses import dataclass
 
@@ -21,6 +22,7 @@ def agg_percent(self):
 
 @dataclass()
 class Stat(object):
+    repo_name: str
     stat_name: str
     start: str | None = None
     end: str | None = None
@@ -31,11 +33,14 @@ class Stat(object):
         commit_stats = []
         start = self.start or "2022-01-01"  # or git.first_commit_date()
         end = self.end or datetime.today().strftime("%Y-%m-%d")
+        existing_df = CsvStorage().load(self.repo_name, self.stat_name)
+        start, end = self.find_missing_days(existing_df)
         agg_config = self.agg_config or AggConfig(
             time_window="D", agg_fn=None, agg_window=None
         )
         git.reset_hard_head()
         git.checkout("master")
+        git.pull()
         commits = pd.DataFrame(
             git.list_commits(start, end), columns=["sha", "created_at"]
         )
@@ -48,6 +53,7 @@ class Stat(object):
         )
         # todo bring this back in when doing different aggregations:
         # if self.computation.time_window:
+        # pd.date_range(datetime.today(), current_day, freq="D").tolist()
         commits = commits.groupby(
             pd.Grouper(key="created_at", freq=agg_config.time_window)
         ).last()
@@ -66,19 +72,28 @@ class Stat(object):
                 **self.measurement(),
             }
             commit_stats.append(stat)
-        df = pd.DataFrame(commit_stats).ffill().set_index("date")
+        # bug:we need to overwrite the last day, not concat them
+        df = pd.concat(
+            existing_df, pd.DataFrame(commit_stats).ffill().set_index("date")
+        )
         # single_stat = len(df.columns) == 3
         # stat_column = df.columns[2] if single_stat else None
         if agg_config.agg_fn:
             df.groupby(
                 pd.Grouper(key="created_at", agg_freq=agg_freq), as_index=False
             ).agg(agg_config.agg_fn)
-        return df
 
-    def find_missing_days(self):
+        CsvStorage().save(self.repo_name, self.stat_name, df)
+
+    def find_missing_days(self, df) -> [date, date]:
         # We need to ask the storage engine for the current version of the data
         # It should give us a df, and we can use that to find the latest days missing
-        df = CsvStorage(self.stat_name).load()
-        last_date = df.index.max()
+        if not df.empty:
+            print("Found existing data:")
+            print(df.head)
+            start = df.index.max()
+        else:
+            start = "2022-01-01"  # or git.first_commit_date()
+        end = datetime.today() - pd.Timedelta(days=1)
         # Return a list of days missing
-        return pd.date_range(datetime.today(), current_day, freq="D").tolist()
+        return start, end

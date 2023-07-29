@@ -45,7 +45,6 @@ def run_single(repo_name: str, stat_name: str):
     # so it can be polymorphic
     measurement = all_measurements[stat_params["type"]](stat_params["params"])
     print(measurement)
-    stat_runner = Stat(stat_name, measurement=measurement)
+    stat_runner = Stat(repo_name, stat_name, measurement=measurement)
     df = stat_runner.run()
     os.chdir(cwd)
-    df.to_csv(f"{stat_name}.csv", date_format="%Y-%m-%d")

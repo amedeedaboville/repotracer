@@ -50,6 +50,10 @@ def current_date():
     return git.log("-1", "--pretty=format:%cd")
 
 
+def pull(obj="master"):
+    return git.pull("origin", obj)
+
+
 def get_commit_author():
     return git.log("-1", "--pretty=format:%aE")
 
