@@ -6,7 +6,7 @@ from tqdm.auto import tqdm
 from datetime import datetime
 import functools
 from typing_extensions import Protocol
-from .measurements import rg_count
+from .measurement_fns import rg_count
 
 
 class MeasurementConfig(object):

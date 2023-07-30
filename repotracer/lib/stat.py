@@ -4,7 +4,7 @@ from tqdm.auto import tqdm
 from datetime import datetime, date
 
 from .config import RepoConfig, StatConfig
-from .stats import Measurement, all_measurements
+from .measurement import Measurement, all_measurements
 from .storage import Storage, CsvStorage
 from typing import Callable
 from dataclasses import dataclass

@@ -1,4 +1,4 @@
-from lib.statrunner import Stat
+from lib.stat import Stat
 from lib.config import get_config
 from typing import Optional
 from typing_extensions import Annotated
