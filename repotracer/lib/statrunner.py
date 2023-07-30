@@ -72,17 +72,16 @@ class Stat(object):
                 **self.measurement(),
             }
             commit_stats.append(stat)
-        # bug:we need to overwrite the last day, not concat them
-        df = pd.concat(
-            existing_df, pd.DataFrame(commit_stats).ffill().set_index("date")
-        )
+
+        new_df = pd.DataFrame(commit_stats).ffill().set_index("date").tz_localize(None)
         # single_stat = len(df.columns) == 3
         # stat_column = df.columns[2] if single_stat else None
         if agg_config.agg_fn:
-            df.groupby(
+            new_df.groupby(
                 pd.Grouper(key="created_at", agg_freq=agg_freq), as_index=False
             ).agg(agg_config.agg_fn)
 
+        df = new_df.combine_first(existing_df)
         CsvStorage().save(self.repo_name, self.stat_name, df)
 
     def find_missing_days(self, df) -> [date, date]:
