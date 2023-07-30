@@ -1,4 +1,3 @@
-from lib.stats import all_measurements
 from lib.statrunner import Stat
 from lib.config import get_config
 from typing import Optional
@@ -35,16 +34,5 @@ def run_single(repo_name: str, stat_name: str):
 
     repo_config, stat_params = get_config(repo_name, stat_name)
 
-    cwd = os.getcwd()
-    # todo set the /repos path in the config
-    os.chdir("repos/" + repo_config["path"])
-    print(stat_params)
-
-    # todo pick the stat function based on the type
-    # todo pass the whole stat_params to the stat function
-    # so it can be polymorphic
-    measurement = all_measurements[stat_params["type"]](stat_params["params"])
-    print(measurement)
-    stat_runner = Stat(repo_name, stat_name, measurement=measurement)
-    df = stat_runner.run()
-    os.chdir(cwd)
+    stat = Stat(repo_config=repo_config, stat_params=stat_params)
+    df = stat.run()

@@ -1,3 +1,7 @@
+from dataclasses import dataclass
+from typing import Any
+
+
 def read_config_file():
     # Let's pretend we open a big config file with a bunch of stats in it
     config_data = {
@@ -32,10 +36,25 @@ def get_stat_storage_config():
     return read_config_file()["stat_storage"]
 
 
-def get_config(repo_name, stat_name):
+@dataclass()
+class RepoConfig(object):
+    name: str
+    path: str
+
+
+@dataclass()
+class StatConfig(object):
+    name: str
+    description: str
+    type: str
+    params: Any
+
+
+def get_config(repo_name, stat_name) -> (RepoConfig, str):
     config_data = read_config_file()
     try:
         repo_config = config_data["repos"][repo_name]
+        repo_config["name"] = repo_name
     except KeyError:
         known_repos = ", ".join(config_data["repos"].keys())
         raise Exception(
@@ -44,10 +63,11 @@ def get_config(repo_name, stat_name):
 
     try:
         stat_config = repo_config["stats"][stat_name]
+        stat_config["name"] = stat_name
     except KeyError:
         valid_stats = ", ".join(repo_config["stats"].keys())
         raise Exception(
-            f"Stat '{stat_name}' not found in config. Possible values are: '{valid_stats}'"
+            f"The stat '{stat_name}' does not exist in the config. Valid stat names are: '{valid_stats}'"
         )
 
     return repo_config, stat_config

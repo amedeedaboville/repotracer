@@ -3,10 +3,12 @@ from . import git
 from tqdm.auto import tqdm
 from datetime import datetime, date
 
-from .stats import Measurement
+from .config import RepoConfig, StatConfig
+from .stats import Measurement, all_measurements
 from .storage import Storage, CsvStorage
 from typing import Callable
 from dataclasses import dataclass
+import os
 
 
 @dataclass
@@ -22,22 +24,33 @@ def agg_percent(self):
 
 @dataclass()
 class Stat(object):
-    repo_name: str
+    repo_config: RepoConfig
     stat_name: str
     start: str | None = None
     end: str | None = None
     measurement: Measurement | None = None
     agg_config: AggConfig | None = None
 
+    def __init__(self, repo_config: RepoConfig, stat_params: StatConfig):
+        self.repo_config = repo_config
+        self.measurement = all_measurements[stat_params["type"]](stat_params["params"])
+        self.stat_name = stat_params["name"]
+
     def run(self):
+        previous_cwd = os.getcwd()
+        repo_path = "./repos/" + self.repo_config["path"]
+
         commit_stats = []
         start = self.start or "2022-01-01"  # or git.first_commit_date()
-        end = self.end or datetime.today().strftime("%Y-%m-%d")
-        existing_df = CsvStorage().load(self.repo_name, self.stat_name)
+        existing_df = CsvStorage().load(self.repo_config["name"], self.stat_name)
         start, end = self.find_missing_days(existing_df)
         agg_config = self.agg_config or AggConfig(
             time_window="D", agg_fn=None, agg_window=None
         )
+
+        print(os.getcwd())
+        print(repo_path)
+        os.chdir(repo_path)
         git.reset_hard_head()
         git.checkout("master")
         git.pull()
@@ -81,18 +94,22 @@ class Stat(object):
                 pd.Grouper(key="created_at", agg_freq=agg_freq), as_index=False
             ).agg(agg_config.agg_fn)
 
-        df = new_df.combine_first(existing_df)
-        CsvStorage().save(self.repo_name, self.stat_name, df)
+        if existing_df is not None:
+            df = new_df.combine_first(existing_df)
+        else:
+            df = new_df
+
+        os.chdir(previous_cwd)
+        CsvStorage().save(self.repo_config["name"], self.stat_name, df)
 
     def find_missing_days(self, df) -> [date, date]:
         # We need to ask the storage engine for the current version of the data
         # It should give us a df, and we can use that to find the latest days missing
-        if not df.empty:
-            print("Found existing data:")
-            print(df.head)
-            start = df.index.max()
+        if not (df is None or df.empty):
+            start = df.index.max() - pd.Timedelta(days=1)
+            print(f"Found existing data date {start}")
         else:
             start = "2022-01-01"  # or git.first_commit_date()
-        end = datetime.today() - pd.Timedelta(days=1)
+        end = datetime.today()
         # Return a list of days missing
         return start, end
