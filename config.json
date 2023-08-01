@@ -1,0 +1,17 @@
+{
+  "repos": {
+    //an example stat config
+    "svelte": {
+      "path": "svelte",
+      "stats": {
+        "count-ts-ignore": {
+          "description": "The number of ts-ignores in the repo.",
+          "type": "regex_count",
+          "params": {
+            "pattern": "ts-ignore"
+          }
+        }
+      }
+    }
+  }
+}
