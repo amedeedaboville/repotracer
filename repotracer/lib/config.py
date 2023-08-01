@@ -1,31 +1,32 @@
 from dataclasses import dataclass
 from typing import Any
+import os
+import json5
+
+
+def get_config_path():
+    return os.environ.get("REPOTRACER_CONFIG_PATH", "./config.json")
 
 
 def read_config_file():
-    # Let's pretend we open a big config file with a bunch of stats in it
-    config_data = {
+    # print("Using default config.")
+    try:
+        with open(get_config_path()) as f:
+            config_data = json5.load(f)
+            return config_data
+    except FileNotFoundError:
+        print(f"Could not find config file at {get_config_path()}")
+        return get_default_config()
+
+
+def get_default_config():
+    return {
         "repo_storage_location": "./repos",
         "stat_storage": {
             "type": "csv",
             "path": "./stats",  # will store stats in ./stats/<repo_name>/<stat_name>.csv
         },
-        "repos": {
-            "svelte": {
-                "path": "svelte",
-                "stats": {
-                    "count-ts-ignore": {
-                        "description": "The number of ts-ignores in the repo.",
-                        "type": "regex_count",
-                        "params": {
-                            "pattern": "ts-ignore",
-                        },
-                    },
-                },
-            }
-        },
     }
-    return config_data
 
 
 def get_repo_storage_location():
@@ -67,7 +68,7 @@ def get_config(repo_name, stat_name) -> (RepoConfig, str):
     except KeyError:
         valid_stats = ", ".join(repo_config["stats"].keys())
         raise Exception(
-            f"The stat '{stat_name}' does not exist in the config. Valid stat names are: '{valid_stats}'"
+            f"The stat '{stat_name}' does not exist in the config for the repo '{repo_name}'. Here are the known stats: '{valid_stats}'"
         )
 
     return repo_config, stat_config
