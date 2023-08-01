@@ -30,7 +30,7 @@ def read_config_file():
             config |= json5.load(f)  # python 3.9 operator for dict update
     except FileNotFoundError:
         print(f"Could not find config file at {get_config_path()}. Keeping defaults.")
-    return config_data
+    return config
 
 
 def get_default_config():

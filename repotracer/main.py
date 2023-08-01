@@ -1,8 +1,8 @@
 import typer
-import commands.run
+from repotracer.commands import run
 
 app = typer.Typer(no_args_is_help=True)
-app.command()(commands.run.run)
+app.command()(run.run)
 
 
 @app.command()

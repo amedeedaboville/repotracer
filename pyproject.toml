@@ -5,6 +5,9 @@ description = "A tool to collect statistics about a git repository over time"
 authors = ["Amedee d'Aboville <amedee.daboville@gmail.com>"]
 readme = "README.md"
 
+[tool.poetry.scripts]
+repotracer = "repotracer.main:app"
+
 [tool.poetry.dependencies]
 s3fs = "^2023.6.0"
 python = "^3.11"

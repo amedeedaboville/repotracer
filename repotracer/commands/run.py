@@ -1,5 +1,5 @@
-from lib.stat import Stat
-from lib.config import get_config
+from repotracer.lib.stat import Stat
+from repotracer.lib.config import get_config
 from typing import Optional
 from typing_extensions import Annotated
 import typer
