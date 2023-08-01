@@ -4,19 +4,33 @@ import os
 import json5
 
 
+@dataclass()
+class RepoConfig(object):
+    name: str
+    path: str
+
+
+@dataclass()
+class StatConfig(object):
+    name: str
+    description: str
+    type: str
+    params: Any
+
+
 def get_config_path():
     return os.environ.get("REPOTRACER_CONFIG_PATH", "./config.json")
 
 
 def read_config_file():
     # print("Using default config.")
+    config = get_default_config()
     try:
         with open(get_config_path()) as f:
-            config_data = json5.load(f)
-            return config_data
+            config |= json5.load(f)  # python 3.9 operator for dict update
     except FileNotFoundError:
-        print(f"Could not find config file at {get_config_path()}")
-        return get_default_config()
+        print(f"Could not find config file at {get_config_path()}. Keeping defaults.")
+    return config_data
 
 
 def get_default_config():
@@ -35,20 +49,6 @@ def get_repo_storage_location():
 
 def get_stat_storage_config():
     return read_config_file()["stat_storage"]
-
-
-@dataclass()
-class RepoConfig(object):
-    name: str
-    path: str
-
-
-@dataclass()
-class StatConfig(object):
-    name: str
-    description: str
-    type: str
-    params: Any
 
 
 def get_config(repo_name, stat_name) -> (RepoConfig, str):
