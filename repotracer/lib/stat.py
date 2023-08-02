@@ -42,6 +42,12 @@ class Stat(object):
     def run(self):
         previous_cwd = os.getcwd()
         repo_path = "./repos/" + self.repo_config["path"]
+        repo_name = self.repo_config["name"]
+        if not git.is_repo_setup(repo_path):
+            print(
+                f"Repo {repo_name} not found. Downloading it from '{self.repo_config['url']}':"
+            )
+            git.download_repo(url=self.repo_config["url"], path=repo_path)
 
         commit_stats = []
         start = self.start or git.first_commit_date()

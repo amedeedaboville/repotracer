@@ -20,8 +20,8 @@ def run(
         print(f"Running all stats on all repos: {all_repos}")
         for repo_name in all_repos:
             run_all_on_repo(repo_name)
-    if repo_name is not None and stat_name is not None:
-        run_single(repo_name, stat_name)
+    if stat_name is None:
+        run_all_on_repo(repo_name)
 
 
 def run_all_on_repo(repo_name: str):

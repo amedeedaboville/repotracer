@@ -62,6 +62,10 @@ def get_commit_author():
     return git.log("-1", "--pretty=format:%aE")
 
 
+def is_repo_setup(repo_path):
+    return os.path.exists(os.path.join(repo_path, ".git"))
+
+
 def download_repo(url):
     repo_name = os.path.splitext(os.path.basename(url))[0]
     repo_dir = os.path.join(src_dir, repo_name)

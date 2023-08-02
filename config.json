@@ -23,6 +23,20 @@
           }
         }
       }
+    },
+    "blip": {
+      "url": "https://github.com/apenwarr/blip",
+      "path": "blip",
+      "stats": {
+        "count-var": {
+          "description": "The number of vars in the repo.",
+          "type": "regex_count",
+          "params": {
+            "pattern": "var ",
+            "ripgrep_args": "-g '!**/tests/*'"
+          }
+        }
+      }
     }
   }
 }
