@@ -39,7 +39,7 @@ def reset_hard_head():
 
 
 def clean_untracked():
-    return git.clean("-f -x -d")
+    return git.clean("-fxd")
 
 
 def current_message():

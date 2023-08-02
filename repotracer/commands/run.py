@@ -1,5 +1,5 @@
 from repotracer.lib.stat import Stat
-from repotracer.lib.config import get_config
+from repotracer.lib.config import get_config, list_repos, list_stats_for_repo
 from typing import Optional
 from typing_extensions import Annotated
 import typer
@@ -16,16 +16,19 @@ def run(
     if repo_name is None:
         # todo, print Running x stats on y repos
         # and run the stats grouped by repo
-        print("Running all stats on all repos")
+        all_repos = list_repos()
+        print(f"Running all stats on all repos: {all_repos}")
+        for repo_name in all_repos:
+            run_all_on_repo(repo_name)
     if repo_name is not None and stat_name is not None:
         run_single(repo_name, stat_name)
 
 
 def run_all_on_repo(repo_name: str):
     print(f"Running all stats on repo {repo_name}")
-    all_stats_for_repo = get_config(repo_name)["stats"]
-    print(f"Have {len(all_stats_for_repo)} stats to run.")
-    for stat_name in all_stats_for_repo.keys():
+    repo_stat_names = list_stats_for_repo(repo_name)
+    print(f"Have {len(repo_stat_names)} stats to run.")
+    for stat_name in repo_stat_names:
         run_single(repo_name, stat_name)
 
 

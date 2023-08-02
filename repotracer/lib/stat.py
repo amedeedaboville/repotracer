@@ -36,8 +36,8 @@ class Stat(object):
         self.repo_config = repo_config
         self.measurement = all_measurements[stat_params["type"]](stat_params["params"])
         self.stat_name = stat_params["name"]
-        self.path_in_repo = stat_params["path_in_repo"]
-        self.start = stat_params["start"]
+        self.path_in_repo = stat_params.get("path_in_repo")
+        self.start = stat_params.get("start")
 
     def run(self):
         previous_cwd = os.getcwd()
@@ -58,6 +58,9 @@ class Stat(object):
         git.reset_hard_head()
         git.checkout("master")
         git.pull()
+        if self.path_in_repo:
+            os.chdir(self.path_in_repo)
+        full_stat_start_path = os.getcwd()
         commits = pd.DataFrame(
             git.list_commits(start, end), columns=["sha", "created_at"]
         )
@@ -83,7 +86,7 @@ class Stat(object):
                 commit_stats.append({"date": commit.Index})
                 continue
             if self.path_in_repo:
-                os.cwd(self.path_in_repo)
+                os.chdir(full_stat_start_path)
             git.checkout(commit.sha)
             stat = {
                 "sha": commit.sha,

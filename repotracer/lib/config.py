@@ -27,6 +27,7 @@ def read_config_file():
     # print("Using default config.")
     config = get_default_config()
     try:
+        print("Looking for config file at", get_config_path())
         with open(get_config_path()) as f:
             config |= json5.load(f)  # python 3.9 operator for dict update
     except FileNotFoundError:
@@ -50,6 +51,20 @@ def get_repo_storage_location():
 
 def get_stat_storage_config():
     return read_config_file()["stat_storage"]
+
+
+def list_repos():
+    try:
+        return read_config_file()["repos"].keys()
+    except KeyError:
+        return []
+
+
+def list_stats_for_repo(repo_name):
+    try:
+        return read_config_file()["repos"][repo_name]["stats"].keys()
+    except KeyError:
+        return []
 
 
 def get_config(repo_name, stat_name) -> (RepoConfig, str):

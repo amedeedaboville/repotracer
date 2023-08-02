@@ -16,3 +16,11 @@ Use it to watch:
 These are only the beginning. You can write your own stats and plug them into repotracer. If you can write a script to calculate a property of your code, then repotracer can graph it for you over time. For example you could run your build toolchain and counting numbers of a particular warning, or use a special tool.
 
 Repotracer aims to be a swiss army knife to run analytics queries on your source code.
+
+### Installation
+
+For now this is a cumbersome affair. A pip install will come soon.
+
+- Install poetry
+- Run `poetry install`
+- Now you can run `repotracer`
