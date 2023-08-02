@@ -38,6 +38,10 @@ def reset_hard_head():
     return git.reset("--hard", "HEAD")
 
 
+def clean_untracked():
+    return git.clean("-f -x -d")
+
+
 def current_message():
     return git.log("-1", "--pretty=%B")
 

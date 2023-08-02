@@ -30,18 +30,21 @@ class Stat(object):
     end: str | None = None
     measurement: Measurement | None = None
     agg_config: AggConfig | None = None
+    path_in_repo: str | None = None
 
     def __init__(self, repo_config: RepoConfig, stat_params: StatConfig):
         self.repo_config = repo_config
         self.measurement = all_measurements[stat_params["type"]](stat_params["params"])
         self.stat_name = stat_params["name"]
+        self.path_in_repo = stat_params["path_in_repo"]
+        self.start = stat_params["start"]
 
     def run(self):
         previous_cwd = os.getcwd()
         repo_path = "./repos/" + self.repo_config["path"]
 
         commit_stats = []
-        start = self.start or "2022-01-01"  # or git.first_commit_date()
+        start = self.start or git.first_commit_date()
         existing_df = CsvStorage().load(self.repo_config["name"], self.stat_name)
         start, end = self.find_missing_days(existing_df)
         agg_config = self.agg_config or AggConfig(
@@ -51,6 +54,7 @@ class Stat(object):
         print(os.getcwd())
         print(repo_path)
         os.chdir(repo_path)
+        git.clean_untracked()
         git.reset_hard_head()
         git.checkout("master")
         git.pull()
@@ -74,10 +78,12 @@ class Stat(object):
         for commit in (
             pbar := tqdm(commits.itertuples(index=True), total=len(commits))
         ):
+            pbar.set_postfix_str(commit.Index.strftime("%Y-%m-%d"))
             if not commit.sha:
                 commit_stats.append({"date": commit.Index})
                 continue
-            pbar.set_postfix_str(commit.Index.strftime("%Y-%m-%d"))
+            if self.path_in_repo:
+                os.cwd(self.path_in_repo)
             git.checkout(commit.sha)
             stat = {
                 "sha": commit.sha,

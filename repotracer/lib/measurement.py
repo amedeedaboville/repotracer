@@ -49,12 +49,8 @@ def function_measurement(fn: Callable[[TConfig], list[Any]]):
 #     return fn_with_config()
 
 
-def regex(pattern: str):
-    return rg_count(pattern)
-
-
 RegexMeasurement = FunctionMeasurement[RegexConfig](
-    lambda config: rg_count(config["pattern"])
+    lambda config: rg_count(config["pattern"], config["ripgrep_args"])
 )
 
 # jsx_to_tsx = FunctionMeasurement(tokei_specific(["jsx", "tsx", "js", "ts"]))

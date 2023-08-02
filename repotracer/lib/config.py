@@ -16,6 +16,7 @@ class StatConfig(object):
     description: str
     type: str
     params: Any
+    path_in_repo: str
 
 
 def get_config_path():

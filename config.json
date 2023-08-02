@@ -7,8 +7,19 @@
         "count-ts-ignore": {
           "description": "The number of ts-ignores in the repo.",
           "type": "regex_count",
+          "start": "2020-01-01",
           "params": {
-            "pattern": "ts-ignore"
+            "pattern": "ts-ignore",
+            "ripgrep_args": "-g '!**/tests/*'"
+          }
+        },
+        "count-ts-ignore-in-playgournd": {
+          "description": "The number of ts-ignores in the playground folder.",
+          "type": "regex_count",
+          "path_in_repo": "packages/playground",
+          "params": {
+            "pattern": "ts-ignore",
+            "ripgrep_args": "-g '!**/tests/*'"
           }
         }
       }
