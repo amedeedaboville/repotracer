@@ -82,17 +82,22 @@ def is_repo_setup(repo_path):
     return os.path.exists(os.path.join(repo_path, ".git"))
 
 
-def download_repo(url):
+def download_repo(url, repo_path):
     repo_name = os.path.splitext(os.path.basename(url))[0]
-    repo_dir = os.path.join(src_dir, repo_name)
-    os.makedirs(repo_dir, exist_ok=True)
-    os.chdir(repo_dir)
-    if not os.path.exists(os.path.join(repo_dir, ".git")):
+    os.makedirs(repo_path, exist_ok=True)
+    cwd = os.getcwd()
+    os.chdir(repo_path)
+    if not os.path.exists(os.path.join(repo_path, ".git")):
         git.init()
-    remote_res = git.remote("get-url", "origin")
-    print(remote_res)
-    if remote_res.exit_code != 0:
+    try:
+        git.remote("get-url", "origin")
+    except sh.ErrorReturnCode_2 as e:
         git.remote("add", "origin", url)
     # todo get the default branch first
-    git.fetch("origin/master", '--shallow-since="1 year ago"')
-    return repo_dir
+    try:
+        git.pull("origin", "master", '--shallow-since="1 year ago"')
+    except sh.ErrorReturnCode_1 as e:
+        print("Shallow fetch failed, trying a full fetch.")
+        git.pull("origin", "master")
+    os.chdir(cwd)
+    return repo_path
