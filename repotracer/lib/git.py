@@ -2,6 +2,7 @@ from datetime import datetime
 import sh
 import os
 import logging
+import subprocess
 
 # logging.basicConfig(level=logging.INFO)
 
@@ -66,17 +67,16 @@ def is_repo_setup(repo_path):
     return os.path.exists(os.path.join(repo_path, ".git"))
 
 
-def download_repo(url):
+def download_repo(url, repo_path):
     repo_name = os.path.splitext(os.path.basename(url))[0]
-    repo_dir = os.path.join(src_dir, repo_name)
-    os.makedirs(repo_dir, exist_ok=True)
-    os.chdir(repo_dir)
-    if not os.path.exists(os.path.join(repo_dir, ".git")):
+    os.makedirs(repo_path, exist_ok=True)
+    os.chdir(repo_path)
+    if not os.path.exists(os.path.join(repo_path, ".git")):
         subprocess.run(["git", "init"])
     ret_code = subprocess.run(["git", "remote", "get-url", "origin"]).returncode
     if ret_code != 0:
         subprocess.run(["git", "remote", "add", "origin", url])
-    return repo_dir
+    return repo_path
     ret_code = subprocess.run(
         ["git", "fetch", "origin/master", '--shallow-since="1 year ago"']
     )

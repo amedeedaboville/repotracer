@@ -47,7 +47,7 @@ class Stat(object):
             print(
                 f"Repo {repo_name} not found. Downloading it from '{self.repo_config['url']}':"
             )
-            git.download_repo(url=self.repo_config["url"], path=repo_path)
+            git.download_repo(url=self.repo_config["url"], repo_path=repo_path)
 
         commit_stats = []
         start = self.start or git.first_commit_date()
