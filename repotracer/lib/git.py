@@ -8,7 +8,9 @@ import subprocess
 
 
 def check():
-    if git("rev-parse", "--show-toplevel").endswith("repotracer"):
+    revparse = git("rev-parse", "--show-toplevel").strip()
+    if revparse.endswith("repotracer"):
+        print("raising")
         raise Exception(
             "(bug in repotracer): cannot run a git command against the repotracer repo itself"
         )
@@ -35,6 +37,7 @@ def list_commits(start, end):  # -> [string, string]:
 
 
 def first_commit_date():
+    check()
     return git.log("-1", "--pretty=format:%cd", "--date=format:%Y-%m-%d")
 
 
