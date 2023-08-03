@@ -44,15 +44,16 @@ class Stat(object):
         repo_path = "./repos/" + self.repo_config["path"]
         repo_name = self.repo_config["name"]
         if not git.is_repo_setup(repo_path):
+            # todo maybe don't try to download it, just error or tell them to run repotracer add repo
             print(
                 f"Repo {repo_name} not found. Downloading it from '{self.repo_config['url']}':"
             )
             git.download_repo(url=self.repo_config["url"], repo_path=repo_path)
 
         commit_stats = []
-        start = self.start or git.first_commit_date()
         existing_df = CsvStorage().load(self.repo_config["name"], self.stat_name)
-        start, end = self.find_missing_days(existing_df)
+        start = self.find_start_day(existing_df)
+        end = datetime.today()
         agg_config = self.agg_config or AggConfig(
             time_window="D", agg_fn=None, agg_window=None
         )
@@ -60,7 +61,8 @@ class Stat(object):
         print(os.getcwd())
         print(repo_path)
         os.chdir(repo_path)
-        git.clean_untracked()
+        # todo this is slow on large repos
+        # git.clean_untracked()
         git.reset_hard_head()
         git.checkout("master")
         git.pull()
@@ -83,6 +85,9 @@ class Stat(object):
         commits = commits.groupby(
             pd.Grouper(key="created_at", freq=agg_config.time_window)
         ).last()
+        if len(commits) == 0:
+            print(f"No commits found in the time window for repo {repo_name}, skipping")
+            return
         print(f"Going from {start} to {end}, {len(commits)} commits")
         for commit in (
             pbar := tqdm(commits.itertuples(index=True), total=len(commits))
@@ -117,14 +122,13 @@ class Stat(object):
         os.chdir(previous_cwd)
         CsvStorage().save(self.repo_config["name"], self.stat_name, df)
 
-    def find_missing_days(self, df) -> [date, date]:
+    def find_start_day(self, df) -> date:
         # We need to ask the storage engine for the current version of the data
         # It should give us a df, and we can use that to find the latest days missing
-        if not (df is None or df.empty):
+        if df is None or df.empty:
+            start = self.start or git.first_commit_date()
+        else:
             start = df.index.max() - pd.Timedelta(days=1)
             print(f"Found existing data date {start}")
-        else:
-            start = "2022-01-01"  # or git.first_commit_date()
-        end = datetime.today()
         # Return a list of days missing
-        return start, end
+        return start
