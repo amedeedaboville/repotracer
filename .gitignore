@@ -1,3 +1,4 @@
 *.pyc
 repos/
 stats/
+config.json
