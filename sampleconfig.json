@@ -1,4 +1,5 @@
 {
+  //This file is JSON5. It allows comments, trailing commas, single quoted strings and unquoted keys
   "repos": {
     //an example stat config
     "svelte": {
