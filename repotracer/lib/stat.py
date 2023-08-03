@@ -50,6 +50,10 @@ class Stat(object):
             )
             git.download_repo(url=self.repo_config["url"], repo_path=repo_path)
 
+        print(os.getcwd())
+        print(repo_path)
+        os.chdir(repo_path)
+
         commit_stats = []
         existing_df = CsvStorage().load(self.repo_config["name"], self.stat_name)
         start = self.find_start_day(existing_df)
@@ -58,9 +62,6 @@ class Stat(object):
             time_window="D", agg_fn=None, agg_window=None
         )
 
-        print(os.getcwd())
-        print(repo_path)
-        os.chdir(repo_path)
         # todo this is slow on large repos
         # git.clean_untracked()
         git.reset_hard_head()
@@ -86,7 +87,9 @@ class Stat(object):
             pd.Grouper(key="created_at", freq=agg_config.time_window)
         ).last()
         if len(commits) == 0:
-            print(f"No commits found in the time window for repo {repo_name}, skipping")
+            print(
+                f"No commits found in the time window {start}-{end} for repo {repo_name}, skipping"
+            )
             return
         print(f"Going from {start} to {end}, {len(commits)} commits")
         for commit in (
@@ -127,6 +130,7 @@ class Stat(object):
         # It should give us a df, and we can use that to find the latest days missing
         if df is None or df.empty:
             start = self.start or git.first_commit_date()
+            print(f"No existing data found, starting from the beginning on {start}")
         else:
             start = df.index.max() - pd.Timedelta(days=1)
             print(f"Found existing data date {start}")
