@@ -41,6 +41,58 @@ class Stat(object):
         self.path_in_repo = stat_params.get("path_in_repo")
         self.start = stat_params.get("start")
 
+    def build_commit_df(self, start, end, agg_config: AggConfig):
+        commits = pd.DataFrame(
+            git.list_commits(start, end), columns=["sha", "created_at"]
+        )
+        commits.created_at = pd.DatetimeIndex(
+            data=pd.to_datetime(commits.created_at, utc=True)
+        )
+        commits = commits.set_index(
+            commits.created_at,
+            drop=False,
+        )
+        commits = commits.groupby(
+            pd.Grouper(key="created_at", freq=agg_config.time_window)
+        ).last()
+        return commits
+
+    def cd_to_repo_and_setup(self, repo_path):
+        print(f"cd from {os.getcwd()} to {repo_path}")
+        os.chdir(repo_path)
+        # todo this is slow on large repos
+        # maybe only do it if there are untracked files, or do it manually
+        # git.clean_untracked()
+        git.reset_hard_head()
+        git.checkout("master")
+        git.pull()
+        if self.path_in_repo:
+            os.chdir(self.path_in_repo)
+
+    def loop_through_commits_and_measure(self, commits_to_measure):
+        commit_stats = []
+        # We assume we have already cd'd to the right place to measure the stat
+        stat_measuring_path = os.getcwd()
+        for commit in (
+            pbar := tqdm(
+                commits_to_measure.itertuples(index=True), total=len(commits_to_measure)
+            )
+        ):
+            pbar.set_postfix_str(commit.Index.strftime("%Y-%m-%d"))
+            if not commit.sha:
+                commit_stats.append({"date": commit.Index})
+                continue
+            git.checkout(commit.sha)
+            os.chdir(stat_measuring_path)
+            stat = {
+                "sha": commit.sha,
+                "date": commit.Index,
+                **self.measurement(),
+            }
+            commit_stats.append(stat)
+
+        return pd.DataFrame(commit_stats).ffill().set_index("date").tz_localize(None)
+
     def run(self):
         previous_cwd = os.getcwd()
         repo_path = "./repos/" + self.repo_config["path"]
@@ -52,11 +104,6 @@ class Stat(object):
             )
             git.download_repo(url=self.repo_config["url"], repo_path=repo_path)
 
-        print(os.getcwd())
-        print(repo_path)
-        os.chdir(repo_path)
-
-        commit_stats = []
         existing_df = CsvStorage().load(self.repo_config["name"], self.stat_name)
         start = self.find_start_day(existing_df)
         end = datetime.today()
@@ -64,56 +111,14 @@ class Stat(object):
             time_window="D", agg_fn=None, agg_window=None
         )
 
-        # todo this is slow on large repos
-        # git.clean_untracked()
-        git.reset_hard_head()
-        git.checkout("master")
-        git.pull()
-        if self.path_in_repo:
-            os.chdir(self.path_in_repo)
-        full_stat_start_path = os.getcwd()
-        commits = pd.DataFrame(
-            git.list_commits(start, end), columns=["sha", "created_at"]
-        )
-        commits.created_at = pd.DatetimeIndex(
-            data=pd.to_datetime(commits.created_at, utc=True)
-        )
-        commits = commits.set_index(
-            commits.created_at,
-            drop=False,
-        )
-        # todo bring this back in when doing different aggregations:
-        # if self.computation.time_window:
-        # pd.date_range(datetime.today(), current_day, freq="D").tolist()
-        commits = commits.groupby(
-            pd.Grouper(key="created_at", freq=agg_config.time_window)
-        ).last()
-        if len(commits) == 0:
-            print(
-                f"No commits found in the time window {start}-{end} for repo {repo_name}, skipping"
-            )
+        self.cd_to_repo_and_setup(repo_path)
+        commits_to_measure = self.build_commit_df(start, end, agg_config)
+        if len(commits_to_measure) == 0:
+            print(f"No commits found in the time window {start}-{end},  skipping")
             return
-        print(f"Going from {start} to {end}, {len(commits)} commits")
-        for commit in (
-            pbar := tqdm(commits.itertuples(index=True), total=len(commits))
-        ):
-            pbar.set_postfix_str(commit.Index.strftime("%Y-%m-%d"))
-            if not commit.sha:
-                commit_stats.append({"date": commit.Index})
-                continue
-            if self.path_in_repo:
-                os.chdir(full_stat_start_path)
-            git.checkout(commit.sha)
-            stat = {
-                "sha": commit.sha,
-                "date": commit.Index,
-                **self.measurement(),
-            }
-            commit_stats.append(stat)
+        print(f"Going from {start} to {end}, {len(commits_to_measure)} commits")
+        new_df = self.loop_through_commits_and_measure(commits_to_measure)
 
-        new_df = pd.DataFrame(commit_stats).ffill().set_index("date").tz_localize(None)
-        # single_stat = len(df.columns) == 3
-        # stat_column = df.columns[2] if single_stat else None
         if agg_config.agg_fn:
             new_df.groupby(
                 pd.Grouper(key="created_at", agg_freq=agg_freq), as_index=False

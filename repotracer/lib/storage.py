@@ -24,11 +24,13 @@ class CsvStorage(Storage):
 
     def load(self, repo_name, stat_name) -> pd.DataFrame | None:
         path = self.build_path(repo_name, stat_name)
+        print(f"{os.getcwd()}: Loading {stat_name} from {repo_name} from {path}")
         try:
             df = pd.read_csv(path, index_col=0)
             df.index = pd.to_datetime(df.index)
             return df
         except FileNotFoundError:
+            print("df not found")
             return None
 
     def save(self, repo_name, stat_name, df: pd.DataFrame):
