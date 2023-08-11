@@ -19,22 +19,6 @@ class StatConfig(object):
     path_in_repo: str
 
 
-def get_config_path():
-    return os.environ.get("REPOTRACER_CONFIG_PATH", "./config.json")
-
-
-def read_config_file():
-    # print("Using default config.")
-    config = get_default_config()
-    try:
-        print("Looking for config file at", get_config_path())
-        with open(get_config_path()) as f:
-            config |= json5.load(f)  # python 3.9 operator for dict update
-    except FileNotFoundError:
-        print(f"Could not find config file at {get_config_path()}. Keeping defaults.")
-    return config
-
-
 def get_default_config():
     return {
         "repo_storage_location": "./repos",
@@ -43,6 +27,29 @@ def get_default_config():
             "path": "./stats",  # will store stats in ./stats/<repo_name>/<stat_name>.csv
         },
     }
+
+
+def get_config_path():
+    return os.environ.get("REPOTRACER_CONFIG_PATH", "./config.json")
+
+
+config_loaded = False
+config = get_default_config()
+
+
+def read_config_file():
+    global config, config_loaded
+    if config_loaded:
+        return config
+    # print("Using default config.")
+    try:
+        print("Looking for config file at", get_config_path())
+        with open(get_config_path()) as f:
+            config |= json5.load(f)  # python 3.9 operator for dict update
+    except FileNotFoundError:
+        print(f"Could not find config file at {get_config_path()}. Keeping defaults.")
+    config_loaded = True
+    return config
 
 
 def get_repo_storage_location():

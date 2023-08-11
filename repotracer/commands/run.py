@@ -12,7 +12,7 @@ def run(
     stat_name: Annotated[Optional[str], typer.Argument()] = None,
     since: Optional[str] = None,
 ):
-    print(repo_name, stat_name, since)
+    # print(repo_name, stat_name, since)
     if repo_name is None:
         # todo, print Running x stats on y repos
         # and run the stats grouped by repo
