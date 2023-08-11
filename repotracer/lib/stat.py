@@ -105,13 +105,13 @@ class Stat(object):
             git.download_repo(url=self.repo_config["url"], repo_path=repo_path)
 
         existing_df = CsvStorage().load(self.repo_config["name"], self.stat_name)
-        start = self.find_start_day(existing_df)
         end = datetime.today()
         agg_config = self.agg_config or AggConfig(
             time_window="D", agg_fn=None, agg_window=None
         )
 
         self.cd_to_repo_and_setup(repo_path)
+        start = self.find_start_day(existing_df)
         commits_to_measure = self.build_commit_df(start, end, agg_config)
         if len(commits_to_measure) == 0:
             print(f"No commits found in the time window {start}-{end},  skipping")
