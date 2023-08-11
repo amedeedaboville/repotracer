@@ -4,8 +4,8 @@ Repotracer gives you insight into the change going on in your codebase.
 
 It will loop through every day in the history of a git repository, and collect any stat you might ask it to. Eg:
 
-- Typescript migration: count LOC of JS and TS
-- Count uses of deprecated functions
+- Typescript migration: count the number of lines of JS vs TS
+- Count number of deprecated function calls
 - Measure adoption of new APIs
 
 It compiles the results for each day into a csv, and also immediately gives you a plot of the data in csv.
