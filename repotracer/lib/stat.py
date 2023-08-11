@@ -6,6 +6,7 @@ from datetime import datetime, date
 from .config import RepoConfig, StatConfig
 from .measurement import Measurement, all_measurements
 from .storage import Storage, CsvStorage
+from .plotter import plot
 from typing import Callable
 from dataclasses import dataclass
 import os
@@ -36,6 +37,7 @@ class Stat(object):
         self.repo_config = repo_config
         self.measurement = all_measurements[stat_params["type"]](stat_params["params"])
         self.stat_name = stat_params["name"]
+        self.description = stat_params["description"]
         self.path_in_repo = stat_params.get("path_in_repo")
         self.start = stat_params.get("start")
 
@@ -124,6 +126,7 @@ class Stat(object):
 
         os.chdir(previous_cwd)
         CsvStorage().save(self.repo_config["name"], self.stat_name, df)
+        plot(self.repo_config["name"], self.stat_name, self.description, df)
 
     def find_start_day(self, df) -> date:
         # We need to ask the storage engine for the current version of the data
