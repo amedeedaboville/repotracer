@@ -10,6 +10,18 @@ from .plotter import plot
 from typing import Callable
 from dataclasses import dataclass
 import os
+import logging
+from rich import print
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+logger.addHandler(logging.StreamHandler())
+# logger.addHandler(logging.StreamHandler())o
+# logging.config.dictConfig(
+#     {
+#         "disable_existing_loggers": True,
+#     }
+# )
 
 
 @dataclass
@@ -58,7 +70,7 @@ class Stat(object):
         return commits
 
     def cd_to_repo_and_setup(self, repo_path):
-        print(f"cd from {os.getcwd()} to {repo_path}")
+        logger.debug(f"cd from {os.getcwd()} to {repo_path}")
         os.chdir(repo_path)
         # todo this is slow on large repos
         # maybe only do it if there are untracked files, or do it manually
@@ -120,9 +132,9 @@ class Stat(object):
         start = self.find_start_day(existing_df)
         commits_to_measure = self.build_commit_df(start, end, agg_config)
         if len(commits_to_measure) == 0:
-            print(f"No commits found in the time window {start}-{end},  skipping")
+            logger.info(f"No commits found in the time window {start}-{end},  skipping")
             return
-        print(f"Going from {start} to {end}, {len(commits_to_measure)} commits")
+        logger.info(f"Going from {start} to {end}, {len(commits_to_measure)} commits")
         new_df = self.loop_through_commits_and_measure(commits_to_measure)
 
         if agg_config.agg_fn:
@@ -149,10 +161,17 @@ class Stat(object):
         # We need to ask the storage engine for the current version of the data
         # It should give us a df, and we can use that to find the latest days missing
         if df is None or df.empty:
-            start = self.start or git.first_commit_date()
-            print(f"No existing data found, starting from the beginning on {start}")
+            if self.start:
+                start = pd.to_datetime(self.start)
+            else:
+                first_commit = git.first_commit_date()
+                logger.debug(f"Found first commit date {first_commit}")
+                start = first_commit
+            logger.info(
+                f"No existing data found, starting from the beginning on {start}"
+            )
         else:
             start = df.index.max() - pd.Timedelta(days=1)
-            print(f"Found existing data date {start}")
+            logger.debug(f"Found existing data date {start}")
         # Return a list of days missing
         return start

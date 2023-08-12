@@ -3,6 +3,12 @@ import os
 
 from .config import get_stat_storage_config
 
+import logging
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+logger.addHandler(logging.StreamHandler())
+
 
 class Storage(object):
     def __init__(self):
@@ -24,13 +30,13 @@ class CsvStorage(Storage):
 
     def load(self, repo_name, stat_name) -> pd.DataFrame | None:
         path = self.build_path(repo_name, stat_name)
-        print(f"{os.getcwd()}: Loading {stat_name} from {repo_name} from {path}")
+        logger.debug(f"{os.getcwd()}: Loading {stat_name} from {repo_name} from {path}")
         try:
             df = pd.read_csv(path, index_col=0)
             df.index = pd.to_datetime(df.index)
             return df
         except FileNotFoundError:
-            print("df not found")
+            logger.debug("df not found")
             return None
 
     def save(self, repo_name, stat_name, df: pd.DataFrame):
@@ -38,5 +44,5 @@ class CsvStorage(Storage):
         # if the path doesn't exist, create it
         if not os.path.exists(os.path.dirname(path)):
             os.makedirs(os.path.dirname(path))
-        print(f"Saving {stat_name} to {path}")
+        logger.info(f"Saving {stat_name} to {path}")
         df.to_csv(path, date_format="%Y-%m-%d")

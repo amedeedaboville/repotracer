@@ -62,7 +62,7 @@ def get_stat_storage_config():
 
 def list_repos():
     try:
-        return read_config_file()["repos"].keys()
+        return list(read_config_file()["repos"].keys())
     except KeyError:
         return []
 

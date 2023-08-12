@@ -3,6 +3,7 @@ from repotracer.lib.config import get_config, list_repos, list_stats_for_repo
 from typing import Optional
 from typing_extensions import Annotated
 import typer
+from rich import print
 
 import os
 
@@ -26,15 +27,20 @@ def run(
 
 def run_all_on_repo(repo_name: str):
     repo_stat_names = list_stats_for_repo(repo_name)
+    pretty_repo_stat_names = ", ".join(
+        f"[yellow]{stat}[/yellow]" for stat in repo_stat_names
+    )
     print(
-        f"Running {len(repo_stat_names)} stats on repo {repo_name}: {repo_stat_names}"
+        f"Running {len(repo_stat_names)} stats on repo [green]{repo_name}[/green]: {pretty_repo_stat_names}"
     )
     for stat_name in repo_stat_names:
         run_single(repo_name, stat_name)
 
 
 def run_single(repo_name: str, stat_name: str):
-    print(f"Running stat {stat_name} on repo {repo_name}")
+    print(
+        f"Running stat [yellow]{stat_name}[/yellow] on repo [green]{repo_name}[/green]"
+    )
 
     repo_config, stat_params = get_config(repo_name, stat_name)
 
