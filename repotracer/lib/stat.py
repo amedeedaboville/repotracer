@@ -137,7 +137,13 @@ class Stat(object):
 
         os.chdir(previous_cwd)
         CsvStorage().save(self.repo_config["name"], self.stat_name, df)
-        plot(self.repo_config["name"], self.stat_name, self.description, df)
+        plot(
+            self.repo_config["name"],
+            self.stat_name,
+            self.description,
+            df,
+            run_at=datetime.now(),
+        )
 
     def find_start_day(self, df) -> date:
         # We need to ask the storage engine for the current version of the data
