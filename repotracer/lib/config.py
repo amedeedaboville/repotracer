@@ -69,7 +69,7 @@ def list_repos():
 
 def list_stats_for_repo(repo_name):
     try:
-        return read_config_file()["repos"][repo_name]["stats"].keys()
+        return list(read_config_file()["repos"][repo_name]["stats"].keys())
     except KeyError:
         return []
 

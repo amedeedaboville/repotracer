@@ -46,9 +46,9 @@ def checkout(sha):
     return git.checkout(sha)
 
 
-def reset_hard_head():
+def reset_hard(target="HEAD"):
     check()
-    return git.reset("--hard", "HEAD")
+    return git.reset("--hard", target)
 
 
 def clean_untracked():

@@ -63,7 +63,7 @@ class Stat(object):
         # todo this is slow on large repos
         # maybe only do it if there are untracked files, or do it manually
         # git.clean_untracked()
-        git.reset_hard_head()
+        git.reset_hard("HEAD")
         git.checkout("master")
         git.pull()
         if self.path_in_repo:
@@ -82,7 +82,7 @@ class Stat(object):
             if not commit.sha:
                 commit_stats.append({"date": commit.Index})
                 continue
-            git.checkout(commit.sha)
+            git.reset_hard(commit.sha)
             os.chdir(stat_measuring_path)
             stat = {
                 "sha": commit.sha,
@@ -91,7 +91,13 @@ class Stat(object):
             }
             commit_stats.append(stat)
 
-        return pd.DataFrame(commit_stats).ffill().set_index("date").tz_localize(None)
+        return (
+            pd.DataFrame(commit_stats)
+            .ffill()
+            .set_index("date")
+            .tz_localize(None)
+            .convert_dtypes()
+        )
 
     def run(self):
         previous_cwd = os.getcwd()

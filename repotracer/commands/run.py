@@ -25,9 +25,10 @@ def run(
 
 
 def run_all_on_repo(repo_name: str):
-    print(f"Running all stats on repo {repo_name}")
     repo_stat_names = list_stats_for_repo(repo_name)
-    print(f"Have {len(repo_stat_names)} stats to run.")
+    print(
+        f"Running {len(repo_stat_names)} stats on repo {repo_name}: {repo_stat_names}"
+    )
     for stat_name in repo_stat_names:
         run_single(repo_name, stat_name)
 
