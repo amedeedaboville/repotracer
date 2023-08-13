@@ -11,25 +11,6 @@ from dataclasses import dataclass
 import os
 
 
-@dataclass
-class SingleRepoSingleStat:
-    repo_name: str
-    stat_name: str
-
-
-@dataclass
-class SingleRepoAllStats:
-    repo_name: str
-
-
-@dataclass
-class AllReposAllStats:
-    pass
-
-
-RunMode = SingleRepoSingleStat | SingleRepoAllStats | AllReposAllStats
-
-
 def run(
     repo_name: Annotated[Optional[str], typer.Argument()] = None,
     stat_name: Annotated[Optional[str], typer.Argument()] = None,
