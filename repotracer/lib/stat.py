@@ -133,6 +133,7 @@ class Stat(object):
         commits_to_measure = self.build_commit_df(start, end, agg_config)
         if len(commits_to_measure) == 0:
             logger.info(f"No commits found in the time window {start}-{end},  skipping")
+            os.chdir(previous_cwd)
             return
         logger.info(f"Going from {start} to {end}, {len(commits_to_measure)} commits")
         new_df = self.loop_through_commits_and_measure(commits_to_measure)
@@ -163,6 +164,7 @@ class Stat(object):
         if df is None or df.empty:
             if self.start:
                 start = pd.to_datetime(self.start)
+                logger.debug(f"Using given self.start: {self.start}")
             else:
                 first_commit = git.first_commit_date()
                 logger.debug(f"Found first commit date {first_commit}")

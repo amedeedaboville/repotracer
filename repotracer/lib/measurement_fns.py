@@ -29,7 +29,7 @@ def ripgrep_count_file(pattern):
 
 
 def rg_count(pattern: str, rg_args: str) -> int:
-    filenames_with_counts = script_now(f"rg '{pattern}' --count {rg_args}")
+    filenames_with_counts = script_now(f"rg '{pattern}' --count {rg_args or ''}")
     res = {
         "total": sum(
             int(line.split(":")[-1]) for line in filenames_with_counts.splitlines()

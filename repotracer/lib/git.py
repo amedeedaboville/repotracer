@@ -38,7 +38,9 @@ def list_commits(start, end):  # -> [string, string]:
 
 def first_commit_date():
     check()
-    return git.log("-1", "--pretty=format:%cd", "--date=format:%Y-%m-%d")
+    # from https://stackoverflow.com/a/5189296
+    first_sha = git("rev-list", "--max-parents=0", "HEAD").strip()
+    return git.log(first_sha, "--pretty=format:%cd", "--date=format:%Y-%m-%d")
 
 
 def checkout(sha):

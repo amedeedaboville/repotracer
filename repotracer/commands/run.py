@@ -31,7 +31,7 @@ def run(
         case (repo_name, stat_name):
             pairs_to_run = [(repo_name, stat_name)]
         case _:
-            print("Invalid arguments")
+            logging.error("This combination of repo_name and stat_name is invalid.")
             return
     print_stats_to_run(pairs_to_run)
     for repo, stat in pairs_to_run:
