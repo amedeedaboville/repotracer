@@ -4,8 +4,30 @@ from typing import Optional
 from typing_extensions import Annotated
 import typer
 from rich import print
+from rich.console import Console
+from rich.table import Table
+from dataclasses import dataclass
 
 import os
+
+
+@dataclass
+class SingleRepoSingleStat:
+    repo_name: str
+    stat_name: str
+
+
+@dataclass
+class SingleRepoAllStats:
+    repo_name: str
+
+
+@dataclass
+class AllReposAllStats:
+    pass
+
+
+RunMode = SingleRepoSingleStat | SingleRepoAllStats | AllReposAllStats
 
 
 def run(
@@ -13,34 +35,38 @@ def run(
     stat_name: Annotated[Optional[str], typer.Argument()] = None,
     since: Optional[str] = None,
 ):
-    # print(repo_name, stat_name, since)
-    if repo_name is None:
-        # todo, print Running x stats on y repos
-        # and run the stats grouped by repo
-        all_repos = list_repos()
-        print(f"Running all stats on all repos: {all_repos}")
-        for repo_name in all_repos:
-            run_all_on_repo(repo_name)
-    if stat_name is None:
-        run_all_on_repo(repo_name)
+    pairs_to_run = []
+    match (repo_name, stat_name):
+        case (None, None):
+            pairs_to_run = [
+                (repo, stat)
+                for repo in list_repos()
+                for stat in list_stats_for_repo(repo)
+            ]
+        case (repo_name, None):
+            pairs_to_run = [
+                (repo_name, stat) for stat in list_stats_for_repo(repo_name)
+            ]
+        case (repo_name, stat_name):
+            pairs_to_run = [(repo_name, stat_name)]
+        case _:
+            print("Invalid arguments")
+            return
+    print_stats_to_run(pairs_to_run)
+    for repo, stat in pairs_to_run:
+        run_single(repo, stat)
 
 
-def run_all_on_repo(repo_name: str):
-    repo_stat_names = list_stats_for_repo(repo_name)
-    pretty_repo_stat_names = ", ".join(
-        f"[yellow]{stat}[/yellow]" for stat in repo_stat_names
-    )
-    print(
-        f"Running {len(repo_stat_names)} stats on repo [green]{repo_name}[/green]: {pretty_repo_stat_names}"
-    )
-    for stat_name in repo_stat_names:
-        run_single(repo_name, stat_name)
+def print_stats_to_run(repo_stats_to_run):
+    console = Console()
+    table = Table("Repo", "Stat", title="Running the following:", show_lines=True)
+    for repo_name, stat_name in repo_stats_to_run:
+        table.add_row(f"[green]{repo_name}[/green]", f"[yellow]{stat_name}[/yellow]")
+    console.print(table)
 
 
 def run_single(repo_name: str, stat_name: str):
-    print(
-        f"Running stat [yellow]{stat_name}[/yellow] on repo [green]{repo_name}[/green]"
-    )
+    print(f"Running [yellow]{stat_name}[/yellow] on [green]{repo_name}[/green]")
 
     repo_config, stat_params = get_config(repo_name, stat_name)
 

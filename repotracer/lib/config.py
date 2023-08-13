@@ -43,7 +43,7 @@ def read_config_file():
         return config
     # print("Using default config.")
     try:
-        print("Looking for config file at", get_config_path())
+        print("Looking for config file at", os.path.abspath(get_config_path()))
         with open(get_config_path()) as f:
             config |= json5.load(f)  # python 3.9 operator for dict update
     except FileNotFoundError:
