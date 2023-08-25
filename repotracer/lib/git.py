@@ -89,6 +89,7 @@ def is_repo_setup(repo_path):
 
 def download_repo(url, repo_path):
     repo_name = os.path.splitext(os.path.basename(url))[0]
+    print(f"Downloading {repo_name} from {url} to {repo_path}")
     os.makedirs(repo_path, exist_ok=True)
     cwd = os.getcwd()
     os.chdir(repo_path)

@@ -33,23 +33,22 @@ def get_config_path():
     return os.environ.get("REPOTRACER_CONFIG_PATH", "./config.json")
 
 
-config_loaded = False
-config = get_default_config()
+default_config = get_default_config()
+config_file_contents = None
 
 
 def read_config_file():
-    global config, config_loaded
-    if config_loaded:
-        return config
+    global config_file_contents
+    if config_file_contents:
+        return default_config | config_file_contents
     # print("Using default config.")
     try:
         print("Looking for config file at", os.path.abspath(get_config_path()))
         with open(get_config_path()) as f:
-            config |= json5.load(f)  # python 3.9 operator for dict update
+            config_file_contents = json5.load(f)  # python 3.9 operator for dict update
     except FileNotFoundError:
         print(f"Could not find config file at {get_config_path()}. Keeping defaults.")
-    config_loaded = True
-    return config
+    return default_config | config_file_contents
 
 
 def get_repo_storage_location():
@@ -95,3 +94,19 @@ def get_config(repo_name, stat_name) -> (RepoConfig, str):
         )
 
     return repo_config, stat_config
+
+
+def write_config_file(config):
+    with open(get_config_path(), "w") as f:
+        json5.dump(config, f, indent=4)
+    config_file_contents = config
+
+
+def add_repo(repo_name: str, repo_path: str):
+    config = read_config_file()
+    config["repos"][repo_name] = {
+        "name": repo_name,
+        "path": repo_path,
+        "stats": {},
+    }
+    write_config_file(config)
