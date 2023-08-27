@@ -88,17 +88,24 @@ def add_stat(
         # qmark="?"
     ).ask()
 
+    stat_description = questionary.text(
+        "Give your stat a description, to explain what it does (will be used as the title of generated graphs):",
+    ).ask()
+
     stat_params = promt_build_stat(stat_type)
     print("Building the following stat:")
     print(stat_params)
     stat_config = config.StatConfig(
         name=stat_name,
-        description=stat_params.pop("description", None),
+        description=stat_description,
         type=stat_type,
-        params=stat_params,
+        params=stat_params.pop("params", None),
         path_in_repo=stat_params.pop("path_in_repo", None),
     )
     config.add_stat(repo_name, stat_config)
+    run_now = questionary.confirm("Do you want to run this stat now?").ask()
+    if run_now:
+        run.run(repo_name, stat_name)
 
 
 ParamOption = namedtuple("ParamOption", ["name", "description", "required"])
@@ -106,11 +113,12 @@ ParamOption = namedtuple("ParamOption", ["name", "description", "required"])
 
 def promt_build_stat(stat_type: str):
     common_stat_options = [
-        ParamOption(
-            name="description",
-            description="A description of the stat, used in the title of generated graphs",
-            required=False,
-        ),
+        # Todo the required ones like type and description should just be done in the other function, or moved into here
+        # ParamOption(
+        #     name="description",
+        #     description="A description of the stat, used in the title of generated graphs",
+        #     required=True,
+        # ),
         ParamOption(
             name="start",
             description="The start date for the stat, if you don't want to start at the beginning of the repo",
@@ -143,17 +151,14 @@ def promt_build_stat(stat_type: str):
     required_stat_params = [option for option in stat_options if option.required]
     optional_stat_params = [option for option in stat_options if not option.required]
     stat_params = prompt_required_options(required_stat_params)
-    print(stat_params)
     stat_params |= prompt_for_options(
         f"The type {stat_type} has the following options. Would you like to set any of these?",
         optional_stat_params,
     )
-    print(stat_params)
     common_options = prompt_for_options(
         f"Additionally, stats can have the following options. Would you like to set any of these?",
         common_stat_options,
     )
-    print(stat_params, common_options)
     return {**common_options, "params": stat_params}
 
 
