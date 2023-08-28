@@ -26,19 +26,23 @@ def is_url(x):
 
 def add_repo(url_or_path: str, name: Optional[str] = None):
     if is_url(url_or_path):
-        repo_name = name or os.path.splitext(os.path.basename(url_or_path))[0]
-        repo_storage_path = os.path.join("./repos", repo_name)
-        git.download_repo(url=url_or_path, repo_path=repo_storage_path)
+        repo_config = git.download_repo(url=url_or_path)
     else:
+        # todo make a more full featured version of this in the git module
         repo_name = name or os.path.basename(url_or_path)
         repo_storage_path = os.path.join("./repos", repo_name)
         os.makedirs(repo_storage_path, exist_ok=True)
         shutil.copytree(url_or_path, repo_storage_path)
+        cwd = os.getcwd()
+        os.chdir(repo_storage_path)
+        default_branch = git.get_default_branch()
+        os.chdir(cwd)
+        repo_config = config.RepoConfig(
+            name=repo_name, path=repo_name, default_branch=default_branch
+        )
 
-    config.add_repo(
-        repo_name=repo_name,
-        repo_path=repo_storage_path,
-    )
+    config.add_repo(repo_config=repo_config)
+    return repo_config
     # optionally ask the user if they want to add any stats for this repo
     # and call add_stat() if they do
 
@@ -65,10 +69,11 @@ def add_stat(
             qmark="🕵️",
         ).ask()
         if repo_name == "<new repo>":
-            repo_name = questionary.text(
-                "What name do you want to give the repo?"
+            url_or_path = questionary.text(
+                "Enter either a repo URL or paste a path to a local repo on your machine (we will make copy it into the repos folder):"
             ).ask()
-            add_repo(repo_name)
+            added_config = add_repo(url_or_path)
+            repo_name = added_config.name
 
     if stat_name is None:
         stat_name = questionary.text("What name do you want to give the stat?").ask()

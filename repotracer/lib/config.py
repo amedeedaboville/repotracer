@@ -8,6 +8,8 @@ import json5
 class RepoConfig(object):
     name: str
     path: str
+    # defaults to master if not set
+    default_branch: str | None = None
 
 
 @dataclass()
@@ -76,8 +78,12 @@ def list_stats_for_repo(repo_name):
 def get_config(repo_name, stat_name) -> (RepoConfig, str):
     config_data = read_config_file()
     try:
-        repo_config = config_data["repos"][repo_name]
-        repo_config["name"] = repo_name
+        repo_subtree = config_data["repos"][repo_name]
+        repo_config = RepoConfig(
+            name=repo_name,
+            path=repo_subtree["path"],
+            default_branch=repo_subtree["default_branch"],
+        )
     except KeyError:
         known_repos = ", ".join(config_data["repos"].keys())
         raise Exception(
@@ -85,10 +91,10 @@ def get_config(repo_name, stat_name) -> (RepoConfig, str):
         )
 
     try:
-        stat_config = repo_config["stats"][stat_name]
+        stat_config = repo_subtree["stats"][stat_name]
         stat_config["name"] = stat_name
     except KeyError:
-        valid_stats = ", ".join(repo_config["stats"].keys())
+        valid_stats = ", ".join(repo_subtree["stats"].keys())
         raise Exception(
             f"The stat '{stat_name}' does not exist in the config for the repo '{repo_name}'. Here are the known stats: '{valid_stats}'"
         )
@@ -97,23 +103,28 @@ def get_config(repo_name, stat_name) -> (RepoConfig, str):
 
 
 def write_config_file(config):
+    global config_file_contents
     with open(get_config_path(), "w") as f:
         json5.dump(config, f, indent=4, quote_keys=True)
     config_file_contents = config
 
 
-def add_repo(repo_name: str, repo_path: str):
-    config = read_config_file()
-    config["repos"][repo_name] = {
-        "name": repo_name,
-        "path": repo_path,
-        "stats": {},
-    }
-    write_config_file(config)
-
-
 def remove_nones(d: dict[Any, Any]):
     return {k: v for k, v in d.items() if v is not None}
+
+
+def add_repo(repo_config: RepoConfig):
+    config = read_config_file()
+    config["repos"][repo_config.name] = remove_nones(
+        {
+            "path": repo_config.path,
+            "default_branch": repo_config.default_branch
+            if repo_config.default_branch is not "master"
+            else None,
+            "stats": {},
+        }
+    )
+    write_config_file(config)
 
 
 def add_stat(repo_name: str, stat_config: StatConfig):

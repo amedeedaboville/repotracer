@@ -76,8 +76,9 @@ class Stat(object):
         # maybe only do it if there are untracked files, or do it manually
         # git.clean_untracked()
         git.reset_hard("HEAD")
-        git.checkout("master")
-        git.pull()
+        branch = self.repo_config.default_branch or "master"
+        git.checkout(branch)
+        git.pull(branch)
         if self.path_in_repo:
             os.chdir(self.path_in_repo)
 
@@ -113,16 +114,15 @@ class Stat(object):
 
     def run(self):
         previous_cwd = os.getcwd()
-        repo_path = "./repos/" + self.repo_config["path"]
-        repo_name = self.repo_config["name"]
+        repo_path = "./repos/" + self.repo_config.path
+        repo_name = self.repo_config.name
         if not git.is_repo_setup(repo_path):
             # todo maybe don't try to download it, just error or tell them to run repotracer add repo
-            print(
-                f"Repo {repo_name} not found. Downloading it from '{self.repo_config['url']}':"
+            raise Exception(
+                f"Repo '{repo_name}' not found at {repo_path}. Run `repotracer add repo {repo_name}` to download it."
             )
-            git.download_repo(url=self.repo_config["url"], repo_path=repo_path)
 
-        existing_df = CsvStorage().load(self.repo_config["name"], self.stat_name)
+        existing_df = CsvStorage().load(self.repo_config.name, self.stat_name)
         end = datetime.today()
         agg_config = self.agg_config or AggConfig(
             time_window="D", agg_fn=None, agg_window=None
@@ -149,9 +149,9 @@ class Stat(object):
             df = new_df
 
         os.chdir(previous_cwd)
-        CsvStorage().save(self.repo_config["name"], self.stat_name, df)
+        CsvStorage().save(self.repo_config.name, self.stat_name, df)
         plot(
-            self.repo_config["name"],
+            self.repo_config.name,
             self.stat_name,
             self.description,
             df,

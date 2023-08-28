@@ -3,6 +3,7 @@ import sh
 import os
 import logging
 import subprocess
+from .config import RepoConfig
 
 # logging.basicConfig(level=logging.INFO)
 
@@ -87,23 +88,33 @@ def is_repo_setup(repo_path):
     return os.path.exists(os.path.join(repo_path, ".git"))
 
 
-def download_repo(url, repo_path):
-    repo_name = os.path.splitext(os.path.basename(url))[0]
-    print(f"Downloading {repo_name} from {url} to {repo_path}")
-    os.makedirs(repo_path, exist_ok=True)
+def get_default_branch():
+    res = git("symbolic-ref", "refs/remotes/origin/HEAD")
+    # return the basename of res
+    return os.path.basename(res.strip())
+
+
+def download_repo(url, name=None):
+    repo_name = name or os.path.splitext(os.path.basename(url))[0]
+    repo_storage_path = os.path.join("./repos", repo_name)
+    print(f"Downloading {repo_name} from {url} to {repo_storage_path}")
+    os.makedirs(repo_storage_path, exist_ok=True)
     cwd = os.getcwd()
-    os.chdir(repo_path)
-    if not os.path.exists(os.path.join(repo_path, ".git")):
-        git.init()
-    try:
-        git.remote("get-url", "origin")
-    except sh.ErrorReturnCode_2 as e:
-        git.remote("add", "origin", url)
-    # todo get the default branch first
-    try:
-        git.pull("origin", "master", '--shallow-since="1 year ago"')
-    except sh.ErrorReturnCode_1 as e:
-        print("Shallow fetch failed, trying a full fetch.")
-        git.pull("origin", "master")
+    os.chdir(repo_storage_path)
+    git.clone(url, ".", "--shallow-since=1 year ago")
+    # if not os.path.exists(os.path.join(repo_path, ".git")):
+    #     git.init()
+    # try:
+    #     git.remote("get-url", "origin")
+    # except sh.ErrorReturnCode_2 as e:
+    #     git.remote("add", "origin", url)
+
+    # try:
+    #     git.pull("origin", '--shallow-since="1 year ago"')
+    # except sh.ErrorReturnCode_1 as e:
+    #     print("Shallow fetch failed, trying a full fetch.")
+    #     git.pull("origin")
+
+    default_branch = get_default_branch()
     os.chdir(cwd)
-    return repo_path
+    return RepoConfig(name=repo_name, path=repo_name, default_branch=default_branch)
