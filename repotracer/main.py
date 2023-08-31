@@ -11,7 +11,7 @@ app.command()(run.run)
 @app.command()
 def print_config():
     import json
-    from lib.config import read_config_file
+    from repotracer.lib.config import read_config_file
 
     print(json.dumps(read_config_file(), indent=4))
 
