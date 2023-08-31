@@ -33,7 +33,7 @@ def add_repo(url_or_path: str, name: Optional[str] = None):
         repo_name = name or os.path.basename(url_or_path)
         repo_storage_path = os.path.join("./repos", repo_name)
         os.makedirs(repo_storage_path, exist_ok=True)
-        shutil.copytree(url_or_path, repo_storage_path)
+        shutil.copytree(url_or_path, repo_storage_path, dirs_exist_ok=True)
         cwd = os.getcwd()
         os.chdir(repo_storage_path)
         default_branch = git.get_default_branch()

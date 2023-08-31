@@ -43,6 +43,6 @@ class CsvStorage(Storage):
         path = self.build_path(repo_name, stat_name)
         # if the path doesn't exist, create it
         if not os.path.exists(os.path.dirname(path)):
-            os.makedirs(os.path.dirname(path))
+            os.makedirs(os.path.dirname(path), exist_ok=True)
         logger.info(f"Saving {stat_name} to {path}")
         df.to_csv(path, date_format="%Y-%m-%d")
