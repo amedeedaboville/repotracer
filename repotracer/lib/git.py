@@ -95,13 +95,14 @@ def get_default_branch():
 
 
 def download_repo(url, name=None):
+    console = Console()
     repo_name = name or os.path.splitext(os.path.basename(url))[0]
     repo_storage_path = os.path.join("./repos", repo_name)
-    print(f"Downloading {repo_name} from {url} to {repo_storage_path}")
     os.makedirs(repo_storage_path, exist_ok=True)
     cwd = os.getcwd()
     os.chdir(repo_storage_path)
-    git.clone(url, ".", "--shallow-since=1 year ago")
+    with console.status(f"Downloading {repo_name} from {url} to {repo_storage_path}"):
+        git.clone(url, ".", "--shallow-since=1 year ago")
     # if not os.path.exists(os.path.join(repo_path, ".git")):
     #     git.init()
     # try:
