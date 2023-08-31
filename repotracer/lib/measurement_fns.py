@@ -38,6 +38,15 @@ def rg_count(pattern: str, rg_args: str) -> int:
     return res
 
 
+def fd_count(pattern: str, extra_cli_args: str) -> int:
+    filenames_with_counts = script_now(
+        f"fd --glob '{pattern}' --type file {extra_cli_args or ''}"
+    )
+    # todo: eventually, store the individual file names as intermediate results
+    res = {"total": len(filenames_with_counts.splitlines())}
+    return res
+
+
 def loc():
     return script_now("tokei --total")
 

@@ -6,7 +6,8 @@ from tqdm.auto import tqdm
 from datetime import datetime
 import functools
 from typing_extensions import Protocol
-from .measurement_fns import rg_count
+from .measurement_fns import rg_count, fd_count
+from collections import namedtuple
 
 
 class MeasurementConfig(object):
@@ -39,30 +40,58 @@ class RegexConfig(TypedDict):
     pattern: str
 
 
-def function_measurement(fn: Callable[[TConfig], list[Any]]):
-    return FunctionMeasurement(fn)
-
-
-# def functional_measurement(fn: Callable[[TConfig], list[Any], config: TConfig):
-#     def fn_with_config():
-#         return fn(config)
-#     return fn_with_config()
+class FileCountConfig(TypedDict):
+    pattern: str
 
 
 RegexMeasurement = FunctionMeasurement[RegexConfig](
     lambda config: rg_count(config["pattern"], config.get("ripgrep_args"))
 )
 
+FileCountMeasurement = FunctionMeasurement[FileCountConfig](
+    lambda config: fd_count(config["pattern"], config.get("fd_args"))
+)
+
 # jsx_to_tsx = FunctionMeasurement(tokei_specific(["jsx", "tsx", "js", "ts"]))
 # authors_per_month = FunctionMeasurement(git.get_commit_author)
 
+ParamOption = namedtuple("ParamOption", ["name", "description", "required"])
+MeasurementDef = namedtuple("MeasurementDef", ["obj", "params"])
 
-# @stat("regex_count")
-# class RegexMeasurement(Measurement):
-#     config: RegexConfig
-
-#     def run(self) -> list[Any]:
-#         return rg_count(self.config.pattern)
 all_measurements = {
-    "regex_count": RegexMeasurement,
+    "regex_count": MeasurementDef(
+        obj=RegexMeasurement,
+        params=[
+            ParamOption(
+                name="pattern",
+                description="The regex pattern to pass to ripgrep",
+                required=True,
+            ),
+            ParamOption(
+                name="ripgrep_args",
+                description="(Optional) any additional ripgrep args. Useful to exclude files with -g ",
+                required=False,
+            ),
+        ],
+    ),
+    "file_count": MeasurementDef(
+        obj=FileCountMeasurement,
+        params=[
+            ParamOption(
+                name="pattern",
+                description="""The glob pattern to pass to fd. eg: '*.py' or 'src/**/*.js' """,
+                required=True,
+            ),
+        ],
+    ),
+    "json_returning_script": MeasurementDef(
+        obj=None,
+        params=[
+            ParamOption(
+                name="path",
+                description="""The path to a script to run. The script print json to stdout.""",
+                required=True,
+            ),
+        ],
+    ),
 }

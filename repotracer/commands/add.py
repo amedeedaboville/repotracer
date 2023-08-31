@@ -5,6 +5,7 @@ import typer
 from collections import namedtuple
 from repotracer.commands import run
 from repotracer.lib import git, config
+from repotracer.lib.measurement import all_measurements, ParamOption
 from rich import print
 from rich.console import Console
 from typing import Optional, List
@@ -113,9 +114,6 @@ def add_stat(
         run.run(repo_name, stat_name)
 
 
-ParamOption = namedtuple("ParamOption", ["name", "description", "required"])
-
-
 def promt_build_stat(stat_type: str):
     common_stat_options = [
         # Todo the required ones like type and description should just be done in the other function, or moved into here
@@ -136,23 +134,7 @@ def promt_build_stat(stat_type: str):
         ),
     ]
     # Todo move this into the definition of the measurement/stat type
-    params_by_type = {
-        "regex_count": [
-            ParamOption(
-                name="pattern",
-                description="The regex pattern to pass to ripgrep",
-                required=True,
-            ),
-            ParamOption(
-                name="ripgrep_args",
-                description="(Optional) any additional ripgrep args. Useful to exclude files with -g ",
-                required=False,
-            ),
-        ],
-        "file_count": ["file_extension"],
-        "custom_script": ["script"],
-    }
-    stat_options = params_by_type[stat_type]
+    stat_options = all_measurements[stat_type].params
     required_stat_params = [option for option in stat_options if option.required]
     optional_stat_params = [option for option in stat_options if not option.required]
     stat_params = prompt_required_options(required_stat_params)

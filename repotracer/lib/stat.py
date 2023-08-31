@@ -47,7 +47,9 @@ class Stat(object):
 
     def __init__(self, repo_config: RepoConfig, stat_params: StatConfig):
         self.repo_config = repo_config
-        self.measurement = all_measurements[stat_params["type"]](stat_params["params"])
+        self.measurement = all_measurements[stat_params["type"]].obj(
+            stat_params["params"]
+        )
         self.stat_name = stat_params["name"]
         self.description = stat_params["description"]
         self.path_in_repo = stat_params.get("path_in_repo")

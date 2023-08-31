@@ -81,11 +81,11 @@ def get_config(repo_name, stat_name) -> (RepoConfig, str):
         repo_subtree = config_data["repos"][repo_name]
         repo_config = RepoConfig(
             name=repo_name,
-            path=repo_subtree["path"],
-            default_branch=repo_subtree["default_branch"],
+            path=repo_subtree.get("path"),
+            default_branch=repo_subtree.get("default_branch"),
         )
     except KeyError:
-        known_repos = ", ".join(config_data["repos"].keys())
+        known_repos = ",".join(config_data["repos"].keys())
         raise Exception(
             f"Repo '{repo_name}' not found in config. Known repos are '{known_repos}'"
         )
