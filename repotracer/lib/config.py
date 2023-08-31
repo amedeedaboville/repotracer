@@ -28,6 +28,7 @@ def get_default_config():
             "type": "csv",
             "path": "./stats",  # will store stats in ./stats/<repo_name>/<stat_name>.csv
         },
+        "repos": {},
     }
 
 

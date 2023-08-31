@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "repotracer"
-version = "0.2.2"
+version = "0.2.3"
 description = "A tool to collect statistics about a git repository over time"
 authors = ["Amedee d'Aboville <amedee.daboville@gmail.com>"]
 readme = "README.md"
