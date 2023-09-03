@@ -125,7 +125,7 @@ def add_repo(repo_config: RepoConfig):
         {
             "path": repo_config.path,
             "default_branch": repo_config.default_branch
-            if repo_config.default_branch is not "master"
+            if repo_config.default_branch != "master"
             else None,
             "stats": {},
         }

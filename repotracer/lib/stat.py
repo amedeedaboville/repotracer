@@ -55,22 +55,6 @@ class Stat(object):
         self.path_in_repo = stat_params.get("path_in_repo")
         self.start = stat_params.get("start")
 
-    def build_commit_df(self, start, end, agg_config: AggConfig):
-        commits = pd.DataFrame(
-            git.list_commits(start, end), columns=["sha", "created_at"]
-        )
-        commits.created_at = pd.DatetimeIndex(
-            data=pd.to_datetime(commits.created_at, utc=True)
-        )
-        commits = commits.set_index(
-            commits.created_at,
-            drop=False,
-        )
-        commits = commits.groupby(
-            pd.Grouper(key="created_at", freq=agg_config.time_window)
-        ).last()
-        return commits
-
     def cd_to_repo_and_setup(self, repo_path):
         logger.debug(f"cd from {os.getcwd()} to {repo_path}")
         os.chdir(repo_path)
@@ -132,7 +116,7 @@ class Stat(object):
 
         self.cd_to_repo_and_setup(repo_path)
         start = self.find_start_day(existing_df)
-        commits_to_measure = self.build_commit_df(start, end, agg_config)
+        commits_to_measure = self.build_commit_df(start, end, agg_config.time_window)
         if len(commits_to_measure) == 0:
             logger.info(f"No commits found in the time window {start}-{end},  skipping")
             os.chdir(previous_cwd)
