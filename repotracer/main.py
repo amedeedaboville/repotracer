@@ -1,5 +1,7 @@
 import typer
 from repotracer.commands import run, add
+from repotracer.lib.config import read_config_file
+
 
 app = typer.Typer(no_args_is_help=True)
 
@@ -17,4 +19,5 @@ def print_config():
 
 
 if __name__ == "__main__":
+    read_config_file()
     app()
