@@ -21,9 +21,12 @@ class StatConfig(object):
     path_in_repo: str
 
 
+REPO_STORAGE_LOCATION = "repo_storage_location"
+
+
 def get_default_config():
     return {
-        "repo_storage_location": "./repos",
+        REPO_STORAGE_LOCATION: "./repos",
         "stat_storage": {
             "type": "csv",
             "path": "./stats",  # will store stats in ./stats/<repo_name>/<stat_name>.csv
@@ -55,7 +58,7 @@ def read_config_file():
 
 
 def get_repo_storage_location():
-    return read_config_file()["storage_location"] or "./repos"
+    return read_config_file().get(REPO_STORAGE_LOCATION, "./repos")
 
 
 def get_stat_storage_config():
