@@ -52,9 +52,11 @@ def read_config_file():
         print("Looking for config file at", os.path.abspath(get_config_path()))
         with open(get_config_path()) as f:
             config_file_contents = json5.load(f)  # python 3.9 operator for dict update
+            return default_config | (config_file_contents or {})
     except FileNotFoundError:
-        print(f"Could not find config file at {get_config_path()}. Keeping defaults.")
-    return default_config | (config_file_contents or {})
+        print(f"Could not find config file at {get_config_path()}. Using defaults.")
+        config_file_contents = default_config
+        return config_file_contents
 
 
 def get_repo_storage_location():
