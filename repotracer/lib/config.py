@@ -1,15 +1,22 @@
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Optional
+import dacite
 import os
 import json5
 
+# By default, repotracer will store 3 kinds of data inside its root directory:
+# 1. Repos, under ROOT_DIR/repos. You can change this with the repo_storage_location config key.
+# 2. The config file, under ROOT_DIR/config.json.
+# 3. The stats, under ROOT_DIR/stats/<repo_name>/<stat_name>.{csv,png}
+# Possibly later these will be configurable differently.
 
-@dataclass()
-class RepoConfig(object):
-    name: str
-    path: str
-    # defaults to master if not set
-    default_branch: str | None = None
+ROOT_DIR = os.environ.get(
+    "REPOTRACER_ROOT_DIR",
+    os.environ.get(
+        os.path.join("XDG_CONFIG_HOME", "repotracer"),
+        os.path.expanduser("~/.repotracer"),
+    ),
+)
 
 
 @dataclass()
@@ -21,46 +28,57 @@ class StatConfig(object):
     path_in_repo: str
 
 
-REPO_STORAGE_LOCATION = "repo_storage_location"
+@dataclass()
+class RepoConfig(object):
+    name: Optional[str]
+    path: Optional[str]
+    # defaults to master if not set
+    default_branch: str | None = None
+    stats: dict[str, StatConfig] | None = None
 
 
-def get_default_config():
-    return {
-        REPO_STORAGE_LOCATION: "./repos",
-        "stat_storage": {
-            "type": "csv",
-            "path": "./stats",  # will store stats in ./stats/<repo_name>/<stat_name>.csv
-        },
-        "repos": {},
-    }
+@dataclass()
+class GlobalConfig(object):
+    repo_storage_location: str
+    stat_storage: dict[str, Any]
+    repos: dict[str, RepoConfig]
+
+
+# A dict version of default_config:
+default_config = {
+    "repo_storage_location": "./repos",
+    "stat_storage": {
+        "type": "csv",
+        "path": "./stats",
+    },
+    "repos": {},
+}
 
 
 def get_config_path():
-    return os.environ.get("REPOTRACER_CONFIG_PATH", "./config.json")
+    return os.path.join(ROOT_DIR, "config.json")
 
 
-default_config = get_default_config()
 config_file_contents = None
 
 
-def read_config_file():
+def read_config_file() -> GlobalConfig:
     global config_file_contents
-    if config_file_contents:
-        return default_config | (config_file_contents or {})
-    # print("Using default config.")
-    try:
-        print("Looking for config file at", os.path.abspath(get_config_path()))
-        with open(get_config_path()) as f:
-            config_file_contents = json5.load(f)  # python 3.9 operator for dict update
-            return default_config | (config_file_contents or {})
-    except FileNotFoundError:
-        print(f"Could not find config file at {get_config_path()}. Using defaults.")
-        config_file_contents = default_config
-        return config_file_contents
+    if config_file_contents is None:
+        try:
+            print("Looking for config file at", os.path.abspath(get_config_path()))
+            with open(get_config_path()) as f:
+                config_file_contents = json5.load(
+                    f
+                )  # python 3.9 operator for dict update
+        except FileNotFoundError:
+            print(f"Could not find config file at {get_config_path()}. Using defaults.")
+            config_file_contents = default_config
+    return dacite.from_dict(default_config | (config_file_contents), GlobalConfig)
 
 
-def get_repo_storage_location():
-    return read_config_file().get(REPO_STORAGE_LOCATION, "./repos")
+def get_repos_dir():
+    return read_config_file().repo_storage_location or "./repos"
 
 
 def get_stat_storage_config():
@@ -69,14 +87,14 @@ def get_stat_storage_config():
 
 def list_repos():
     try:
-        return list(read_config_file()["repos"].keys())
+        return list(read_config_file().repos.keys())
     except KeyError:
         return []
 
 
 def list_stats_for_repo(repo_name):
     try:
-        return list(read_config_file()["repos"][repo_name]["stats"].keys())
+        return list(read_config_file().repos[repo_name]["stats"].keys())
     except KeyError:
         return []
 
@@ -84,14 +102,14 @@ def list_stats_for_repo(repo_name):
 def get_config(repo_name, stat_name) -> (RepoConfig, str):
     config_data = read_config_file()
     try:
-        repo_subtree = config_data["repos"][repo_name]
+        repo_subtree = config_data.repos[repo_name]
         repo_config = RepoConfig(
             name=repo_name,
             path=repo_subtree.get("path"),
             default_branch=repo_subtree.get("default_branch"),
         )
     except KeyError:
-        known_repos = ",".join(config_data["repos"].keys())
+        known_repos = ",".join(config_data.repos.keys())
         raise Exception(
             f"Repo '{repo_name}' not found in config. Known repos are '{known_repos}'"
         )
