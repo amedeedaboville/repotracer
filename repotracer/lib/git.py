@@ -55,7 +55,7 @@ def build_commit_df(
         drop=False,
     )
     commits = commits.groupby(
-        pd.Grouper(key="created_at", freq=agg_config.time_window)
+        pd.Grouper(key="created_at", freq=freq)
     ).last()
     return commits
 
