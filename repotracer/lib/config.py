@@ -72,7 +72,8 @@ def read_config_file() -> GlobalConfig:
                     f
                 )  # python 3.9 operator for dict update
         except FileNotFoundError:
-            print(f"Could not find config file at {get_config_path()}. Using defaults.")
+            print(f"Could not find config file at {get_config_path()}, writing a default config file there.")
+            write_config_file(default_config)
             config_file_contents = default_config
     return dacite.from_dict(default_config | (config_file_contents), GlobalConfig)
 
@@ -128,7 +129,11 @@ def get_config(repo_name, stat_name) -> (RepoConfig, str):
 
 def write_config_file(config):
     global config_file_contents
-    with open(get_config_path(), "w") as f:
+    config_path = get_config_path()
+    config_dir = os.path.dirname(config_path)
+    if not os.path.exists(config_dir):
+        os.makedirs(config_dir, exist_ok=True)
+    with open(config_path, "w") as f:
         json5.dump(config, f, indent=4, quote_keys=True)
     config_file_contents = config
 
