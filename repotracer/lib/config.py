@@ -75,7 +75,7 @@ def read_config_file() -> GlobalConfig:
             print(f"Could not find config file at {get_config_path()}, writing a default config file there.")
             write_config_file(default_config)
             config_file_contents = default_config
-    return dacite.from_dict(default_config | (config_file_contents), GlobalConfig)
+    return dacite.from_dict(GlobalConfig, default_config | config_file_contents)
 
 
 def get_repos_dir():
