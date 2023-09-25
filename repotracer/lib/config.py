@@ -79,7 +79,6 @@ def read_config_file() -> GlobalConfig:
 
 def apply_implicit_names(config_dict):
     for repo in config_dict.get("repos", {}).values():
-        print(repo)
         for name, stat_obj in repo.get("stats", {}).items():
             if "name" not in stat_obj:
                 stat_obj["name"] = name
