@@ -2,6 +2,13 @@ import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib.dates import MonthLocator, ConciseDateFormatter, AutoDateFormatter
 import seaborn as sns
+import os
+from .config import get_stats_dir
+import logging
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+logger.addHandler(logging.StreamHandler())
 
 
 def rotate(l, n):
@@ -16,7 +23,7 @@ sns.set_palette(rotate(sns.color_palette("deep"), 2))
 def plot(repo_name, stat_name, stat_description, df, run_at):
     plt.rcParams["figure.dpi"] = 140
     plt.rcParams["figure.figsize"] = (12.8, 9.6)
-    image_path = f"./stats/{repo_name}/{stat_name}.png"
+    image_path = os.path.join(get_stats_dir(), f"{repo_name}/{stat_name}.png")
     ax = df.plot()
 
     last_date = df.index.values[-1]
@@ -37,3 +44,4 @@ def plot(repo_name, stat_name, stat_description, df, run_at):
     # ax.xaxis.set_major_formatter(ConciseDateFormatter(MonthLocator()))
 
     plt.savefig(image_path, bbox_inches="tight")
+    logger.info(f"Plotting {stat_name} to {image_path}")

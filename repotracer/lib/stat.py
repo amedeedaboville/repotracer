@@ -3,7 +3,7 @@ from . import git
 from tqdm.auto import tqdm
 from datetime import datetime, date
 
-from .config import RepoConfig, StatConfig
+from .config import RepoConfig, StatConfig, get_repos_dir
 from .measurement import Measurement, all_measurements
 from .storage import Storage, CsvStorage
 from .plotter import plot
@@ -47,13 +47,13 @@ class Stat(object):
 
     def __init__(self, repo_config: RepoConfig, stat_params: StatConfig):
         self.repo_config = repo_config
-        self.measurement = all_measurements[stat_params["type"]].obj(
-            stat_params["params"]
+        self.measurement = all_measurements[stat_params.type].obj(
+            stat_params.params
         )
-        self.stat_name = stat_params["name"]
-        self.description = stat_params["description"]
-        self.path_in_repo = stat_params.get("path_in_repo")
-        self.start = stat_params.get("start")
+        self.stat_name = stat_params.name
+        self.description = stat_params.description
+        self.path_in_repo = stat_params.path_in_repo
+        self.start = stat_params.start
 
     def cd_to_repo_and_setup(self, repo_path):
         logger.debug(f"cd from {os.getcwd()} to {repo_path}")
@@ -64,7 +64,7 @@ class Stat(object):
         git.reset_hard("HEAD")
         branch = self.repo_config.default_branch or "master"
         git.checkout(branch)
-        git.pull(branch)
+        # git.pull(branch)
         if self.path_in_repo:
             os.chdir(self.path_in_repo)
 
@@ -100,7 +100,7 @@ class Stat(object):
 
     def run(self):
         previous_cwd = os.getcwd()
-        repo_path = "./repos/" + self.repo_config.path
+        repo_path = os.path.join(get_repos_dir(), self.repo_config.path)
         repo_name = self.repo_config.name
         if not git.is_repo_setup(repo_path):
             # todo maybe don't try to download it, just error or tell them to run repotracer add repo

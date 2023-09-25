@@ -25,7 +25,8 @@ class StatConfig(object):
     description: str
     type: str
     params: Any
-    path_in_repo: str
+    path_in_repo: Optional[str]
+    start: Optional[str]
 
 
 @dataclass()
@@ -39,17 +40,15 @@ class RepoConfig(object):
 
 @dataclass()
 class GlobalConfig(object):
-    repo_storage_location: str
-    stat_storage: dict[str, Any]
+    repo_storage_location: Optional[str]
+    stat_storage: Optional[dict[str, Any]]
     repos: dict[str, RepoConfig]
 
 
 # A dict version of default_config:
 default_config = {
-    "repo_storage_location": "./repos",
     "stat_storage": {
         "type": "csv",
-        "path": "./stats",
     },
     "repos": {},
 }
@@ -57,7 +56,6 @@ default_config = {
 
 def get_config_path():
     return os.path.join(ROOT_DIR, "config.json")
-
 
 config_file_contents = None
 
@@ -75,15 +73,24 @@ def read_config_file() -> GlobalConfig:
             print(f"Could not find config file at {get_config_path()}, writing a default config file there.")
             write_config_file(default_config)
             config_file_contents = default_config
-    return dacite.from_dict(GlobalConfig, default_config | config_file_contents)
+    combined_config = default_config | config_file_contents
+    apply_implicit_names(combined_config) # mutates in place
+    return dacite.from_dict(GlobalConfig, combined_config)
+
+def apply_implicit_names(config_dict):
+    for repo in config_dict.get("repos", {}).values():
+        print(repo)
+        for name, stat_obj in repo.get("stats", {}).items():
+            if "name" not in stat_obj:
+                stat_obj["name"] = name
 
 
 def get_repos_dir():
-    return read_config_file().repo_storage_location or "./repos"
+    return read_config_file().repo_storage_location or os.path.join(ROOT_DIR, "repos")
 
 
-def get_stat_storage_config():
-    return read_config_file()["stat_storage"]
+def get_stats_dir():
+    return read_config_file().stat_storage.get("path") or os.path.join(ROOT_DIR, "stats")
 
 
 def list_repos():
@@ -95,7 +102,7 @@ def list_repos():
 
 def list_stats_for_repo(repo_name):
     try:
-        return list(read_config_file().repos[repo_name]["stats"].keys())
+        return list(read_config_file().repos[repo_name].stats.keys())
     except KeyError:
         return []
 
@@ -103,11 +110,11 @@ def list_stats_for_repo(repo_name):
 def get_config(repo_name, stat_name) -> (RepoConfig, str):
     config_data = read_config_file()
     try:
-        repo_subtree = config_data.repos[repo_name]
+        repo_subtree : RepoConfig = config_data.repos[repo_name]
         repo_config = RepoConfig(
             name=repo_name,
-            path=repo_subtree.get("path"),
-            default_branch=repo_subtree.get("default_branch"),
+            path=repo_subtree.path,
+            default_branch=repo_subtree.default_branch,
         )
     except KeyError:
         known_repos = ",".join(config_data.repos.keys())
@@ -116,10 +123,10 @@ def get_config(repo_name, stat_name) -> (RepoConfig, str):
         )
 
     try:
-        stat_config = repo_subtree["stats"][stat_name]
-        stat_config["name"] = stat_name
+        stat_config = repo_subtree.stats[stat_name]
+        stat_config.name = stat_name
     except KeyError:
-        valid_stats = ", ".join(repo_subtree["stats"].keys())
+        valid_stats = ", ".join(repo_subtree.stats.keys())
         raise Exception(
             f"The stat '{stat_name}' does not exist in the config for the repo '{repo_name}'. Here are the known stats: '{valid_stats}'"
         )
