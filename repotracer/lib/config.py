@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from typing import Any, Optional
 import dacite
 import os
@@ -46,12 +46,14 @@ class GlobalConfig(object):
 
 
 # A dict version of default_config:
-default_config = {
+default_config_dict = {
     "stat_storage": {
         "type": "csv",
     },
     "repos": {},
 }
+# a dataclass version of default_config:
+default_config = dacite.from_dict(GlobalConfig, default_config_dict)
 
 
 def get_config_path():
@@ -72,14 +74,14 @@ def read_config_file() -> GlobalConfig:
         except FileNotFoundError:
             print(f"Could not find config file at {get_config_path()}, writing a default config file there.")
             write_config_file(default_config)
-            config_file_contents = default_config
-    combined_config = default_config | config_file_contents
+            config_file_contents = default_config_dict
+    combined_config = default_config_dict | config_file_contents
     apply_implicit_names(combined_config) # mutates in place
     return dacite.from_dict(GlobalConfig, combined_config)
 
-def apply_implicit_names(config_dict):
+def apply_implicit_names(config_dict: dict[str, Any]):
     for repo in config_dict.get("repos", {}).values():
-        for name, stat_obj in repo.get("stats", {}).items():
+        for name, stat_obj in (repo.get("stats") or  {}).items():
             if "name" not in stat_obj:
                 stat_obj["name"] = name
 
@@ -101,7 +103,7 @@ def list_repos():
 
 def list_stats_for_repo(repo_name):
     try:
-        return list(read_config_file().repos[repo_name].stats.keys())
+        return list((read_config_file().repos[repo_name].stats or {}).keys())
     except KeyError:
         return []
 
@@ -139,9 +141,11 @@ def write_config_file(config):
     config_dir = os.path.dirname(config_path)
     if not os.path.exists(config_dir):
         os.makedirs(config_dir, exist_ok=True)
+    #Don't write None's into the config file
+    to_write = asdict(config, dict_factory=lambda x: {k: v for (k, v) in x if v is not None})
     with open(config_path, "w") as f:
-        json5.dump(config, f, indent=4, quote_keys=True)
-    config_file_contents = config
+        json5.dump(to_write, f, indent=4, quote_keys=True)
+    config_file_contents = to_write
 
 
 def remove_nones(d: dict[Any, Any]):
@@ -164,16 +168,17 @@ def add_repo(repo_config: RepoConfig):
 
 def add_stat(repo_name: str, stat_config: StatConfig):
     config = read_config_file()
-    repo_config = config["repos"][repo_name]
-    if "stats" not in repo_config:
-        repo_config["stats"] = {}
-    repo_config["stats"][stat_config.name] = remove_nones(
-        {
-            "description": stat_config.description,
-            "type": stat_config.type,
-            "params": stat_config.params,
-            "path_in_repo": stat_config.path_in_repo,
-        }
-    )
+    repo_config = config.repos[repo_name]
+    if not repo_config.stats:
+        repo_config.stats = {}
+    repo_config.stats[stat_config.name] = stat_config
+    # remove_nones(
+    #     {
+    #         "description": stat_config.description,
+    #         "type": stat_config.type,
+    #         "params": stat_config.params,
+    #         "path_in_repo": stat_config.path_in_repo,
+    #     }
+    # )
 
     write_config_file(config)

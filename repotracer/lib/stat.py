@@ -100,7 +100,7 @@ class Stat(object):
 
     def run(self):
         previous_cwd = os.getcwd()
-        repo_path = os.path.join(get_repos_dir(), self.repo_config.path)
+        repo_path = os.path.join(get_repos_dir(), self.repo_config.path or self.repo_config.name)
         repo_name = self.repo_config.name
         if not git.is_repo_setup(repo_path):
             # todo maybe don't try to download it, just error or tell them to run repotracer add repo

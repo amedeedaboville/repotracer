@@ -112,8 +112,9 @@ def add_stat(
         name=stat_name,
         description=stat_description,
         type=stat_type,
-        params=stat_params.pop("params", None),
         path_in_repo=stat_params.pop("path_in_repo", None),
+        start=stat_params.pop("start", None),
+        params=stat_params.pop("params", None),
     )
     config.add_stat(repo_name, stat_config)
     run_now = questionary.confirm("Do you want to run this stat now?").ask()

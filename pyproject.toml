@@ -21,6 +21,7 @@ matplotlib = "^3.7.2"
 seaborn = "^0.12.2"
 questionary = "^2.0.0"
 dacite = "^1.8.1"
+pytest = "^7.4.3"
 
 
 [build-system]
