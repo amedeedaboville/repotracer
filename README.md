@@ -86,3 +86,19 @@ The config format is JSON5, but currently comments are lost when the command upd
 
 This is a side project with no reliability guarantees. It also is optimized for the author's productivity/engagement. It uses heavyweight "dev-friendly" libraries, and doesn't focus too much on code cleanliness.
 The main priority is to get value now (the nice data/graphs), rather than build a timeless masterpiece.
+
+That doesn't mean it's meant as a filthy mess. Here are the main concepts:
+
+Repotracer manages a a collection of `Stat` objects. These are specified by a
+`StatConfig`, and they mostly define some params + the `Measurement` (ie the actual command to run, like `tokei`, `ripgrep`, a custom script, etc).
+
+A `Stat` can run itself, and that will update the csv for that stat.
+From the POV a user, they care about running many `Stat`s on a single repo,
+so we aggregate those into a `RepoConfig`. This mainly defines where to download the repo. There is the idea that the repo storage could be pluggable, eg if
+the repo is stored on NFS or something different.
+
+The overall config object is `GlobalConfig`, and it composes a couple basic parameters plus a list of `RepoConfig`s.
+
+In theory a bunch of things can be made pluggable, but we'll wait until we need to swap anything out to define the interfaces.
+
+We use pandas to store & interface with the data, for ease of use. Pandas gives day-aggregation functions, and dataframe powers.
