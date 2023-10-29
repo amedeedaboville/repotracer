@@ -1,4 +1,4 @@
-## Repotracer: Watch your code changing over time
+## 📈 Repotracer: Watch your code changing over time
 
 Repotracer gives you insight into the change going on in your codebase.
 
