@@ -81,3 +81,8 @@ The config format is JSON5, but currently comments are lost when the command upd
 }
 ``
 ```
+
+## Dev Notes
+
+This is a side project with no reliability guarantees. It also is optimized for the author's productivity/engagement. It uses heavyweight "dev-friendly" libraries, and doesn't focus too much on code cleanliness.
+The main priority is to get value now (the nice data/graphs), rather than build a timeless masterpiece.
