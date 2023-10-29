@@ -14,11 +14,14 @@ stages:
 testing:
   stage: test
   script:
-    - pytest --cov=src --cov-report=xml
+    - pytest --cov --cov-report term --cov-report xml:coverage.xml
+  coverage: '/(?i)total.*? (100(?:\.0+)?\%|[1-9]?\d(?:\.\d+)?\%)$/'
   artifacts:
     - echo "This is the test stage"
     - pytest --junitxml=report.xml
   artifacts:
-    when: always
     reports:
-      junit: /builds/USERNAME/python-devop/tests/report.xml
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage.xml
+
