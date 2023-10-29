@@ -64,7 +64,7 @@ class Stat(object):
         git.reset_hard("HEAD")
         branch = self.repo_config.default_branch or "master"
         git.checkout(branch)
-        # git.pull(branch)
+        git.pull(branch)
         if self.path_in_repo:
             os.chdir(self.path_in_repo)
 
