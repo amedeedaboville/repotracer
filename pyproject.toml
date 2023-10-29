@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "repotracer"
-version = "0.2.5"
+version = "0.3.0"
 description = "A tool to collect statistics about a git repository over time"
 authors = ["Amedee d'Aboville <amedee.daboville@gmail.com>"]
 readme = "README.md"
@@ -20,6 +20,9 @@ pydantic = "^2.1.1"
 matplotlib = "^3.7.2"
 seaborn = "^0.12.2"
 questionary = "^2.0.0"
+dacite = "^1.8.1"
+pytest = "^7.4.3"
+pytest-cov = "^4.1.0"
 
 
 [build-system]

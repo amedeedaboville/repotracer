@@ -22,7 +22,6 @@ def check():
         )
 
 
-repodir = "/users/amedee/workspace/samplerepos/react"
 git = sh.git.bake(no_pager=True)
 git_normal = sh.git.bake(_out=sys.stdout, _err=sys.stderr)
 
@@ -119,19 +118,20 @@ def get_default_branch():
 
 def download_repo(url, name=None, branch=None):
     cwd = os.getcwd()
-    repos_location = config.get_repo_storage_location()
+    repos_location = config.get_repos_dir()
     repo_name = name or os.path.splitext(os.path.basename(url))[0]
     repo_storage_path = os.path.join(repos_location, repo_name)
     os.makedirs(repo_storage_path, exist_ok=True)
     print(f"Downloading {repo_name} from {url} to {repo_storage_path}")
     os.chdir(repos_location)
 
+    # todo try this globless clone later:
     # This is a  "blobless" clone, which downloads the data for the latest commit (HEAD) and then for past commits
     # downloads only the metadata (commit summaries and then trees which are folder names + pointers to blobs which contain file contents)
     # It's useful to us because we are going to be checking out only a fraction of the commits, so
     # we won't need the file contents for the rest of the commits.
+
     # git_normal.clone(url, ".", "--filter=blob:none", _out=sys.stdout, _err=sys.stderr)
-    # todo decide if we actually want a blobless ^
 
     if not branch:
         git_normal.clone(url, repo_name, "--single-branch")

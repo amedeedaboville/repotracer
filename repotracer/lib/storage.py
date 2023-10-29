@@ -1,7 +1,7 @@
 import pandas as pd
 import os
 
-from .config import get_stat_storage_config
+from .config import get_stats_dir
 
 import logging
 
@@ -23,10 +23,10 @@ class Storage(object):
 
 class CsvStorage(Storage):
     def __init__(self):
-        self.config = get_stat_storage_config()
+        pass
 
     def build_path(self, repo_name, stat_name):
-        return self.config["path"] + f"/{repo_name}/{stat_name}.csv"
+        return os.path.join(get_stats_dir(), f"{repo_name}/{stat_name}.csv")
 
     def load(self, repo_name, stat_name) -> pd.DataFrame | None:
         path = self.build_path(repo_name, stat_name)
