@@ -17,38 +17,9 @@ from enum import Enum
 from urllib.parse import urlparse
 
 
-def is_url(x):
-    try:
-        result = urlparse(x)
-        return all([result.scheme, result.netloc])
-    except:
-        return False
-
-
 def add_repo(url_or_path: str, name: Optional[str] = None):
     console = Console()
-    if is_url(url_or_path):
-        repo_config = git.download_repo(url=url_or_path)
-    else:
-        # todo make a more full featured version of this in the git module
-        source_path = os.path.expanduser(url_or_path)
-        repo_name = name or os.path.basename(source_path)
-        repo_storage_path = os.path.join("./repos", repo_name)
-        repo_git_dir = os.path.join(repo_storage_path, ".git")
-        cwd = os.getcwd()
-        os.makedirs(repo_git_dir, exist_ok=True)
-        git_dir = os.path.join(source_path, ".git")
-        with console.status(f"Copying {git_dir} into '{repo_storage_path}'..."):
-            shutil.copytree(git_dir, repo_git_dir, dirs_exist_ok=True)
-        os.chdir(repo_storage_path)
-        git.checkout(".")
-        default_branch = git.get_default_branch()
-        git.checkout(default_branch)
-        os.chdir(cwd)
-        repo_config = config.RepoConfig(
-            name=repo_name, path=repo_name, default_branch=default_branch
-        )
-
+    repo_config = git.download_repo(url_or_path)
     config.add_repo(repo_config=repo_config)
     return repo_config
     # optionally ask the user if they want to add any stats for this repo

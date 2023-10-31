@@ -1,0 +1,22 @@
+{
+    "stat_storage": {
+        "type": "csv",
+    },
+    "repos": {
+        "repotracer": {
+            "name": "repotracer",
+            "source": ".",
+            "default_branch": "main",
+            "stats": {
+                "num-files": {
+                    "name": "num-files",
+                    "description": "Total number of files in the repo",
+                    "type": "file_count",
+                    "params": {
+                        "pattern": "*",
+                    },
+                },
+            },
+        },
+    },
+}
