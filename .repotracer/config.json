@@ -16,6 +16,15 @@
                         "pattern": "*",
                     },
                 },
+                "num-todos": {
+                    "name": "num-todos",
+                    "description": "Number of occurences of 'todo' in the repo",
+                    "type": "regex_count",
+                    "params": {
+                        "pattern": "todo",
+                        "ripgrep_args": "-i",
+                    },
+                },
             },
         },
     },
