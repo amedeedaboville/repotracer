@@ -82,6 +82,21 @@ The config format is JSON5, but currently comments are lost when the command upd
 ``
 ```
 
+## features
+
+- [x] Stats: Regex count
+- [x] Stats: File count
+- [x] Stats: Custom Script
+- [ ] Stats: option to measure at monthly cadence instead of daily
+- [ ] Stats: Turn Betterer count files into stats
+
+- [x] Runner: Incremental runs
+- [ ] Runner: Interleaved runs, only stream through repo once when collecting multiple stats on repo
+- [ ] Runner: when `path_in_repo` is set, only `git checkout` that portion of the the fs
+
+- [ ] Fix logging to not be so all or nothing
+- [ ] Deploy to pypi on MR merges
+
 ## Dev Notes
 
 This is a side project with no reliability guarantees. It also is optimized for the author's productivity/engagement. It uses heavyweight "dev-friendly" libraries, and doesn't focus too much on code cleanliness.

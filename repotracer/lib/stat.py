@@ -3,7 +3,7 @@ from . import git
 from tqdm.auto import tqdm
 from datetime import datetime, date
 
-from .config import RepoConfig, StatConfig, get_repos_dir
+from .config import RepoConfig, StatConfig, get_repos_dir, get_repo_storage_path
 from .measurement import Measurement, all_measurements
 from .storage import Storage, CsvStorage
 from .plotter import plot
@@ -47,9 +47,7 @@ class Stat(object):
 
     def __init__(self, repo_config: RepoConfig, stat_params: StatConfig):
         self.repo_config = repo_config
-        self.measurement = all_measurements[stat_params.type].obj(
-            stat_params.params
-        )
+        self.measurement = all_measurements[stat_params.type].obj(stat_params.params)
         self.stat_name = stat_params.name
         self.description = stat_params.description
         self.path_in_repo = stat_params.path_in_repo
@@ -100,8 +98,8 @@ class Stat(object):
 
     def run(self):
         previous_cwd = os.getcwd()
-        repo_path = os.path.join(get_repos_dir(), self.repo_config.path or self.repo_config.name)
         repo_name = self.repo_config.name
+        repo_path = get_repo_storage_path(repo_name)
         if not git.is_repo_setup(repo_path):
             # todo maybe don't try to download it, just error or tell them to run repotracer add repo
             raise Exception(

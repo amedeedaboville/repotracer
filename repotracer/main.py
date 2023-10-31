@@ -1,5 +1,5 @@
 import typer
-from repotracer.commands import run, add
+from repotracer.commands import run, add, install_repos
 from repotracer.lib.config import read_config_file
 
 
@@ -7,6 +7,7 @@ app = typer.Typer(no_args_is_help=True)
 
 app.command()(add.add_repo)
 app.command()(add.add_stat)
+app.command()(install_repos.install_repos)
 app.command()(run.run)
 
 
