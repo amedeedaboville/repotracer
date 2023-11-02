@@ -24,16 +24,15 @@ Repotracer aims to be a swiss army knife to run analytics queries on your source
 
 Install with `pip install repotracer`.
 
-To run the `regex_count` and `file_count` stats, you'll need to have `ripgrep` and `fd` installed, respectively. On Macos you can install these with:
+To run the `regex_count`,`file_count` and `loc_count` stats, you'll need to have `ripgrep`, `fd` and `tokei` installed, respectively. On Macos you can install these with:
 
 ```
-brew install ripgrep fd
+brew install ripgrep fd tokei
 ```
 
-Repotracer will look for a file named `config.json` in the current directory, so pick a directory you want to run it from, and always run it from there. This might change in the future, but for now it allows for different configs.
+Repotracer will look a config file either in `$PWD/.repotracer/config.json` or `$HOME/.repotracer/config.json`. If neither exists, it will create one in the latter location.
 
 ```
-mkdir traces && cd traces
 repotracer add-stat
 ```
 
@@ -55,11 +54,12 @@ More documentation about the configuration options will come soon.
 
 - `regex_count` runs ripgrep and sums the number of matches in the whole repo. Additional args can be passed to ripgrep by adding `rg_args` in the `params` object.
 - `file_count` runs `fd` and counts the number of files found.
+- `loc_count` runs `tokei` and counts the number of lines of code per language.
 - The next stat will be `script`, which will run any bash script the user will want, to allow for max customization.
 
 ## Stat options
 
-The config format is JSON5, but currently comments are lost when the command updates the config file.
+The config format is JSON5, but currently comments are lost when the command updates the config file. I'm planning on moving to TOML to fix that, because the python TOML library supports it.
 
 ```
 "repos" : {
@@ -86,16 +86,27 @@ The config format is JSON5, but currently comments are lost when the command upd
 
 - [x] Stats: Regex count
 - [x] Stats: File count
+- [x] Stats: LOC count (broken down by language)
 - [x] Stats: Custom Script
 - [ ] Stats: option to measure at monthly cadence instead of daily
 - [ ] Stats: Turn Betterer count files into stats
 
 - [x] Runner: Incremental runs
 - [ ] Runner: Interleaved runs, only stream through repo once when collecting multiple stats on repo
+- [ ] Runner: Parallel execution by running on many copies of the repo
 - [ ] Runner: when `path_in_repo` is set, only `git checkout` that portion of the the fs
 
 - [ ] Fix logging to not be so all or nothing
 - [ ] Deploy to pypi on MR merges
+
+## Design Goals
+Repotracer is meant to achieve:
+
+* Reliably collecting stats, in a reasonable amount of time. The idea is that a nightly job in CI will be running stat collection, so as long as it takes < 30 mins to collect all stats that should be ok. However we don't want it to be dog slow, as the occasional "interactive" use or end-user running it directly will also be supported.
+
+* Flexibility for common use cases like counting regex matches, files, LOC. But not a huge config surface; if you want to tweak a command too much, just use a `script` type for your stat and.
+* Out of the box simple graphing support, but not too much. I don't plan on adding many plotting options to the configs.
+* Nice starting DX. It should be easy to download the app, install it in a repo and get a nice plot of something you care about.
 
 ## Dev Notes
 

@@ -67,7 +67,7 @@ def add_stat(
 
     stat_type = questionary.select(
         "What type of stat do you want to add?",
-        choices=["regex_count", "file_count", "custom_script"],
+        choices=all_measurements.keys(),
         style=qstyle,
         # qmark="?"
     ).ask()

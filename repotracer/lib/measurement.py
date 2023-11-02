@@ -6,7 +6,7 @@ from tqdm.auto import tqdm
 from datetime import datetime
 import functools
 from typing_extensions import Protocol
-from .measurement_fns import rg_count, fd_count
+from .measurement_fns import rg_count, fd_count, tokei_count, script
 from collections import namedtuple
 
 
@@ -44,6 +44,14 @@ class FileCountConfig(TypedDict):
     pattern: str
 
 
+class LOCCountConfig(TypedDict):
+    pattern: str
+
+
+class ScriptConfig(TypedDict):
+    pattern: str
+
+
 RegexMeasurement = FunctionMeasurement[RegexConfig](
     lambda config: rg_count(config["pattern"], config.get("ripgrep_args"))
 )
@@ -52,6 +60,13 @@ FileCountMeasurement = FunctionMeasurement[FileCountConfig](
     lambda config: fd_count(config["pattern"], config.get("fd_args"))
 )
 
+LocCountMeasurement = FunctionMeasurement[LOCCountConfig](
+    lambda config: tokei_count(config.get("languages"), config.get("total"))
+)
+
+ScriptMeasurement = FunctionMeasurement[ScriptConfig](
+    lambda config: tokei_count(config["path"], "number")
+)
 # jsx_to_tsx = FunctionMeasurement(tokei_specific(["jsx", "tsx", "js", "ts"]))
 # authors_per_month = FunctionMeasurement(git.get_commit_author)
 
@@ -84,13 +99,33 @@ all_measurements = {
             ),
         ],
     ),
-    "json_returning_script": MeasurementDef(
-        obj=None,
+    "loc_count": MeasurementDef(
+        obj=LocCountMeasurement,
+        params=[
+            ParamOption(
+                name="languages",
+                description="""The languages to pass to tokei. eg: 'jsx,tsx,js,ts' """,
+                required=False,
+            ),
+            ParamOption(
+                name="total",
+                description="""Whether to sum the total lines of code.""",
+                required=False,
+            ),
+        ],
+    ),
+    "script": MeasurementDef(
+        obj=ScriptMeasurement,
         params=[
             ParamOption(
                 name="path",
-                description="""The path to a script to run. The script print json to stdout.""",
+                description="""The path to a script to run.""",
                 required=True,
+            ),
+            ParamOption(
+                name="return_type",
+                description="""The return type. Only 'number' is supported atm, later on json will be added.""",
+                required=False,
             ),
         ],
     ),

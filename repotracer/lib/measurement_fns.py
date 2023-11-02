@@ -1,6 +1,7 @@
 from . import git
 
 import subprocess
+import json
 
 
 def script(cmd):
@@ -18,6 +19,20 @@ def script_now(cmd):
         print(e)
         print(e.output)
         raise e
+
+
+def float_or_int(s):
+    try:
+        return int(s)
+    except ValueError:
+        return float(s)
+
+
+def script_auto(cmd, return_type):
+    if return_type == "number":
+        return float_or_int(script_now(cmd))
+    else:
+        raise ValueError(f"Unknown return type {return_type}")
 
 
 def tokei_specific(languages):
@@ -47,9 +62,20 @@ def fd_count(pattern: str, extra_cli_args: str) -> int:
     return res
 
 
-def loc():
-    return script_now("tokei --total")
+def tokei_count(languages: str, extra_cli_args: str) -> int:
+    if languages == "all":
+        languages = ""
+    language_arg = f"--t {languages}" if languages else ""
+    json_out = script_now(f"tokei --output json {language_arg} {extra_cli_args or ''}")
+    parsed = json.loads(json_out)
+    code_totals = {language: data["code"] for language, data in parsed.items()}
+    breakdown_languages = True
+    if breakdown_languages:
+        del code_totals["Total"]
+        return code_totals
+    else:
+        return code_totals["Total"]
 
 
 def jsx_to_tsx():
-    return script_now("tokei --output json --output-file - --languages jsx,tsx,js,ts")
+    return script_now("tokei --output json --languages jsx,tsx,js,ts")

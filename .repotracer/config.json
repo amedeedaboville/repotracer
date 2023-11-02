@@ -25,6 +25,14 @@
                         "ripgrep_args": "-i",
                     },
                 },
+                "count-loc": {
+                    "name": "count-loc",
+                    "description": "total loc in the repo",
+                    "type": "loc_count",
+                    "params": {
+                        "languages": "all",
+                    },
+                },
             },
         },
     },

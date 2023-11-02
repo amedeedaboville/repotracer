@@ -18,17 +18,19 @@ def rotate(l, n):
 sns.set_theme()
 sns.set_style("whitegrid")
 sns.set_palette(rotate(sns.color_palette("deep"), 2))
+plt.rcParams["figure.dpi"] = 140
+plt.rcParams["figure.figsize"] = (12.8, 9.6)
 
 
 def plot(repo_name, stat_name, stat_description, df, run_at):
-    plt.rcParams["figure.dpi"] = 140
-    plt.rcParams["figure.figsize"] = (12.8, 9.6)
     image_path = os.path.join(get_stats_dir(), f"{repo_name}/{stat_name}.png")
     ax = df.plot()
-
     last_date = df.index.values[-1]
-    last_value = df.iloc[-1].total
-    ax.annotate(last_value, (last_date, last_value))
+
+    if len(df.columns) == 1:
+        column_name = df.columns[0]
+        last_value = df.iloc[-1][column_name]
+        ax.annotate(last_value, (last_date, last_value))
 
     plt.xlabel("Date")
     plt.suptitle(stat_description, y=0.93, size="xx-large", weight="semibold")

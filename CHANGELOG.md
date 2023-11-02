@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2] - 2023-10-28
+### Added
+- New `loc_count` stat type powered by `tokei`. Can take a subset of languages to run for, and can graph/collect a language breakdown or the total
+
 ## [0.3.1] - 2023-10-28
 ### Added
 - New `install-repos` command to download any repos in the config that have not been cloned yet. (Might be removed later on in favor of auto-downloading repos during `run` or a `refresh-repos` command that either installs or clones)
