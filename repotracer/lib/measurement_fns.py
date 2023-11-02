@@ -67,7 +67,7 @@ def fd_count(pattern: str, extra_cli_args: str) -> int:
 def tokei_count(languages: str, extra_cli_args: str) -> int:
     if languages == "all":
         languages = ""
-    language_arg = f"--t {languages}" if languages else ""
+    language_arg = f"-t {languages}" if languages else ""
     json_out = script_now(f"tokei --output json {language_arg} {extra_cli_args or ''}")
     parsed = json.loads(json_out)
     code_totals = {language: data["code"] for language, data in parsed.items()}

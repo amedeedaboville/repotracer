@@ -33,6 +33,14 @@
                         "languages": "all",
                     },
                 },
+                "count-python-loc": {
+                    "name": "count-python-loc",
+                    "description": "total loc in the repo (python only)",
+                    "type": "loc_count",
+                    "params": {
+                        "languages": "python",
+                    },
+                },
                 "test_script": {
                     "name": "test_script",
                     "description": "Number of characters in README.md",
