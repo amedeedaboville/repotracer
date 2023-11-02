@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] - 2023-11-02
+### Fixed
+- Fixed bug in `custom_script` where `return_type: "json"` wasn't working.
+## [0.4.1] - 2023-11-01
+### Fixed
+- Fixed bug in `loc_count` stat when passed particular languages.
 ## [0.4.0] - 2023-11-02
 ### Added
 - New `loc_count` stat type powered by `tokei`. Can take a subset of languages to run for, and can graph/collect a language breakdown or the total
