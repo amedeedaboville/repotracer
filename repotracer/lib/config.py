@@ -158,7 +158,7 @@ def get_stat_config(repo_name, stat_name) -> (RepoConfig, StatConfig):
     try:
         stat_config = repo_config.stats[stat_name]
     except KeyError:
-        valid_stats = ", ".join(repo_subtree.stats.keys())
+        valid_stats = ", ".join(repo_config.stats.keys())
         raise Exception(
             f"The stat '{stat_name}' does not exist in the config for the repo '{repo_name}'. The known stats are: '{valid_stats}'"
         )

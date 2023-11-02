@@ -33,6 +33,14 @@
                         "languages": "all",
                     },
                 },
+                "test_script": {
+                    "name": "test_script",
+                    "description": "Number of characters in README.md",
+                    "type": "custom_script",
+                    "params": {
+                        "command": "cat README.md| wc -c | tr -d ' '",
+                    },
+                },
             },
         },
     },

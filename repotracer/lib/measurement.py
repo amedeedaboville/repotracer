@@ -6,7 +6,7 @@ from tqdm.auto import tqdm
 from datetime import datetime
 import functools
 from typing_extensions import Protocol
-from .measurement_fns import rg_count, fd_count, tokei_count, script
+from .measurement_fns import rg_count, fd_count, tokei_count, script_auto
 from collections import namedtuple
 
 
@@ -65,7 +65,7 @@ LocCountMeasurement = FunctionMeasurement[LOCCountConfig](
 )
 
 ScriptMeasurement = FunctionMeasurement[ScriptConfig](
-    lambda config: tokei_count(config["path"], "number")
+    lambda config: script_auto(config["command"], "number")
 )
 # jsx_to_tsx = FunctionMeasurement(tokei_specific(["jsx", "tsx", "js", "ts"]))
 # authors_per_month = FunctionMeasurement(git.get_commit_author)
@@ -114,17 +114,17 @@ all_measurements = {
             ),
         ],
     ),
-    "script": MeasurementDef(
+    "custom_script": MeasurementDef(
         obj=ScriptMeasurement,
         params=[
             ParamOption(
-                name="path",
-                description="""The path to a script to run.""",
+                name="command",
+                description="""A shell command to run, like 'wc -l *', or the path to a script you've written: './my_script.sh'""",
                 required=True,
             ),
             ParamOption(
                 name="return_type",
-                description="""The return type. Only 'number' is supported atm, later on json will be added.""",
+                description="""The return type. Either 'number' (the command prints a single number), or 'json' (the command prints a line of JSON).""",
                 required=False,
             ),
         ],

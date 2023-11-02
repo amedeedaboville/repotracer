@@ -25,18 +25,20 @@ def float_or_int(s):
     try:
         return int(s)
     except ValueError:
-        return float(s)
+        try:
+            return float(s)
+        except Exception as e:
+            return float("NaN")
 
 
 def script_auto(cmd, return_type):
+    output = script_now(cmd)
     if return_type == "number":
-        return float_or_int(script_now(cmd))
+        return {"output": float_or_int(output)}
+    elif return_type == "json":
+        return json.loads(output)
     else:
         raise ValueError(f"Unknown return type {return_type}")
-
-
-def tokei_specific(languages):
-    return script(f"tokei --output json --output-file - --languages {languages}")
 
 
 def ripgrep_count_file(pattern):

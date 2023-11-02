@@ -7,9 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.3.2] - 2023-10-28
+## [0.4.0] - 2023-11-02
 ### Added
 - New `loc_count` stat type powered by `tokei`. Can take a subset of languages to run for, and can graph/collect a language breakdown or the total
+- New `custom_script` stat type. Users can put in a bash command like `wc -c' or a call to a script. The command can return either a single number of a line of json. A future version might allow for CSV output or multiple rows of data.
+### Fixed
+- Fixed error being thrown when user attempted to run a missing stat, instead of displaying the available stats to run.
 
 ## [0.3.1] - 2023-10-28
 ### Added

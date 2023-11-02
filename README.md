@@ -104,7 +104,7 @@ Repotracer is meant to achieve:
 
 * Reliably collecting stats, in a reasonable amount of time. The idea is that a nightly job in CI will be running stat collection, so as long as it takes < 30 mins to collect all stats that should be ok. However we don't want it to be dog slow, as the occasional "interactive" use or end-user running it directly will also be supported.
 
-* Flexibility for common use cases like counting regex matches, files, LOC. But not a huge config surface; if you want to tweak a command too much, just use a `script` type for your stat and.
+* Flexibility for common use cases like counting regex matches, files, LOC. But not a huge config surface; if you want to tweak a command too much, just use a `script` type for your stat.
 * Out of the box simple graphing support, but not too much. I don't plan on adding many plotting options to the configs.
 * Nice starting DX. It should be easy to download the app, install it in a repo and get a nice plot of something you care about.
 
