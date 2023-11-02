@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.3] - 2023-11-02
+- Fixed bug in previous release.
 ## [0.4.2] - 2023-11-02
 ### Fixed
 - Fixed bug in `custom_script` where `return_type: "json"` wasn't working.

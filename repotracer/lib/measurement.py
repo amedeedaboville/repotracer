@@ -66,7 +66,7 @@ LocCountMeasurement = FunctionMeasurement[LOCCountConfig](
 )
 
 ScriptMeasurement = FunctionMeasurement[ScriptConfig](
-    lambda config: script_auto(config["command"], congig.get("return_type", "number"))
+    lambda config: script_auto(config["command"], config.get("return_type", "number"))
 )
 # jsx_to_tsx = FunctionMeasurement(tokei_specific(["jsx", "tsx", "js", "ts"]))
 # authors_per_month = FunctionMeasurement(git.get_commit_author)
