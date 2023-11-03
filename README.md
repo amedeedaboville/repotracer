@@ -51,7 +51,7 @@ More documentation about the configuration options will come soon.
 - `regex_count` runs ripgrep and sums the number of matches in the whole repo. Additional args can be passed to ripgrep by adding `rg_args` in the `params` object.
 - `file_count` runs `fd` and counts the number of files found.
 - `loc_count` runs `tokei` and counts the number of lines of code per language.
-- The next stat will be `script`, which will run any bash script the user will want, to allow for max customization.
+- `custom_script`, runs any bash command or script you specify. Supports either scripts that print a single number to stdout or a JSON object.
 
 ## Stat options
 
