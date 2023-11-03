@@ -85,7 +85,7 @@ The config format is JSON5, but currently comments are lost when the command upd
 - [x] Stats: LOC count (broken down by language)
 - [x] Stats: Custom Script
 - [ ] Stats: option to measure at monthly cadence instead of daily
-- [ ] Stats: Turn Betterer count files into stats
+- [ ] Stats: Turn [Betterer](https://github.com/phenomnomnominal/betterer) count files into stats
 
 - [x] Runner: Incremental runs
 - [ ] Runner: Interleaved runs, only stream through repo once when collecting multiple stats on repo
