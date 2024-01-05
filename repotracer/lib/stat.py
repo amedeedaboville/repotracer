@@ -1,17 +1,16 @@
-import pandas as pd
 from . import git
-from tqdm.auto import tqdm
-from datetime import datetime, date
-
 from .config import RepoConfig, StatConfig, get_repos_dir, get_repo_storage_path
 from .measurement import Measurement, all_measurements
-from .storage import Storage, CsvStorage
 from .plotter import plot
-from typing import Callable
+from .storage import Storage, CsvStorage
+
 from dataclasses import dataclass
-import os
+from datetime import datetime, date
+from tqdm.auto import tqdm
+from typing import Callable
 import logging
-from rich import print
+import os
+import pandas as pd
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
