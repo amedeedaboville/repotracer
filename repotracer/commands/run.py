@@ -1,4 +1,4 @@
-from repotracer.lib.stat import Stat
+from repotracer.lib.stat import run_stat
 from repotracer.lib.config import get_stat_config, list_repos, list_stats_for_repo
 from typing import Optional
 from typing_extensions import Annotated
@@ -51,5 +51,4 @@ def run_single(repo_name: str, stat_name: str):
 
     repo_config, stat_params = get_stat_config(repo_name, stat_name)
 
-    stat = Stat(repo_config=repo_config, stat_params=stat_params)
-    df = stat.run()
+    df = run_stat(repo_config=repo_config, stat_params=stat_params)
