@@ -30,10 +30,6 @@ class AggConfig(object):
     agg_window: str | None = None
 
 
-def agg_percent(self):
-    return self.sum() / len(self)
-
-
 def cd_to_repo_and_setup(repo_path, path_in_repo, branch="master"):
     logger.debug(f"cd from {os.getcwd()} to {repo_path}")
     os.chdir(repo_path)
