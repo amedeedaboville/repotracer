@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use git2::{Repository, TreeWalkMode, TreeWalkResult};
-use polars::frame::DataFrame;
+use git2::{Repository};
+
 use std::fmt::Debug;
 
 use crate::stats::common::{Either, FileMeasurement, TreeDataCollection, TreeReducer};
@@ -57,8 +57,8 @@ where
         }
         Ok(())
     }
-    fn measure_either<'a>(
-        &'a mut self,
+    fn measure_either(
+        &mut self,
         path: &str,
         object: &git2::Object,
     ) -> Result<Either<T, F>, Box<dyn std::error::Error>> {
