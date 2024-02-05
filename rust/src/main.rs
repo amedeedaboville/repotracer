@@ -2,7 +2,7 @@ use git2::{Repository, TreeWalkMode, TreeWalkResult};
 use grep::searcher::sinks::UTF8;
 use polars::frame::DataFrame;
 use std::collections::HashMap;
-use std::fmt::Debug;
+use std::fmt::{Debug, Display};
 
 use anyhow::Error;
 use clap::{Arg, Command};
@@ -32,8 +32,8 @@ fn main() {
     let repo_path = matches.get_one::<String>("repo_path").unwrap();
     let mut walker = CachedWalker::new(
         repo_path,
-        Box::new(RipgrepCollector::new("fn")),
-        Box::new(RipgrepCollector::new("fn")),
+        Box::new(RipgrepCollector::new("TODO")),
+        Box::new(NumMatchesReducer {}),
     );
     walker.walk_repo_and_collect_stats();
 }
@@ -63,31 +63,30 @@ where
     }
     pub fn walk_repo_and_collect_stats(&mut self) -> Result<(), git2::Error> {
         let inner_repo = Repository::open(self.repo.path())?;
-
         let mut revwalk = inner_repo.revwalk()?;
         revwalk.push_head()?;
         revwalk.set_sorting(git2::Sort::TOPOLOGICAL)?;
-        revwalk.simplify_first_parent()?;
+        // revwalk.simplify_first_parent()?;
         let mut commit_stats = vec![];
         println!("Starting to walk the repo");
 
         let mut i = 0;
         for oid in revwalk {
-            if let Err(e) = oid {
+            let Ok(oid) = oid else {
+                let e = oid.unwrap_err();
                 println!("Error with commit: {:?}", e);
                 continue;
-            }
+            };
             i += 1;
-            let oid = oid?;
-
             let commit = inner_repo.find_commit(oid)?;
             let tree = commit.tree()?;
-
             let res = self.measure_either("", tree.as_object()).unwrap();
-            commit_stats.push(res);
+            commit_stats.push((oid.to_string(), res));
         }
         println!("{i}");
-        // println!("{:?}", commit_stats);
+        for (oid, stats) in commit_stats {
+            println!("{oid}, {:?}", stats);
+        }
         Ok(())
     }
     fn measure_either<'a>(
@@ -143,6 +142,18 @@ pub enum Either<L, R> {
     Left(L),
     Right(R),
 }
+impl<L, R> Either<L, R>
+where
+    L: Display,
+    R: Display,
+{
+    pub fn to_string(&self) -> String {
+        match self {
+            Either::Left(l) => l.to_string(),
+            Either::Right(r) => r.to_string(),
+        }
+    }
+}
 trait FileMeasurement<T> {
     fn measure_file(
         &self,
@@ -181,6 +192,17 @@ impl RipgrepCollector {
         Ok(matches)
     }
 }
+impl FileMeasurement<NumMatches> for RipgrepCollector {
+    fn measure_file(
+        &self,
+        repo: &Repository,
+        path: &str,
+        contents: &str,
+    ) -> Result<NumMatches, Box<dyn std::error::Error>> {
+        let matches = self.get_matches(repo, path, contents)?;
+        Ok(NumMatches(matches.len()))
+    }
+}
 
 fn grep_slice(pattern: &str, contents: &str) -> Result<Vec<(u64, String)>, Error> {
     let matcher = RegexMatcher::new(pattern)?;
@@ -203,7 +225,8 @@ struct FileCount(usize);
 #[derive(Debug, Clone, Copy)]
 struct NumMatches(usize);
 //Number of files that match the pattern
-impl TreeReducer<FileCount, NumMatches> for RipgrepCollector {
+struct FileCountReducer {}
+impl TreeReducer<FileCount, NumMatches> for FileCountReducer {
     fn reduce(
         &self,
         repo: &Repository,
@@ -211,24 +234,37 @@ impl TreeReducer<FileCount, NumMatches> for RipgrepCollector {
     ) -> Result<FileCount, Box<dyn std::error::Error>> {
         let mut count = FileCount(0);
         for entry in child_data {
-            count.0 += match entry {
-                (_name, Either::Left(tree_val)) => tree_val.0,
-                (_name, Either::Right(leaf)) => 1,
-            }
+            count.0 +=
+                match entry {
+                    (_name, Either::Left(tree_val)) => tree_val.0,
+                    (_name, Either::Right(leaf)) => {
+                        if leaf.0 > 0 {
+                            1
+                        } else {
+                            0
+                        }
+                    }
+                }
         }
         Ok(count)
     }
 }
 
-impl FileMeasurement<NumMatches> for RipgrepCollector {
-    fn measure_file(
+struct NumMatchesReducer {}
+impl TreeReducer<NumMatches, NumMatches> for NumMatchesReducer {
+    fn reduce(
         &self,
         repo: &Repository,
-        path: &str,
-        contents: &str,
+        child_data: TreeDataCollection<NumMatches, NumMatches>,
     ) -> Result<NumMatches, Box<dyn std::error::Error>> {
-        let matches = self.get_matches(repo, path, contents)?;
-        Ok(NumMatches(matches.len()))
+        let mut count = NumMatches(0);
+        for entry in child_data {
+            count.0 += match entry {
+                (_name, Either::Left(tree_val)) => tree_val.0,
+                (_name, Either::Right(leaf)) => leaf.0,
+            }
+        }
+        Ok(count)
     }
 }
 //Total number of matches in the repository
