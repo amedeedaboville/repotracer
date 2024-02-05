@@ -67,6 +67,7 @@ where
         let mut revwalk = inner_repo.revwalk()?;
         revwalk.push_head()?;
         revwalk.set_sorting(git2::Sort::TOPOLOGICAL)?;
+        revwalk.simplify_first_parent()?;
         let mut commit_stats = vec![];
         println!("Starting to walk the repo");
 
@@ -78,35 +79,28 @@ where
             }
             i += 1;
             let oid = oid?;
-            // println!("Walking commit {:?}", oid);
+
             let commit = inner_repo.find_commit(oid)?;
             let tree = commit.tree()?;
 
-            // Walk through the tree of the commit
-            tree.walk(TreeWalkMode::PreOrder, |root, entry| -> TreeWalkResult {
-                let path = format!("{}{}", root, entry.name().unwrap_or_default());
-                let r = self.measure_either(&path, entry);
-                if let Ok(r) = r {
-                    commit_stats.push(r.clone());
-                }
-                TreeWalkResult::Ok
-            })?;
+            let res = self.measure_either("", tree.as_object()).unwrap();
+            commit_stats.push(res);
         }
         println!("{i}");
-        println!("{:?}", commit_stats.len());
+        // println!("{:?}", commit_stats);
         Ok(())
     }
     fn measure_either<'a>(
         &'a mut self,
         path: &str,
-        entry: &git2::TreeEntry,
+        object: &git2::Object,
     ) -> Result<Either<T, F>, Box<dyn std::error::Error>> {
-        if self.cache.contains_key(&entry.id()) {
-            return Ok(self.cache.get(&entry.id()).unwrap().clone());
+        // println!("{}", object.id());
+        if self.cache.contains_key(&object.id()) {
+            return Ok(self.cache.get(&object.id()).unwrap().clone());
         }
-        let res = match entry.kind() {
+        let res = match object.kind() {
             Some(git2::ObjectType::Blob) => {
-                let object = entry.to_object(&self.repo).unwrap();
                 let blob = object.as_blob().unwrap();
                 let content = std::str::from_utf8(blob.content()).unwrap_or_default();
                 self.file_measurer
@@ -115,13 +109,19 @@ where
             }
             Some(git2::ObjectType::Tree) => {
                 let inner_repo = Repository::open(self.repo.path())?;
-                let object = entry.to_object(&inner_repo).unwrap(); // Create a longer lived value
                 let tree = object.as_tree().unwrap();
                 let child_results = tree
                     .iter()
                     .map(|entry| {
-                        let child_result =
-                            self.measure_either(&format!("{}/", path), &entry).unwrap();
+                        // println!(
+                        //     "doing child {}, {}",
+                        //     entry.name().unwrap(),
+                        //     entry.to_object(&inner_repo).unwrap().id()
+                        // );
+                        let child_object = entry.to_object(&inner_repo).unwrap();
+                        let child_result = self
+                            .measure_either(&format!("{}/", path), &child_object)
+                            .unwrap();
                         (entry.name().unwrap().to_string(), child_result)
                     })
                     .collect::<TreeDataCollection<T, F>>();
@@ -133,7 +133,7 @@ where
             _ => panic!("Unsupported git object type"),
         };
         let res = res?;
-        self.cache.insert(entry.id(), res.clone());
+        self.cache.insert(object.id(), res.clone());
         Ok(res)
     }
 }
