@@ -9,5 +9,4 @@ pub mod stats {
 
 pub mod collectors {
     pub mod cached_walker;
-    pub mod tree_walker;
 }

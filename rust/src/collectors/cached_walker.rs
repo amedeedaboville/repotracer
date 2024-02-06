@@ -9,11 +9,11 @@ use crate::stats::common::{
 };
 
 pub trait BlobMeasurer<F> {
-    fn measure_blob(
+    fn measure_entry(
         &self,
         repo: &Repository,
         path: &str,
-        obj: &git2::Object,
+        entry: &git2::TreeEntry,
     ) -> Result<F, Box<dyn std::error::Error>>;
 }
 
@@ -21,12 +21,13 @@ pub struct FileContentsMeasurer<F> {
     pub callback: Box<dyn FileMeasurement<F>>,
 }
 impl<F> BlobMeasurer<F> for FileContentsMeasurer<F> {
-    fn measure_blob(
+    fn measure_entry(
         &self,
         repo: &Repository,
         _path: &str,
-        obj: &git2::Object,
+        entry: &git2::TreeEntry,
     ) -> Result<F, Box<dyn std::error::Error>> {
+        let obj = entry.to_object(repo).unwrap();
         let blob = obj.as_blob().unwrap();
         let content = std::str::from_utf8(blob.content()).unwrap_or_default();
         self.callback.measure_file(repo, "", content)
@@ -36,11 +37,11 @@ pub struct FilePathMeasurer<F> {
     pub callback: Box<dyn PathMeasurement<F>>,
 }
 impl<F> BlobMeasurer<F> for FilePathMeasurer<F> {
-    fn measure_blob(
+    fn measure_entry(
         &self,
         repo: &Repository,
         path: &str,
-        _obj: &git2::Object,
+        entry: &git2::TreeEntry,
     ) -> Result<F, Box<dyn std::error::Error>> {
         self.callback.measure_path(repo, &path)
     }
@@ -88,63 +89,74 @@ where
             let commit = inner_repo.find_commit(oid)?;
             let tree = commit.tree()?;
             let inner_repo = Repository::open(self.repo.path())?;
-            let res = self
-                .measure_either("", tree.as_object(), &inner_repo)
-                .unwrap();
+            let res = self.measure_either("", &tree, &inner_repo).unwrap();
             commit_stats.push((oid.to_string(), res));
         }
-        println!("{i}");
-        // for (oid, stats) in commit_stats {
-        //     println!("{oid}, {:?}", stats);
-        // }
+        println!("did: {i}");
+        for (oid, stats) in commit_stats {
+            println!("{oid}, {:?}", stats);
+        }
         Ok(())
     }
     fn measure_either(
         &mut self,
         path: &str,
-        object: &git2::Object,
+        tree: &git2::Tree,
         repo: &Repository,
     ) -> Result<Either<T, F>, Box<dyn std::error::Error>> {
         // println!("{}", object.id());
-        if self.cache.contains_key(&object.id()) {
-            return Ok(self.cache.get(&object.id()).unwrap().clone());
+        if self.cache.contains_key(&tree.id()) {
+            return Ok(self.cache.get(&tree.id()).unwrap().clone());
         }
-        let res = match object.kind() {
-            Some(git2::ObjectType::Blob) => self
-                .file_measurer
-                .measure_blob(&self.repo, path, object)
-                .map(Either::Right),
-            Some(git2::ObjectType::Tree) => {
-                let tree = object.as_tree().unwrap();
-                let child_results = tree
-                    .iter()
-                    .map(|entry| {
-                        if self.cache.contains_key(&entry.id()) {
-                            return (
-                                entry.name().unwrap().to_string(),
-                                self.cache.get(&entry.id()).unwrap().clone(),
-                            );
+        let res = {
+            // let res = match object.kind() {
+            // Some(git2::ObjectType::Blob) => self
+            //     .file_measurer
+            //     .measure_entry(&self.repo, path, &entry)
+            //     .map(Either::Right),
+            // Some(git2::ObjectType::Tree) => {
+            // let tree = object.as_tree().unwrap();
+            let child_results = tree
+                .iter()
+                .map(|entry| {
+                    let entry_name = entry.name().unwrap().to_string();
+                    if self.cache.contains_key(&entry.id()) {
+                        return (entry_name, self.cache.get(&entry.id()).unwrap().clone());
+                    }
+                    match entry.kind() {
+                        Some(git2::ObjectType::Tree) => {
+                            let child_object = entry.to_object(&repo).unwrap();
+                            let child_result = self
+                                .measure_either(
+                                    &format!("{path}/{}", entry.name().unwrap_or_default()),
+                                    &child_object.as_tree().unwrap(),
+                                    repo,
+                                )
+                                .unwrap();
+                            (entry_name, child_result)
                         }
-                        let child_object = entry.to_object(&repo).unwrap();
-                        let child_result = self
-                            .measure_either(
-                                &format!("{path}/{}", entry.name().unwrap_or_default()),
-                                &child_object,
-                                repo,
-                            )
-                            .unwrap();
-                        (entry.name().unwrap().to_string(), child_result)
-                    })
-                    .collect::<TreeDataCollection<T, F>>();
-                self.tree_reducer
-                    .reduce(&self.repo, child_results)
-                    .map(Either::Left)
-            }
-            // _ => bail!("Unsupported git object type"),
-            _ => panic!("Unsupported git object type"),
+                        Some(git2::ObjectType::Blob) => {
+                            let child_result = self
+                                .file_measurer
+                                .measure_entry(repo, path, &entry)
+                                .map(Either::Right)
+                                .unwrap();
+                            (entry_name, child_result)
+                        }
+                        _ => panic!("Unsupported git object type"),
+                    }
+                })
+                .collect::<TreeDataCollection<T, F>>();
+            self.tree_reducer
+                .reduce(&self.repo, child_results)
+                .map(Either::Left)
         };
+        // }
+        // _ => bail!("Unsupported git object type"),
+        //     _ => panic!("Unsupported git object type"),
+        // };
         let res = res?;
-        self.cache.insert(object.id(), res.clone());
+        self.cache.insert(tree.id(), res.clone());
         Ok(res)
     }
 }

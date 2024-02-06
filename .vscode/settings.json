@@ -8,5 +8,7 @@
   "docker.languageserver.formatter.ignoreMultilineInstructions": true,
   "rust-analyzer.linkedProjects": [
     "./rust/Cargo.toml",
+    "./rust/Cargo.toml",
+    "./rust/Cargo.toml"
   ]
 }
