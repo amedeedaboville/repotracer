@@ -31,26 +31,17 @@ fn main() {
         .get_matches();
     let repo_path = matches.get_one::<String>("repo_path").unwrap();
     let pattern = matches.get_one::<String>("pattern").unwrap();
-    // let mut walker = CachedWalker::new(
-    //     repo_path,
-    //     Box::new(FileContentsMeasurer {
-    //         callback: Box::new(RipgrepCollector::new(pattern)),
-    //     }),
-    //     Box::new(NumMatchesReducer {}),
-    // );
-    // walker.walk_repo_and_collect_stats();
+    let file_measurer = Box::new(FileContentsMeasurer {
+        callback: Box::new(RipgrepCollector::new(pattern)),
+    });
+    let path_measurer = Box::new(FilePathMeasurer {
+        callback: Box::new(PathBlobCollector::new(pattern)),
+    });
     let mut walker = CachedWalker::new(
-        repo_path,
-        Box::new(FilePathMeasurer {
-            callback: Box::new(PathBlobCollector::new(pattern)),
-        }),
+        repo_path.into(),
+        // file_measurer,
+        file_measurer,
         Box::new(NumMatchesReducer {}),
     );
     walker.walk_repo_and_collect_stats();
-    // // let mut walker = TreeWalker::new(
-    // //     repo_path,
-    // Box::new(PathBlobCollector::new("*test*")),
-    // //     Box::new(NumMatchesReducer {}),
-    // // );
-    // walker.walk_repo_and_collect_stats();
 }
