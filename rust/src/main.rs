@@ -43,5 +43,5 @@ fn main() {
         file_measurer,
         Box::new(NumMatchesReducer {}),
     );
-    walker.walk_repo_and_collect_stats();
+    walker.walk_repo_and_collect_stats(true);
 }
