@@ -96,8 +96,8 @@ pub struct CachedWalker<T, F> {
 }
 impl<T, F> CachedWalker<T, F>
 where
-    T: Debug + Clone + Send + Sync,
-    F: Debug + Clone + Send + Sync,
+    T: Debug + Clone + Send + Sync + 'static,
+    F: Debug + Clone + Send + Sync + 'static,
 {
     pub fn new(
         repo_path: String,
