@@ -1,13 +1,13 @@
-// use gix::index::Entry;
-use gix::object::tree::EntryRef;
+use gix::object::tree::{Entry, EntryRef};
 use gix::objs::tree::{EntryKind, EntryMode};
 use gix::revision::walk::Info;
 use indicatif::{ParallelProgressIterator, ProgressIterator};
 use rayon::iter::{IntoParallelRefIterator, ParallelBridge, ParallelIterator};
-// use rayon::prelude::*;
+use rayon::prelude::*;
 use thread_local::ThreadLocal;
 
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
+use smallvec::SmallVec;
 use std::{
     collections::HashMap,
     time::{Duration, Instant},
@@ -77,7 +77,7 @@ where
         &self,
         repo: &Repository,
         path: &str,
-        entry: &EntryRef,
+        _entry: &EntryRef,
     ) -> Result<F, Box<dyn std::error::Error>> {
         self.callback.measure_path(repo, &path)
     }
@@ -91,6 +91,7 @@ pub struct CommitStat {
 }
 pub struct CachedWalker<T, F> {
     cache: HashMap<ObjectId, Either<T, F>>,
+    filename_cache: HashMap<ObjectId, SmallVec<[String; 2]>>,
     repo_path: String,
     repo: Repository,
     file_measurer: Box<dyn BlobMeasurer<F>>,
@@ -107,6 +108,7 @@ where
         tree_reducer: Box<dyn TreeReducer<T, F>>,
     ) -> Self {
         CachedWalker {
+            filename_cache: HashMap::new(),
             cache: HashMap::new(),
             repo: gix::open(&repo_path).unwrap(),
             repo_path,
@@ -118,15 +120,20 @@ where
         &mut self,
         batch_objects: bool,
     ) -> Result<Vec<CommitStat>, Box<dyn std::error::Error>> {
+        let mut inner_repo = gix::open(&self.repo_path)?;
+        inner_repo.object_cache_size(50_000_000);
         if batch_objects {
-            self.fill_cache();
+            self.fill_cache(&inner_repo, true);
         }
 
         let commit_count = count_commits(&gix::open(&self.repo_path)?)?;
         println!("Found {commit_count} commits. Starting to walk the repo.");
-        let inner_repo = gix::open(&self.repo_path)?;
         let head_id = inner_repo.head_id();
-        let revwalk = inner_repo.rev_walk(head_id).first_parent_only().all()?;
+        let revwalk = inner_repo
+            .rev_walk(head_id)
+            .first_parent_only()
+            .use_commit_graph(true)
+            .all()?;
 
         let pb = ProgressBar::new(commit_count as u64);
         if commit_count <= 10_000 {
@@ -206,13 +213,9 @@ where
         } else {
             println!("processed: {i} commits objects in {elapsed_secs} seconds");
         }
-        // for (oid, stats) in commit_stats.iter() {
-        //     // println!("{oid}, {:?}", stats);
-        // }
         Ok(commit_stats)
     }
-    fn fill_cache(&mut self) {
-        let repo = gix::open(&self.repo_path).unwrap();
+    fn fill_cache(&mut self, repo: &Repository, with_filename: bool) {
         println!("Processing all files in the object database");
         let start_time = Instant::now();
 
@@ -220,18 +223,80 @@ where
             .objects
             .iter()
             .unwrap()
-            .with_ordering(
-                gix::odb::store::iter::Ordering::PackAscendingOffsetThenLooseLexicographical,
-            )
             .filter_map(|oid_res| oid_res.ok())
             .collect::<Vec<ObjectId>>();
-        println!("done collecint oids.");
+        println!("done collecting oids.");
         let style = ProgressStyle::default_bar().template(
             "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}/{len:7} ({eta}) {per_sec}").expect("error with progress bar style");
         let progress = ProgressBar::new(oids.len() as u64);
         progress.set_style(style);
         let tl = ThreadLocal::new();
         let path = self.repo_path.clone();
+        let shared_repo = gix::ThreadSafeRepository::open(path.clone()).unwrap();
+        // if with_filename {
+        //     let pb = progress.clone();
+        //     self.filename_cache = shared_repo
+        //         .objects
+        //         .iter()
+        //         .unwrap()
+        //         .with_ordering(
+        //             gix::odb::store::iter::Ordering::PackAscendingOffsetThenLooseLexicographical,
+        //         )
+        //         .par_bridge()
+        //         .progress_with(pb)
+        //         .filter_map(|oid_res| {
+        //             let Ok(oid) = oid_res else { return None };
+        //             let tl_repo: &Repository = tl.get_or(|| gix::open(path.clone()).unwrap());
+        //             let obj = tl_repo.find_object(oid).expect("Failed to find object");
+        //             match obj.kind {
+        //                 gix::object::Kind::Tree => Some(
+        //                     obj.into_tree()
+        //                         .iter()
+        //                         .filter_map(|entry| {
+        //                             if entry.is_err() {
+        //                                 return None;
+        //                             }
+        //                             let entry = entry.unwrap();
+        //                             if !entry.mode().is_blob() {
+        //                                 return None;
+        //                             }
+        //                             let name = entry.filename().to_string();
+        //                             Some((entry.object_id().clone(), name))
+        //                         })
+        //                         .collect::<Vec<(gix::ObjectId, String)>>(),
+        //                 ),
+        //                 _ => None,
+        //             }
+        //         })
+        //         // .collect::<HashMap<ObjectId, >>();
+        //         .flatten()
+        //         .fold(
+        //             || HashMap::new(),
+        //             |mut acc: HashMap<gix::ObjectId, SmallVec<[String; 2]>>, (oid, name)| {
+        //                 acc.entry(oid).or_insert_with(SmallVec::new).push(name);
+        //                 acc
+        //             },
+        //         )
+        //         .reduce(
+        //             || HashMap::new(),
+        //             |mut acc, cur| {
+        //                 acc.extend(cur);
+        //                 acc
+        //             },
+        //         );
+        //     // .reduce_with(|mut acc, cur| {
+        //     //     for (name, oid) in cur {
+        //     //         acc.entry(oid).or_insert_with(SmallVec::new).push(name);
+        //     //     }
+        //     //     acc
+        //     // })
+        //     // .unwrap_or_default();
+        //     println!(
+        //         "Count {} filenames in {} seconds",
+        //         self.cache.len(),
+        //         start_time.elapsed().as_secs()
+        //     );
+        // }
         self.cache = repo
             .objects
             .iter()
@@ -243,19 +308,14 @@ where
             .progress_with(progress)
             .filter_map(|oid_res| {
                 let Ok(oid) = oid_res else { return None };
-                let repo: &Repository =
-                    tl.get_or(|| gix::open(&path).expect("Failed to open repository"));
+                let repo: &Repository = tl.get_or(|| shared_repo.clone().to_thread_local());
                 let obj = repo.find_object(oid).expect("Failed to find object");
                 match obj.kind {
-                    gix::object::Kind::Blob => {
-                        let res = self.file_measurer.measure_data(&obj.data);
-                        if res.is_err() {
-                            //todo print a warning here
-                            return None;
-                        } else {
-                            Some((oid, Either::Right(res.unwrap())))
-                        }
-                    }
+                    gix::object::Kind::Blob => self
+                        .file_measurer
+                        .measure_data(&obj.data)
+                        .ok()
+                        .map(|r| (oid, Either::Right(r))),
                     _ => None,
                 }
             })

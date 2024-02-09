@@ -96,7 +96,7 @@ fn clone_list_of_repos(clone_urls: Vec<String>) {
     );
 
     for clone_url in clone_urls.iter() {
-        progress_bar.set_message(format!("Cloning {}", clone_url));
+        progress_bar.set_message(format!("{}", clone_url));
         match clone_repo(&clone_url) {
             Ok(_) => {}
             Err(e) => {
