@@ -1,17 +1,19 @@
+// use gix::index::Entry;
+use gix::object::tree::EntryRef;
+use gix::objs::tree::{EntryKind, EntryMode};
+use gix::revision::walk::Info;
 use indicatif::{ParallelProgressIterator, ProgressIterator};
-use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
-use rayon::prelude::*;
+use rayon::iter::{IntoParallelRefIterator, ParallelBridge, ParallelIterator};
+// use rayon::prelude::*;
 use thread_local::ThreadLocal;
 
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
-use std::cell::RefCell;
-use std::sync::Arc;
 use std::{
     collections::HashMap,
     time::{Duration, Instant},
 };
 
-use git2::Repository;
+use gix::{ObjectId, Repository, Tree};
 
 use std::fmt::Debug;
 
@@ -19,13 +21,12 @@ use crate::stats::common::{
     Either, FileMeasurement, PathMeasurement, TreeDataCollection, TreeReducer,
 };
 
-fn count_commits(repo: &Repository) -> Result<usize, git2::Error> {
-    let mut revwalk = repo.revwalk()?;
-    revwalk.push_head()?; // Start from HEAD
-    revwalk.simplify_first_parent()?;
-
-    let commit_count = revwalk.count();
-    Ok(commit_count)
+fn count_commits(repo: &Repository) -> Result<usize, Box<dyn std::error::Error>> {
+    Ok(repo
+        .rev_walk(repo.head_id())
+        .first_parent_only()
+        .all()?
+        .count())
 }
 
 pub trait BlobMeasurer<F>: Sync
@@ -36,7 +37,7 @@ where
         &self,
         repo: &Repository,
         path: &str,
-        entry: &git2::TreeEntry,
+        entry: &EntryRef,
     ) -> Result<F, Box<dyn std::error::Error>>;
 
     fn measure_data(&self, contents: &[u8]) -> Result<F, Box<dyn std::error::Error>>;
@@ -53,11 +54,11 @@ where
         &self,
         repo: &Repository,
         _path: &str,
-        entry: &git2::TreeEntry,
+        entry: &EntryRef,
     ) -> Result<F, Box<dyn std::error::Error>> {
-        let obj = entry.to_object(repo).unwrap();
-        let blob = obj.as_blob().unwrap();
-        let content = std::str::from_utf8(blob.content()).unwrap_or_default();
+        let obj = entry.object().unwrap();
+        let blob = obj.into_blob();
+        let content = std::str::from_utf8(&blob.data).unwrap_or_default();
         self.callback.measure_file(repo, "", content)
     }
     fn measure_data(&self, contents: &[u8]) -> Result<F, Box<dyn std::error::Error>> {
@@ -76,7 +77,7 @@ where
         &self,
         repo: &Repository,
         path: &str,
-        entry: &git2::TreeEntry,
+        entry: &EntryRef,
     ) -> Result<F, Box<dyn std::error::Error>> {
         self.callback.measure_path(repo, &path)
     }
@@ -85,12 +86,13 @@ where
     }
 }
 pub struct CommitStat {
-    pub oid: git2::Oid,
+    pub oid: ObjectId,
     pub stats: Box<dyn Debug>,
 }
 pub struct CachedWalker<T, F> {
-    cache: HashMap<git2::Oid, Either<T, F>>,
+    cache: HashMap<ObjectId, Either<T, F>>,
     repo_path: String,
+    repo: Repository,
     file_measurer: Box<dyn BlobMeasurer<F>>,
     tree_reducer: Box<dyn TreeReducer<T, F>>,
 }
@@ -106,6 +108,7 @@ where
     ) -> Self {
         CachedWalker {
             cache: HashMap::new(),
+            repo: gix::open(&repo_path).unwrap(),
             repo_path,
             file_measurer,
             tree_reducer,
@@ -114,35 +117,35 @@ where
     pub fn walk_repo_and_collect_stats(
         &mut self,
         batch_objects: bool,
-    ) -> Result<Vec<CommitStat>, git2::Error> {
-        let inner_repo = Repository::open(&self.repo_path)?;
+    ) -> Result<Vec<CommitStat>, Box<dyn std::error::Error>> {
         if batch_objects {
-            self.fill_cache(&inner_repo);
+            self.fill_cache();
         }
 
-        let commit_count = count_commits(&inner_repo)?;
+        let commit_count = count_commits(&gix::open(&self.repo_path)?)?;
         println!("Found {commit_count} commits. Starting to walk the repo.");
-        let mut revwalk = inner_repo.revwalk()?;
-        revwalk.push_head()?;
-        revwalk.simplify_first_parent()?; // Ignore the branches that were merged into the current branch
+        let inner_repo = gix::open(&self.repo_path)?;
+        let head_id = inner_repo.head_id();
+        let revwalk = inner_repo.rev_walk(head_id).first_parent_only().all()?;
 
-        let progress_bar = ProgressBar::new(commit_count as u64);
+        let pb = ProgressBar::new(commit_count as u64);
         if commit_count <= 10_000 {
-            progress_bar.set_draw_target(ProgressDrawTarget::hidden());
+            pb.set_draw_target(ProgressDrawTarget::hidden());
         } else {
-            progress_bar.set_style(ProgressStyle::default_bar().template(
+            pb.set_style(ProgressStyle::default_bar().template(
             "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}/{len:7} ({eta})  {msg}",
         ).expect("Failed to set progress bar style"));
         };
-        self.collect_stats_for_commits(revwalk, &inner_repo, Some(progress_bar))
-    }
+        let progress_bar = Some(pb);
+        //     self.collect_stats_for_commits(revwalk.all()?, &inner_repo, Some(progress_bar))
+        // }
 
-    pub fn collect_stats_for_commits(
-        &mut self,
-        revwalk: impl Iterator<Item = Result<git2::Oid, git2::Error>>,
-        inner_repo: &Repository,
-        progress_bar: Option<ProgressBar>,
-    ) -> Result<Vec<CommitStat>, git2::Error> {
+        // pub fn collect_stats_for_commits(
+        //     &mut self,
+        //     revwalk: gix::revision::Walk, //impl Iterator<Item = Result<gix::oid, Box<dyn std::error::Error>>>,
+        //     inner_repo: &Repository,
+        //     progress_bar: Option<ProgressBar>,
+        // ) -> Result<Vec<CommitStat>, Box<dyn std::error::Error>> {
         let mut i = 0;
         let mut commit_stats = vec![];
         let start_time = Instant::now();
@@ -153,12 +156,14 @@ where
 
         let mut objects_procssed = 0;
         let mut objects_procssed_total = 0;
-        for oid in revwalk {
-            let Ok(oid) = oid else {
-                let e = oid.unwrap_err();
+        for result_info in revwalk {
+            if result_info.is_err() {
+                let e = result_info.unwrap_err();
                 println!("Error with commit: {:?}", e);
                 continue;
-            };
+            }
+            let info = result_info.unwrap();
+            let Info { id: oid, .. } = info;
             i += 1;
 
             if progress_bar.is_some() && i % batch_size == 0 && i > 0 {
@@ -181,9 +186,10 @@ where
                 last_batch_start = Instant::now(); // Reset the start time for the next batch
                 progress_bar.inc(batch_size);
             }
-            let tree = inner_repo.find_commit(oid)?.tree()?;
+
+            let tree = info.object().unwrap().tree().unwrap();
             // let inner_repo = Repository::open(self.repo.path())?;
-            let (res, processed) = self.measure_tree("", &tree, &inner_repo).unwrap();
+            let (res, processed) = self.measure_tree("", tree, &inner_repo).unwrap();
             objects_procssed += processed;
             objects_procssed_total += processed;
             commit_stats.push(CommitStat {
@@ -205,47 +211,55 @@ where
         // }
         Ok(commit_stats)
     }
-    fn fill_cache(&mut self, repo: &Repository) {
+    fn fill_cache(&mut self) {
+        let repo = gix::open(&self.repo_path).unwrap();
         println!("Processing all files in the object database");
-        let odb = repo.odb().unwrap();
         let start_time = Instant::now();
 
-        // Collect all OIDs into a Vec
-        let mut oids: Vec<git2::Oid> = Vec::new();
-        odb.foreach(|oid| {
-            oids.push(*oid);
-            true
-        })
-        .expect("Failed to iterate over object database");
-
+        let oids = repo
+            .objects
+            .iter()
+            .unwrap()
+            .with_ordering(
+                gix::odb::store::iter::Ordering::PackAscendingOffsetThenLooseLexicographical,
+            )
+            .filter_map(|oid_res| oid_res.ok())
+            .collect::<Vec<ObjectId>>();
+        println!("done collecint oids.");
         let style = ProgressStyle::default_bar().template(
             "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}/{len:7} ({eta}) {per_sec}").expect("error with progress bar style");
         let progress = ProgressBar::new(oids.len() as u64);
         progress.set_style(style);
         let tl = ThreadLocal::new();
         let path = self.repo_path.clone();
-        self.cache = oids
-            .par_iter()
+        self.cache = repo
+            .objects
+            .iter()
+            .unwrap()
+            .with_ordering(
+                gix::odb::store::iter::Ordering::PackAscendingOffsetThenLooseLexicographical,
+            )
+            .par_bridge()
             .progress_with(progress)
-            .filter_map(|oid| {
+            .filter_map(|oid_res| {
+                let Ok(oid) = oid_res else { return None };
                 let repo: &Repository =
-                    tl.get_or(|| Repository::open(&path).expect("Failed to open repository"));
-                let odb = repo.odb().unwrap();
-                let obj = odb.read(*oid).unwrap();
-                if obj.kind() == git2::ObjectType::Blob {
-                    let contents = obj.data();
-                    let res = self.file_measurer.measure_data(contents);
-                    if res.is_err() {
-                        //todo print a warning here
-                        return None;
-                    } else {
-                        Some((*oid, Either::Right(res.unwrap())))
+                    tl.get_or(|| gix::open(&path).expect("Failed to open repository"));
+                let obj = repo.find_object(oid).expect("Failed to find object");
+                match obj.kind {
+                    gix::object::Kind::Blob => {
+                        let res = self.file_measurer.measure_data(&obj.data);
+                        if res.is_err() {
+                            //todo print a warning here
+                            return None;
+                        } else {
+                            Some((oid, Either::Right(res.unwrap())))
+                        }
                     }
-                } else {
-                    None
+                    _ => None,
                 }
             })
-            .collect::<HashMap<git2::Oid, Either<T, F>>>();
+            .collect::<HashMap<ObjectId, Either<T, F>>>();
 
         println!(
             "Processed {} blobs (files) in {} seconds",
@@ -256,27 +270,30 @@ where
     fn measure_tree(
         &mut self,
         path: &str,
-        tree: &git2::Tree,
+        tree: Tree,
         repo: &Repository,
     ) -> Result<(T, usize), Box<dyn std::error::Error>> {
-        if self.cache.contains_key(&tree.id()) {
-            return Ok((self.cache.get(&tree.id()).unwrap().clone().unwrap_left(), 0));
+        if self.cache.contains_key(&tree.id) {
+            return Ok((self.cache.get(&tree.id).unwrap().clone().unwrap_left(), 0));
         }
         let mut acc = 0;
         let child_results = tree
             .iter()
-            .filter_map(|entry| {
-                let entry_name = entry.name().unwrap().to_string();
-                if self.cache.contains_key(&entry.id()) {
-                    return Some((entry_name, self.cache.get(&entry.id()).unwrap().clone()));
+            .filter_map(|entry_ref| {
+                let Ok(entry) = entry_ref else {
+                    return None
+                };
+                let entry_name = entry.filename().to_string();
+                if self.cache.contains_key(&entry.object_id()) {
+                    return Some((entry_name, self.cache.get(&entry.object_id()).unwrap().clone()));
                 }
-                match entry.kind() {
-                    Some(git2::ObjectType::Tree) => {
-                        let child_object = entry.to_object(&repo).unwrap();
+                match entry.mode().into() {
+                    EntryKind::Tree => {
+                        let child_object = entry.object().unwrap();
                         let (child_result, processed) = self
                             .measure_tree(
                                 &format!("{path}/{entry_name}"),
-                                &child_object.as_tree().unwrap(),
+                                child_object.into_tree(),
                                 repo,
                             )
                             .unwrap();
@@ -285,7 +302,7 @@ where
                         acc += processed;
                         Some((entry_name, r))
                     }
-                    Some(git2::ObjectType::Blob) => {
+                    EntryKind::Blob| EntryKind::BlobExecutable => {
                         acc += 1;
                         let child_result = self
                             .file_measurer
@@ -294,19 +311,19 @@ where
                             .unwrap();
                         Some((entry_name, child_result))
                     }
-                    Some(git2::ObjectType::Commit) => {
+                    EntryKind::Commit => {
                         println!("Warning: skipping submodule commit '{}' in tree '{entry_name}'", tree.id());
                         None
                     }
                     _  => {
-                        println!("Warning: skiping unsupported git object type {:?} under '{entry_name}' in tree {}", entry.kind(), tree.id());
+                        println!("Warning: skiping unsupported git object type {:?} under '{entry_name}' in tree {}", entry.mode(), tree.id());
                         None
                     }
                 }
             })
             .collect::<TreeDataCollection<T, F>>();
         let res = self.tree_reducer.reduce(repo, child_results)?;
-        self.cache.insert(tree.id(), Either::Left(res.clone()));
+        self.cache.insert(tree.id, Either::Left(res.clone()));
         Ok((res, acc))
     }
 }
