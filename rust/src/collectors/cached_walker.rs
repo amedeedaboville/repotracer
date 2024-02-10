@@ -1,13 +1,19 @@
-use gix::object::tree::{Entry, EntryRef};
-use gix::objs::tree::{EntryKind, EntryMode};
+use gix::filter::plumbing::encoding::mem;
+use gix::object::tree::EntryRef;
+use gix::objs::tree::{Entry, EntryKind, EntryMode};
 use gix::revision::walk::Info;
 use indicatif::{ParallelProgressIterator, ProgressIterator};
+use polars::datatypes::Flat;
 use rayon::iter::{IntoParallelRefIterator, ParallelBridge, ParallelIterator};
 use rayon::prelude::*;
+use std::str::FromStr;
 use thread_local::ThreadLocal;
 
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use smallvec::SmallVec;
+use std::borrow::Borrow;
+use std::cell::RefCell;
+use std::hash::Hash;
 use std::{
     collections::HashMap,
     time::{Duration, Instant},
@@ -18,9 +24,13 @@ use gix::{ObjectId, Repository, Tree};
 use std::fmt::Debug;
 
 use crate::stats::common::{
-    Either, FileMeasurement, PathMeasurement, TreeDataCollection, TreeReducer,
+    BlobMeasurer, Either, FileMeasurement, PathMeasurement, TreeDataCollection, TreeReducer,
 };
-
+#[derive(Debug)]
+pub struct CommitStat {
+    pub oid: ObjectId,
+    pub stats: Box<dyn Debug>,
+}
 fn count_commits(repo: &Repository) -> Result<usize, Box<dyn std::error::Error>> {
     Ok(repo
         .rev_walk(repo.head_id())
@@ -29,65 +39,33 @@ fn count_commits(repo: &Repository) -> Result<usize, Box<dyn std::error::Error>>
         .count())
 }
 
-pub trait BlobMeasurer<F>: Sync
-where
-    F: Send + Sync,
-{
-    fn measure_entry(
-        &self,
-        repo: &Repository,
-        path: &str,
-        entry: &EntryRef,
-    ) -> Result<F, Box<dyn std::error::Error>>;
-
-    fn measure_data(&self, contents: &[u8]) -> Result<F, Box<dyn std::error::Error>>;
+type FlatGitRepo = HashMap<ObjectId, TreeChild>;
+pub struct InMemoryGitRepo {
+    pub entries: FlatGitRepo,
 }
-
-pub struct FileContentsMeasurer<F> {
-    pub callback: Box<dyn FileMeasurement<F>>,
+#[derive(Debug)]
+pub enum TreeChild {
+    Blob,
+    Tree(TreeEntry),
 }
-impl<F> BlobMeasurer<F> for FileContentsMeasurer<F>
-where
-    F: Send + Sync,
-{
-    fn measure_entry(
-        &self,
-        repo: &Repository,
-        _path: &str,
-        entry: &EntryRef,
-    ) -> Result<F, Box<dyn std::error::Error>> {
-        let obj = entry.object().unwrap();
-        let blob = obj.into_blob();
-        let content = std::str::from_utf8(&blob.data).unwrap_or_default();
-        self.callback.measure_file(repo, "", content)
+impl TreeChild {
+    pub fn unwrap_tree(&self) -> &TreeEntry {
+        match self {
+            TreeChild::Tree(t) => t,
+            _ => panic!("Called unwrap_tree on TreeChild::Blob"),
+        }
     }
-    fn measure_data(&self, contents: &[u8]) -> Result<F, Box<dyn std::error::Error>> {
-        self.callback.measure_bytes(contents)
-    }
-}
-pub struct FilePathMeasurer<F> {
-    pub callback: Box<dyn PathMeasurement<F> + Sync>, // Add + Sync here
 }
 
-impl<F> BlobMeasurer<F> for FilePathMeasurer<F>
-where
-    F: Send + Sync,
-{
-    fn measure_entry(
-        &self,
-        repo: &Repository,
-        path: &str,
-        _entry: &EntryRef,
-    ) -> Result<F, Box<dyn std::error::Error>> {
-        self.callback.measure_path(repo, &path)
-    }
-    fn measure_data(&self, _contents: &[u8]) -> Result<F, Box<dyn std::error::Error>> {
-        unimplemented!()
-    }
+#[derive(Debug)]
+pub enum TreeChildKind {
+    Blob,
+    Tree,
 }
-pub struct CommitStat {
+#[derive(Debug)]
+pub struct TreeEntry {
     pub oid: ObjectId,
-    pub stats: Box<dyn Debug>,
+    pub children: Vec<(String, ObjectId, TreeChildKind)>,
 }
 pub struct CachedWalker<T, F> {
     cache: HashMap<ObjectId, Either<T, F>>,
@@ -116,6 +94,88 @@ where
             tree_reducer,
         }
     }
+
+    pub fn build_in_memory_tree(&self) -> FlatGitRepo {
+        println!("Begining building in memory tree.");
+        let repo = gix::open(&self.repo_path).unwrap();
+        let oids = repo
+            .objects
+            .iter()
+            .unwrap()
+            .filter_map(|oid_res| oid_res.ok())
+            .collect::<Vec<ObjectId>>();
+        let style = ProgressStyle::default_bar().template(
+            "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}/{len:7} ({eta}) {per_sec}").expect("error with progress bar style");
+        let progress = ProgressBar::new(oids.len() as u64);
+        progress.set_style(style);
+        let shared_repo = gix::ThreadSafeRepository::open(self.repo_path.clone()).unwrap();
+        let tl = ThreadLocal::new();
+        let oid_entries = repo
+            .objects
+            .iter()
+            .unwrap()
+            .with_ordering(
+                gix::odb::store::iter::Ordering::PackAscendingOffsetThenLooseLexicographical,
+            )
+            .progress_with(progress)
+            .par_bridge()
+            .flat_map(|oid_res| {
+                let Ok(oid) = oid_res else { return vec![] };
+                let repo: &Repository = tl.get_or(|| shared_repo.clone().to_thread_local());
+                let obj = repo.find_object(oid).expect("Failed to find object");
+                if oid == ObjectId::from_str("29642cd01b16817f9e53fddb8adc438c0572a866").unwrap() {
+                    println!("found oid 29642cd01b16817f9e53fddb8adc438c0572a866");
+                    println!("{:?}", obj.kind)
+                }
+                match obj.kind {
+                    gix::object::Kind::Blob => vec![(oid, TreeChild::Blob)],
+                    gix::object::Kind::Tree => obj
+                        .into_tree()
+                        .decode()
+                        .unwrap()
+                        .entries
+                        .iter()
+                        .map(|entry| {
+                            let filename = entry.filename.to_string();
+                            let child_oid: ObjectId = entry.oid.into();
+                            (
+                                oid,
+                                TreeChild::Tree(TreeEntry {
+                                    oid,
+                                    children: vec![(
+                                        filename,
+                                        child_oid,
+                                        match entry.mode.into() {
+                                            EntryKind::Blob => TreeChildKind::Blob,
+                                            EntryKind::Tree => TreeChildKind::Tree,
+                                            _ => TreeChildKind::Blob,
+                                        },
+                                    )],
+                                }),
+                            )
+                        })
+                        .collect::<Vec<(ObjectId, TreeChild)>>(),
+                    gix::object::Kind::Commit => vec![],
+                    _ => vec![],
+                }
+            })
+            .fold(
+                || HashMap::new(),
+                |mut acc: HashMap<ObjectId, TreeChild>, (oid, child)| {
+                    acc.insert(oid, child);
+                    acc
+                },
+            )
+            .reduce(
+                || HashMap::new(),
+                |mut acc, cur| {
+                    acc.extend(cur);
+                    acc
+                },
+            );
+        println!("done grouping tree entries into flat hashamp");
+        oid_entries
+    }
     pub fn walk_repo_and_collect_stats(
         &mut self,
         batch_objects: bool,
@@ -123,9 +183,14 @@ where
         let mut inner_repo = gix::open(&self.repo_path)?;
         inner_repo.object_cache_size(50_000_000);
         if batch_objects {
-            self.fill_cache(&inner_repo, true);
+            self.fill_cache_content_only(&inner_repo);
         }
-
+        let start_time = Instant::now();
+        let mem_tree = self.build_in_memory_tree();
+        println!(
+            "Done building in memory tree in {} seconds",
+            start_time.elapsed().as_secs()
+        );
         let commit_count = count_commits(&gix::open(&self.repo_path)?)?;
         println!("Found {commit_count} commits. Starting to walk the repo.");
         let head_id = inner_repo.head_id();
@@ -195,8 +260,18 @@ where
             }
 
             let tree = info.object().unwrap().tree().unwrap();
+            // println!("mem_tree has {} entries", mem_tree.len());
+            // println!("{:?}", mem_tree.iter().take(5).collect::<Vec<_>>());
+            // println!(
+            //     "looking up value {} in mem_tree: {:?}",
+            //     tree.id,
+            //     mem_tree.get(&tree.id)
+            // );
+            let tree_lookedup = mem_tree.get(&tree.id).unwrap();
             // let inner_repo = Repository::open(self.repo.path())?;
-            let (res, processed) = self.measure_tree("", tree, &inner_repo).unwrap();
+            let (res, processed) = self
+                .measure_tree("", tree_lookedup.unwrap_tree(), &inner_repo, &mem_tree)
+                .unwrap();
             objects_procssed += processed;
             objects_procssed_total += processed;
             commit_stats.push(CommitStat {
@@ -213,9 +288,128 @@ where
         } else {
             println!("processed: {i} commits objects in {elapsed_secs} seconds");
         }
+        println!("{:?}", commit_stats.iter().take(5).collect::<Vec<_>>());
+        // for stat in &commit_stats {
+        //     println!("{:?}", stat);
+        // }
         Ok(commit_stats)
     }
-    fn fill_cache(&mut self, repo: &Repository, with_filename: bool) {
+    /// Fills the <oid, result> cache, but only for blobs (files)
+    /// Only called if the stat collector only need file contents
+    ///
+    fn fill_cache_content_only(&mut self, repo: &Repository) {
+        println!("Processing all files in the object database");
+        let start_time = Instant::now();
+
+        let oids = repo
+            .objects
+            .iter()
+            .unwrap()
+            .filter_map(|oid_res| oid_res.ok())
+            .collect::<Vec<ObjectId>>();
+        println!("done collecting oids.");
+        let style = ProgressStyle::default_bar().template(
+            "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}/{len:7} ({eta}) {per_sec}").expect("error with progress bar style");
+        let progress = ProgressBar::new(oids.len() as u64);
+        progress.set_style(style);
+        let tl = ThreadLocal::new();
+        let path = self.repo_path.clone();
+        let shared_repo = gix::ThreadSafeRepository::open(path.clone()).unwrap();
+        // if with_filename {
+        //     let pb = progress.clone();
+        //     self.filename_cache = shared_repo
+        //         .objects
+        //         .iter()
+        //         .unwrap()
+        //         .with_ordering(
+        //             gix::odb::store::iter::Ordering::PackAscendingOffsetThenLooseLexicographical,
+        //         )
+        //         .par_bridge()
+        //         .progress_with(pb)
+        //         .filter_map(|oid_res| {
+        //             let Ok(oid) = oid_res else { return None };
+        //             let tl_repo: &Repository = tl.get_or(|| gix::open(path.clone()).unwrap());
+        //             let obj = tl_repo.find_object(oid).expect("Failed to find object");
+        //             match obj.kind {
+        //                 gix::object::Kind::Tree => Some(
+        //                     obj.into_tree()
+        //                         .iter()
+        //                         .filter_map(|entry| {
+        //                             if entry.is_err() {
+        //                                 return None;
+        //                             }
+        //                             let entry = entry.unwrap();
+        //                             if !entry.mode().is_blob() {
+        //                                 return None;
+        //                             }
+        //                             let name = entry.filename().to_string();
+        //                             Some((entry.object_id().clone(), name))
+        //                         })
+        //                         .collect::<Vec<(gix::ObjectId, String)>>(),
+        //                 ),
+        //                 _ => None,
+        //             }
+        //         })
+        //         // .collect::<HashMap<ObjectId, >>();
+        //         .flatten()
+        //         .fold(
+        //             || HashMap::new(),
+        //             |mut acc: HashMap<gix::ObjectId, SmallVec<[String; 2]>>, (oid, name)| {
+        //                 acc.entry(oid).or_insert_with(SmallVec::new).push(name);
+        //                 acc
+        //             },
+        //         )
+        //         .reduce(
+        //             || HashMap::new(),
+        //             |mut acc, cur| {
+        //                 acc.extend(cur);
+        //                 acc
+        //             },
+        //         );
+        //     // .reduce_with(|mut acc, cur| {
+        //     //     for (name, oid) in cur {
+        //     //         acc.entry(oid).or_insert_with(SmallVec::new).push(name);
+        //     //     }
+        //     //     acc
+        //     // })
+        //     // .unwrap_or_default();
+        //     println!(
+        //         "Count {} filenames in {} seconds",
+        //         self.cache.len(),
+        //         start_time.elapsed().as_secs()
+        //     );
+        // }
+        self.cache = repo
+            .objects
+            .iter()
+            .unwrap()
+            .with_ordering(
+                gix::odb::store::iter::Ordering::PackAscendingOffsetThenLooseLexicographical,
+            )
+            .par_bridge()
+            .progress_with(progress)
+            .filter_map(|oid_res| {
+                let Ok(oid) = oid_res else { return None };
+                let repo: &Repository = tl.get_or(|| shared_repo.clone().to_thread_local());
+                let obj = repo.find_object(oid).expect("Failed to find object");
+                match obj.kind {
+                    gix::object::Kind::Blob => self
+                        .file_measurer
+                        .measure_data(&obj.data)
+                        .ok()
+                        .map(|r| (oid, Either::Right(r))),
+                    _ => None,
+                }
+            })
+            .collect::<HashMap<ObjectId, Either<T, F>>>();
+
+        println!(
+            "Processed {} blobs (files) in {} seconds",
+            self.cache.len(),
+            start_time.elapsed().as_secs()
+        );
+    }
+    fn fill_cache_including_filename(&mut self, repo: &Repository) {
         println!("Processing all files in the object database");
         let start_time = Instant::now();
 
@@ -330,31 +524,41 @@ where
     fn measure_tree(
         &mut self,
         path: &str,
-        tree: Tree,
+        tree: &TreeEntry,
         repo: &Repository,
+        mem_tree: &FlatGitRepo,
     ) -> Result<(T, usize), Box<dyn std::error::Error>> {
-        if self.cache.contains_key(&tree.id) {
-            return Ok((self.cache.get(&tree.id).unwrap().clone().unwrap_left(), 0));
+        if self.cache.contains_key(&tree.oid) {
+            return Ok((self.cache.get(&tree.oid).unwrap().clone().unwrap_left(), 0));
         }
         let mut acc = 0;
         let child_results = tree
+            .children
             .iter()
-            .filter_map(|entry_ref| {
-                let Ok(entry) = entry_ref else {
-                    return None
-                };
-                let entry_name = entry.filename().to_string();
-                if self.cache.contains_key(&entry.object_id()) {
-                    return Some((entry_name, self.cache.get(&entry.object_id()).unwrap().clone()));
+            .filter_map(|entry| {
+                let (entry_str, oid, kind) = entry;
+                let entry_name = entry_str.clone();
+                if self.cache.contains_key(oid) {
+                    return Some((entry_name, self.cache.get(oid).unwrap().clone()));
                 }
-                match entry.mode().into() {
-                    EntryKind::Tree => {
-                        let child_object = entry.object().unwrap();
+                match kind {
+                    TreeChildKind::Blob => {
+                        acc += 1;
+                        match self
+                            .file_measurer
+                            .measure_entry(repo, path, oid) {
+                                Ok(measurement) => Some((entry_name, Either::Right(measurement))),
+                                Err(_) => None,
+                            }
+                    }
+                    TreeChildKind::Tree => {
+                        let child_object = mem_tree.get(oid).unwrap();
                         let (child_result, processed) = self
                             .measure_tree(
                                 &format!("{path}/{entry_name}"),
-                                child_object.into_tree(),
+                                child_object.unwrap_tree(),
                                 repo,
+                                mem_tree,
                             )
                             .unwrap();
 
@@ -362,28 +566,15 @@ where
                         acc += processed;
                         Some((entry_name, r))
                     }
-                    EntryKind::Blob| EntryKind::BlobExecutable => {
-                        acc += 1;
-                        let child_result = self
-                            .file_measurer
-                            .measure_entry(repo, path, &entry)
-                            .map(Either::Right)
-                            .unwrap();
-                        Some((entry_name, child_result))
-                    }
-                    EntryKind::Commit => {
-                        println!("Warning: skipping submodule commit '{}' in tree '{entry_name}'", tree.id());
-                        None
-                    }
                     _  => {
-                        println!("Warning: skiping unsupported git object type {:?} under '{entry_name}' in tree {}", entry.mode(), tree.id());
+                        println!("Warning: skiping unsupported git object type {:?} under '{entry_name}' in tree {}", kind, oid);
                         None
                     }
                 }
             })
             .collect::<TreeDataCollection<T, F>>();
         let res = self.tree_reducer.reduce(repo, child_results)?;
-        self.cache.insert(tree.id, Either::Left(res.clone()));
+        self.cache.insert(tree.oid, Either::Left(res.clone()));
         Ok((res, acc))
     }
 }

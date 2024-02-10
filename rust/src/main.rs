@@ -1,9 +1,10 @@
 use clap::{Arg, Command};
 use indicatif::{ProgressBar, ProgressIterator, ProgressStyle};
-use repotracer::collectors::cached_walker::{CachedWalker, FileContentsMeasurer, FilePathMeasurer};
-use repotracer::stats::common::NumMatchesReducer;
+use repotracer::collectors::cached_walker::CachedWalker;
+use repotracer::stats::common::{FileContentsMeasurer, FilePathMeasurer, NumMatchesReducer};
 use repotracer::stats::filecount::PathBlobCollector;
 use repotracer::stats::grep::RipgrepCollector;
+use repotracer::stats::tokei::{TokeiCollector, TokeiReducer};
 use std::fs;
 use std::path::Path;
 use std::process::Stdio;
@@ -65,11 +66,15 @@ fn main() {
             let path_measurer = Box::new(FilePathMeasurer {
                 callback: Box::new(PathBlobCollector::new(pattern)),
             });
+            let tokei_measurer = Box::new(FileContentsMeasurer {
+                callback: Box::new(TokeiCollector::new()),
+            });
             let mut walker = CachedWalker::new(
                 repo_path.into(),
-                // file_measurer,
                 file_measurer,
                 Box::new(NumMatchesReducer {}),
+                // tokei_measurer,
+                // Box::new(TokeiReducer {}),
             );
             walker.walk_repo_and_collect_stats(true);
         }

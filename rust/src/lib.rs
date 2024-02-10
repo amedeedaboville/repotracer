@@ -5,6 +5,7 @@ pub mod stats {
     pub mod common;
     pub mod filecount;
     pub mod grep;
+    pub mod tokei;
 }
 
 pub mod collectors {
