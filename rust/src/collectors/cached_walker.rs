@@ -1,25 +1,22 @@
-use gix::filter::plumbing::encoding::mem;
-use gix::object::tree::EntryRef;
+use bincode;
 use gix::objs::tree::{Entry, EntryKind, EntryMode};
 use gix::revision::walk::Info;
 use indicatif::{ParallelProgressIterator, ProgressIterator};
-use polars::datatypes::Flat;
 use rayon::iter::{IntoParallelRefIterator, ParallelBridge, ParallelIterator};
 use rayon::prelude::*;
-use std::str::FromStr;
+use serde::{Deserialize, Deserializer, Serialize};
+use std::fs::File;
+use std::io::BufWriter;
+use std::io::{self, BufReader};
 use thread_local::ThreadLocal;
 
+use gix::{ObjectId, Repository, Tree};
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use smallvec::SmallVec;
-use std::borrow::Borrow;
-use std::cell::RefCell;
-use std::hash::Hash;
 use std::{
     collections::HashMap,
     time::{Duration, Instant},
 };
-
-use gix::{ObjectId, Repository, Tree};
 
 use std::fmt::Debug;
 
@@ -40,10 +37,12 @@ fn count_commits(repo: &Repository) -> Result<usize, Box<dyn std::error::Error>>
 }
 
 type FlatGitRepo = HashMap<ObjectId, TreeChild>;
+type FilenameCache = HashMap<ObjectId, SmallVec<[BlobParent; 1]>>;
 pub struct InMemoryGitRepo {
     pub entries: FlatGitRepo,
 }
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
+
 pub enum TreeChild {
     Blob,
     Tree(TreeEntry),
@@ -57,23 +56,30 @@ impl TreeChild {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum TreeChildKind {
     Blob,
     Tree,
 }
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TreeEntry {
     pub oid: ObjectId,
     pub children: Vec<(String, ObjectId, TreeChildKind)>,
 }
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct BlobParent {
+    pub tree_id: ObjectId,
+    pub filename: String,
+}
+
 pub struct CachedWalker<T, F> {
     cache: HashMap<ObjectId, Either<T, F>>,
-    filename_cache: HashMap<ObjectId, SmallVec<[String; 2]>>,
+    filename_cache: FilenameCache,
+    mem_tree: FlatGitRepo,
     repo_path: String,
     repo: Repository,
     file_measurer: Box<dyn BlobMeasurer<F>>,
-    tree_reducer: Box<dyn TreeReducer<T, F>>,
+    tree_reducer: Box<dyn TreeReducer<T, F> + Sync + Send>, // Going to use this across threads
 }
 impl<T, F> CachedWalker<T, F>
 where
@@ -83,19 +89,24 @@ where
     pub fn new(
         repo_path: String,
         file_measurer: Box<dyn BlobMeasurer<F>>, // Changed type here
-        tree_reducer: Box<dyn TreeReducer<T, F>>,
+        tree_reducer: Box<dyn TreeReducer<T, F> + Sync + Send>, // Adjusted type here
     ) -> Self {
         CachedWalker {
             filename_cache: HashMap::new(),
             cache: HashMap::new(),
             repo: gix::open(&repo_path).unwrap(),
+            mem_tree: HashMap::new(),
             repo_path,
             file_measurer,
             tree_reducer,
         }
     }
 
-    pub fn build_in_memory_tree(&self) -> FlatGitRepo {
+    pub fn build_in_memory_tree(&self) -> (bool, FlatGitRepo, FilenameCache) {
+        if let Ok((mem_tree, filename_cache)) = self.load_from_file() {
+            println!("Loaded from file.");
+            return (true, mem_tree, filename_cache);
+        }
         println!("Begining building in memory tree.");
         let repo = gix::open(&self.repo_path).unwrap();
         let oids = repo
@@ -110,7 +121,10 @@ where
         progress.set_style(style);
         let shared_repo = gix::ThreadSafeRepository::open(self.repo_path.clone()).unwrap();
         let tl = ThreadLocal::new();
-        let oid_entries = repo
+        // let mut oid_entries = HashMap::with_capacity(oids.len());
+        // let int =
+        // oid_entries.extend(
+        let object_children: Vec<(ObjectId, TreeChild)> = repo
             .objects
             .iter()
             .unwrap()
@@ -123,58 +137,125 @@ where
                 let Ok(oid) = oid_res else { return vec![] };
                 let repo: &Repository = tl.get_or(|| shared_repo.clone().to_thread_local());
                 let obj = repo.find_object(oid).expect("Failed to find object");
-                if oid == ObjectId::from_str("29642cd01b16817f9e53fddb8adc438c0572a866").unwrap() {
-                    println!("found oid 29642cd01b16817f9e53fddb8adc438c0572a866");
-                    println!("{:?}", obj.kind)
-                }
                 match obj.kind {
-                    gix::object::Kind::Blob => vec![(oid, TreeChild::Blob)],
+                    gix::object::Kind::Blob => vec![],
+                    // gix::object::Kind::Blob => vec![(oid, TreeChild::Blob)],
                     gix::object::Kind::Tree => obj
                         .into_tree()
                         .decode()
                         .unwrap()
                         .entries
                         .iter()
-                        .map(|entry| {
+                        .filter_map(|entry| {
                             let filename = entry.filename.to_string();
                             let child_oid: ObjectId = entry.oid.into();
-                            (
-                                oid,
-                                TreeChild::Tree(TreeEntry {
+                            match entry.mode.into() {
+                                EntryKind::Blob => Some((
                                     oid,
-                                    children: vec![(
-                                        filename,
-                                        child_oid,
-                                        match entry.mode.into() {
-                                            EntryKind::Blob => TreeChildKind::Blob,
-                                            EntryKind::Tree => TreeChildKind::Tree,
-                                            _ => TreeChildKind::Blob,
-                                        },
-                                    )],
-                                }),
-                            )
+                                    TreeChild::Tree(TreeEntry {
+                                        oid,
+                                        children: vec![(filename, child_oid, TreeChildKind::Blob)],
+                                    }),
+                                )),
+                                EntryKind::Tree => None,
+                                _ => None,
+                            }
                         })
                         .collect::<Vec<(ObjectId, TreeChild)>>(),
                     gix::object::Kind::Commit => vec![],
                     _ => vec![],
                 }
             })
-            .fold(
-                || HashMap::new(),
-                |mut acc: HashMap<ObjectId, TreeChild>, (oid, child)| {
-                    acc.insert(oid, child);
+            .collect(); //     .collect; // for (oid, child) in int { // }
+        let mut temp_map: HashMap<ObjectId, Vec<TreeChild>> = HashMap::new();
+        for (oid, child) in object_children {
+            temp_map.entry(oid).or_default().push(child);
+        }
+        let oid_entries: HashMap<ObjectId, TreeChild> = temp_map
+            .into_iter()
+            .map(|(oid, children)| {
+                // Process `children` to produce a single `TreeChild` as needed
+                // For example, if you need to merge `TreeChild::Tree` entries:
+                let merged_child = TreeChild::Tree(TreeEntry {
+                    oid,
+                    children: children
+                        .iter()
+                        .flat_map(|child| match child {
+                            TreeChild::Tree(tree) => tree.children.clone(),
+                            _ => vec![],
+                        })
+                        .collect(),
+                });
+                (oid, merged_child)
+            })
+            .collect();
+
+        /*
+                .fold(
+                    HashMap::new,
+                    |mut acc: HashMap<ObjectId, TreeChild>, (oid, child)| {
+                        acc.entry(oid)
+                            .and_modify(|existing_child| {
+                                if let (TreeChild::Tree(existing_tree)) = (existing_child) {
+                                    existing_tree
+                                        .children
+                                        .extend_from_slice(&child.unwrap_tree().children);
+                                }
+                            })
+                            .or_insert(child);
+                        acc
+                    },
+                )
+                .reduce(HashMap::new, |mut acc, cur| {
+                    for (key, value) in cur {
+                        acc.entry(key)
+                            .and_modify(|e| {
+                                if let (TreeChild::Tree(existing_tree), TreeChild::Tree(new_tree)) =
+                                    (e, &value)
+                                {
+                                    existing_tree.children.extend_from_slice(&new_tree.children);
+                                }
+                            })
+                            .or_insert(value);
+                    }
                     acc
-                },
-            )
-            .reduce(
-                || HashMap::new(),
-                |mut acc, cur| {
-                    acc.extend(cur);
-                    acc
-                },
-            );
-        println!("done grouping tree entries into flat hashamp");
-        oid_entries
+                })
+        );
+        */
+        println!(
+            "Done grouping tree entries into flat hashamp of {} entries",
+            oid_entries.len()
+        );
+        let filename_start = Instant::now();
+        let filename_cache: FilenameCache = oid_entries
+            .iter()
+            .flat_map(|(oid, child)| match child {
+                TreeChild::Tree(tree) => tree
+                    .children
+                    .iter()
+                    .filter_map(|(name, child_oid, child_kind)| match child_kind {
+                        TreeChildKind::Blob => Some((
+                            child_oid.clone(),
+                            BlobParent {
+                                tree_id: oid.clone(),
+                                filename: name.clone(),
+                            },
+                        )),
+                        _ => None,
+                    })
+                    .collect::<Vec<(ObjectId, BlobParent)>>(),
+                _ => vec![],
+            })
+            .fold(HashMap::new(), |mut acc: FilenameCache, (oid, entry)| {
+                acc.entry(oid).or_insert_with(SmallVec::new).push(entry);
+                acc
+            });
+        println!(
+            "Built filename cache in {} seconds",
+            filename_start.elapsed().as_secs()
+        );
+
+        (false, oid_entries, filename_cache)
     }
     pub fn walk_repo_and_collect_stats(
         &mut self,
@@ -182,15 +263,20 @@ where
     ) -> Result<Vec<CommitStat>, Box<dyn std::error::Error>> {
         let mut inner_repo = gix::open(&self.repo_path)?;
         inner_repo.object_cache_size(50_000_000);
-        if batch_objects {
-            self.fill_cache_content_only(&inner_repo);
-        }
         let start_time = Instant::now();
-        let mem_tree = self.build_in_memory_tree();
+        let (loaded_from_file, mem_tree, filename_cache) = self.build_in_memory_tree();
         println!(
-            "Done building in memory tree in {} seconds",
+            "Built in memory tree in {} seconds",
             start_time.elapsed().as_secs()
         );
+        if batch_objects {
+            self.batch_process_objects(&inner_repo, &filename_cache);
+        }
+        if !loaded_from_file {
+            if let Err(e) = self.save_to_file(&filename_cache, &mem_tree) {
+                eprintln!("Failed to save to file: {}", e);
+            }
+        }
         let commit_count = count_commits(&gix::open(&self.repo_path)?)?;
         println!("Found {commit_count} commits. Starting to walk the repo.");
         let head_id = inner_repo.head_id();
@@ -248,7 +334,6 @@ where
                 ewma_elapsed = Duration::from_secs_f64(ewma_secs_updated);
 
                 if ewma_elapsed.as_secs_f64() > 0.0 {
-                    // Ensure ewma_elapsed is not zero
                     let ewma_ips = batch_size as f64 / ewma_elapsed.as_secs_f64(); // Calculate iterations per second
                     progress_bar
                         .set_message(format!("{:.2} it/s, {:}", ewma_ips, objects_procssed));
@@ -260,15 +345,7 @@ where
             }
 
             let tree = info.object().unwrap().tree().unwrap();
-            // println!("mem_tree has {} entries", mem_tree.len());
-            // println!("{:?}", mem_tree.iter().take(5).collect::<Vec<_>>());
-            // println!(
-            //     "looking up value {} in mem_tree: {:?}",
-            //     tree.id,
-            //     mem_tree.get(&tree.id)
-            // );
             let tree_lookedup = mem_tree.get(&tree.id).unwrap();
-            // let inner_repo = Repository::open(self.repo.path())?;
             let (res, processed) = self
                 .measure_tree("", tree_lookedup.unwrap_tree(), &inner_repo, &mem_tree)
                 .unwrap();
@@ -297,17 +374,31 @@ where
     /// Fills the <oid, result> cache, but only for blobs (files)
     /// Only called if the stat collector only need file contents
     ///
-    fn fill_cache_content_only(&mut self, repo: &Repository) {
+    fn batch_process_objects(&mut self, repo: &Repository, filename_cache: &FilenameCache) {
         println!("Processing all files in the object database");
         let start_time = Instant::now();
 
+        let filename_cache_entries =
+            filename_cache
+                .iter()
+                .flat_map(|(oid, parents)| {
+                    parents
+                        .iter()
+                        .map(move |parent| (oid.clone(), parent.clone()))
+                })
+                .count();
         let oids = repo
             .objects
             .iter()
             .unwrap()
             .filter_map(|oid_res| oid_res.ok())
             .collect::<Vec<ObjectId>>();
-        println!("done collecting oids.");
+        println!(
+            "done collecting oids. Have {} oids, and {} entries in the filename cache, for {} blobs",
+            oids.len(),
+            filename_cache_entries,
+            filename_cache.len()
+        );
         let style = ProgressStyle::default_bar().template(
             "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}/{len:7} ({eta}) {per_sec}").expect("error with progress bar style");
         let progress = ProgressBar::new(oids.len() as u64);
@@ -315,70 +406,6 @@ where
         let tl = ThreadLocal::new();
         let path = self.repo_path.clone();
         let shared_repo = gix::ThreadSafeRepository::open(path.clone()).unwrap();
-        // if with_filename {
-        //     let pb = progress.clone();
-        //     self.filename_cache = shared_repo
-        //         .objects
-        //         .iter()
-        //         .unwrap()
-        //         .with_ordering(
-        //             gix::odb::store::iter::Ordering::PackAscendingOffsetThenLooseLexicographical,
-        //         )
-        //         .par_bridge()
-        //         .progress_with(pb)
-        //         .filter_map(|oid_res| {
-        //             let Ok(oid) = oid_res else { return None };
-        //             let tl_repo: &Repository = tl.get_or(|| gix::open(path.clone()).unwrap());
-        //             let obj = tl_repo.find_object(oid).expect("Failed to find object");
-        //             match obj.kind {
-        //                 gix::object::Kind::Tree => Some(
-        //                     obj.into_tree()
-        //                         .iter()
-        //                         .filter_map(|entry| {
-        //                             if entry.is_err() {
-        //                                 return None;
-        //                             }
-        //                             let entry = entry.unwrap();
-        //                             if !entry.mode().is_blob() {
-        //                                 return None;
-        //                             }
-        //                             let name = entry.filename().to_string();
-        //                             Some((entry.object_id().clone(), name))
-        //                         })
-        //                         .collect::<Vec<(gix::ObjectId, String)>>(),
-        //                 ),
-        //                 _ => None,
-        //             }
-        //         })
-        //         // .collect::<HashMap<ObjectId, >>();
-        //         .flatten()
-        //         .fold(
-        //             || HashMap::new(),
-        //             |mut acc: HashMap<gix::ObjectId, SmallVec<[String; 2]>>, (oid, name)| {
-        //                 acc.entry(oid).or_insert_with(SmallVec::new).push(name);
-        //                 acc
-        //             },
-        //         )
-        //         .reduce(
-        //             || HashMap::new(),
-        //             |mut acc, cur| {
-        //                 acc.extend(cur);
-        //                 acc
-        //             },
-        //         );
-        //     // .reduce_with(|mut acc, cur| {
-        //     //     for (name, oid) in cur {
-        //     //         acc.entry(oid).or_insert_with(SmallVec::new).push(name);
-        //     //     }
-        //     //     acc
-        //     // })
-        //     // .unwrap_or_default();
-        //     println!(
-        //         "Count {} filenames in {} seconds",
-        //         self.cache.len(),
-        //         start_time.elapsed().as_secs()
-        //     );
-        // }
         self.cache = repo
             .objects
             .iter()
@@ -388,17 +415,45 @@ where
             )
             .par_bridge()
             .progress_with(progress)
-            .filter_map(|oid_res| {
-                let Ok(oid) = oid_res else { return None };
+            .flat_map(|oid_res| {
+                let Ok(oid) = oid_res else { return vec![] };
                 let repo: &Repository = tl.get_or(|| shared_repo.clone().to_thread_local());
                 let obj = repo.find_object(oid).expect("Failed to find object");
                 match obj.kind {
-                    gix::object::Kind::Blob => self
-                        .file_measurer
-                        .measure_data(&obj.data)
-                        .ok()
-                        .map(|r| (oid, Either::Right(r))),
-                    _ => None,
+                    gix::object::Kind::Blob => {
+                        let parent_trees = filename_cache.get(&oid).expect(
+                            format!("No parent trees in filename cache for blob: {}", oid).as_str(),
+                        );
+                        parent_trees
+                            .iter()
+                            .filter_map(|parent| {
+                                let file_res =
+                                    self.file_measurer
+                                        .measure_entry(repo, &parent.filename, &oid);
+                                match file_res {
+                                    Ok(measurement) => {
+                                        // Step 2: Put the measurement result into an empty TreeDataCollection
+                                        let mut collection = TreeDataCollection::new(); // Assuming TreeDataCollection has a new() method or similar initializer
+                                        collection.insert(
+                                            parent.filename.clone(),
+                                            Either::Right(measurement),
+                                        );
+
+                                        // Step 3: Call self.tree_reducer.reduce() on this collection
+                                        match self.tree_reducer.reduce(repo, collection) {
+                                            Ok(reduced_result) => {
+                                                // Step 4: Map the result into an Either::Left
+                                                Some((parent.tree_id, Either::Left(reduced_result)))
+                                            }
+                                            Err(_) => None, // Handle error as needed
+                                        }
+                                    }
+                                    Err(_) => None, // Handle error as needed// let tree_res =
+                                }
+                            })
+                            .collect()
+                    }
+                    _ => vec![],
                 }
             })
             .collect::<HashMap<ObjectId, Either<T, F>>>();
@@ -427,70 +482,6 @@ where
         let tl = ThreadLocal::new();
         let path = self.repo_path.clone();
         let shared_repo = gix::ThreadSafeRepository::open(path.clone()).unwrap();
-        // if with_filename {
-        //     let pb = progress.clone();
-        //     self.filename_cache = shared_repo
-        //         .objects
-        //         .iter()
-        //         .unwrap()
-        //         .with_ordering(
-        //             gix::odb::store::iter::Ordering::PackAscendingOffsetThenLooseLexicographical,
-        //         )
-        //         .par_bridge()
-        //         .progress_with(pb)
-        //         .filter_map(|oid_res| {
-        //             let Ok(oid) = oid_res else { return None };
-        //             let tl_repo: &Repository = tl.get_or(|| gix::open(path.clone()).unwrap());
-        //             let obj = tl_repo.find_object(oid).expect("Failed to find object");
-        //             match obj.kind {
-        //                 gix::object::Kind::Tree => Some(
-        //                     obj.into_tree()
-        //                         .iter()
-        //                         .filter_map(|entry| {
-        //                             if entry.is_err() {
-        //                                 return None;
-        //                             }
-        //                             let entry = entry.unwrap();
-        //                             if !entry.mode().is_blob() {
-        //                                 return None;
-        //                             }
-        //                             let name = entry.filename().to_string();
-        //                             Some((entry.object_id().clone(), name))
-        //                         })
-        //                         .collect::<Vec<(gix::ObjectId, String)>>(),
-        //                 ),
-        //                 _ => None,
-        //             }
-        //         })
-        //         // .collect::<HashMap<ObjectId, >>();
-        //         .flatten()
-        //         .fold(
-        //             || HashMap::new(),
-        //             |mut acc: HashMap<gix::ObjectId, SmallVec<[String; 2]>>, (oid, name)| {
-        //                 acc.entry(oid).or_insert_with(SmallVec::new).push(name);
-        //                 acc
-        //             },
-        //         )
-        //         .reduce(
-        //             || HashMap::new(),
-        //             |mut acc, cur| {
-        //                 acc.extend(cur);
-        //                 acc
-        //             },
-        //         );
-        //     // .reduce_with(|mut acc, cur| {
-        //     //     for (name, oid) in cur {
-        //     //         acc.entry(oid).or_insert_with(SmallVec::new).push(name);
-        //     //     }
-        //     //     acc
-        //     // })
-        //     // .unwrap_or_default();
-        //     println!(
-        //         "Count {} filenames in {} seconds",
-        //         self.cache.len(),
-        //         start_time.elapsed().as_secs()
-        //     );
-        // }
         self.cache = repo
             .objects
             .iter()
@@ -577,12 +568,44 @@ where
         self.cache.insert(tree.oid, Either::Left(res.clone()));
         Ok((res, acc))
     }
-}
 
-enum Granularity {
-    Daily,
-    Hourly,
-    EveryXHours(u32),
-    Weekly,
-    Monthly,
+    fn save_to_file(
+        &self,
+        filename_cache: &FilenameCache,
+        mem_tree: &FlatGitRepo,
+    ) -> io::Result<()> {
+        let filename_cache_path = format!("{}/filename_cache.bin", self.repo_path);
+        let mem_tree_path = format!("{}/mem_tree.bin", self.repo_path);
+
+        let filename_cache_file = File::create(filename_cache_path)?;
+        let mem_tree_file = File::create(mem_tree_path)?;
+
+        let mut filename_cache_writer = BufWriter::new(filename_cache_file);
+        let mut mem_tree_writer = BufWriter::new(mem_tree_file);
+
+        bincode::serialize_into(&mut filename_cache_writer, &filename_cache)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        bincode::serialize_into(&mut mem_tree_writer, &mem_tree)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+        Ok(())
+    }
+
+    fn load_from_file(&self) -> io::Result<(FlatGitRepo, FilenameCache)> {
+        let filename_cache_path = format!("{}/filename_cache.bin", self.repo_path);
+        let mem_tree_path = format!("{}/mem_tree.bin", self.repo_path);
+
+        let filename_cache_file = File::open(filename_cache_path)?;
+        let mem_tree_file = File::open(mem_tree_path)?;
+
+        let filename_cache_reader = BufReader::new(filename_cache_file);
+        let mem_tree_reader = BufReader::new(mem_tree_file);
+
+        let filename_cache: FilenameCache = bincode::deserialize_from(filename_cache_reader)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        let mem_tree: FlatGitRepo = bincode::deserialize_from(mem_tree_reader)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+        Ok((mem_tree, filename_cache))
+    }
 }
