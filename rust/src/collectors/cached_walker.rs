@@ -134,12 +134,12 @@ where
             )
             .progress_with(progress)
             .par_bridge()
-            .flat_map(|oid_res| {
-                let Ok(oid) = oid_res else { return vec![] };
+            .fold(IndexSet::new, |mut acc: IndexSet<String>, oid_res| {
+                let Ok(oid) = oid_res else { return acc };
                 let repo: &Repository = tl.get_or(|| repo.clone().to_thread_local());
                 let header = repo.find_header(oid).expect("Failed to find header");
                 if header.kind() != gix::object::Kind::Tree {
-                    return vec![];
+                    return acc;
                 }
                 let obj = repo.find_object(oid).expect("Failed to find object");
                 obj.into_tree()
@@ -149,14 +149,12 @@ where
                     .iter()
                     .map(|entry| entry.filename.to_string())
                     .collect::<Vec<String>>()
+                    .into_iter()
+                    .fold(acc, |mut acc, filename| {
+                        acc.insert(filename);
+                        acc
+                    })
             })
-            .fold(
-                || IndexSet::new(),
-                |mut acc: FilenameSet, filename: String| {
-                    acc.insert(filename);
-                    acc
-                },
-            )
             .reduce(
                 || IndexSet::new(),
                 |mut acc: IndexSet<String>, set: IndexSet<String>| {
