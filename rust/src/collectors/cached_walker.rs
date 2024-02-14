@@ -408,38 +408,53 @@ where
         entry_set: &EntrySet,
         flat_repo: &FlatGitRepo,
     ) -> Result<FilenameCache, Box<dyn std::error::Error>> {
+        let start = Instant::now();
         let style = ProgressStyle::default_bar().template(
             "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}/{len:7} ({eta}) {per_sec}").expect("error with progress bar style");
-        let progress = ProgressBar::new(oid_set.len() as u64);
+        let progress = ProgressBar::new(flat_repo.len() as u64);
         progress.set_style(style);
-        let filename_cache: FilenameCache = flat_repo
+        let mut filename_cache = flat_repo
             .par_iter()
             .progress_with(progress)
-            .flat_map(|(oid_idx, child)| match child {
-                TreeChild::Tree(tree) => tree
-                    .children
-                    .iter()
-                    .filter_map(|entry_idx| {
-                        let (filename_idx, child_oid_idx, child_kind) =
-                            entry_set.get_index(*entry_idx).unwrap();
-                        match child_kind {
-                            TreeChildKind::Blob => Some((*child_oid_idx, *filename_idx)),
-                            _ => None,
+            .fold(HashMap::new, |mut acc: FilenameCache, (oid_idx, child)| {
+                match child {
+                    TreeChild::Tree(tree) => {
+                        let acc_entry = acc.entry(*oid_idx).or_insert_with(HashSet::new);
+                        for entry_idx in &tree.children {
+                            let (filename_idx, _, child_kind) =
+                                entry_set.get_index(*entry_idx).unwrap();
+                            if *child_kind == TreeChildKind::Blob {
+                                acc_entry.insert(*filename_idx);
+                            }
                         }
-                    })
-                    .collect::<Vec<(MyOid, FilenameIdx)>>(),
-                _ => vec![],
-            })
-            .fold(HashMap::new, |mut acc: FilenameCache, (oid, entry)| {
-                acc.entry(oid).or_insert_with(HashSet::new).insert(entry);
-                acc
-            })
-            .reduce(HashMap::new, |mut acc, cur| {
-                for (key, value) in cur {
-                    acc.entry(key).or_insert_with(HashSet::new).extend(value);
+                    }
+                    _ => {}
                 }
                 acc
-            });
+            })
+            .reduce(
+                || HashMap::with_capacity(flat_repo.len()),
+                |mut acc: FilenameCache, cur: FilenameCache| {
+                    for (key, value) in cur {
+                        // The uncommented code is ~10x faster than this "idiomatic" version
+                        // acc.entry(key).or_insert_with(HashSet::new).extend(value);
+                        if let Some(existing) = acc.get_mut(&key) {
+                            existing.extend(value);
+                        } else {
+                            acc.insert(key, value);
+                        }
+                    }
+                    acc
+                },
+            );
+        println!(
+            "Built filename cache in {} seconds",
+            start.elapsed().as_secs()
+        );
+        // idk if this helps or if the bincode library already does it when loading from file
+        for (oid, filename_set) in filename_cache.iter_mut() {
+            filename_set.shrink_to_fit();
+        }
         Ok(filename_cache)
     }
     pub fn walk_repo_and_collect_stats(
