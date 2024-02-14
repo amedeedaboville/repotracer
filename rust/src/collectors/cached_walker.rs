@@ -5,6 +5,7 @@ use indexmap::IndexSet;
 use indicatif::{ParallelProgressIterator, ProgressIterator};
 use rayon::iter::{IntoParallelRefIterator, ParallelBridge, ParallelIterator};
 use rayon::prelude::*;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::any::Any;
 use std::fs::File;
@@ -12,7 +13,7 @@ use std::io::BufWriter;
 use std::io::{self, BufReader};
 use thread_local::ThreadLocal;
 
-use gix::{ObjectId, Repository, Tree};
+use gix::{ObjectId, Repository, ThreadSafeRepository, Tree};
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use smallvec::SmallVec;
 use std::{
@@ -40,10 +41,11 @@ fn count_commits(repo: &Repository) -> Result<usize, Box<dyn std::error::Error>>
 
 type FlatGitRepo = HashMap<ObjectId, TreeChild>;
 type FilenameCache = HashMap<ObjectId, SmallVec<[BlobParent; 1]>>;
+type FilenameSet = IndexSet<String>;
 pub struct RepoCachedInfo {
     pub flat_tree: FlatGitRepo,
     pub filename_cache: FilenameCache,
-    pub filenames: IndexSet<String>,
+    pub filenames: FilenameSet,
 }
 #[derive(Debug, Serialize, Deserialize, Clone)]
 
@@ -106,30 +108,17 @@ where
         }
     }
 
-    pub fn build_in_memory_tree(&self) -> (bool, FlatGitRepo, FilenameCache) {
-        if let Ok((mem_tree, filename_cache)) = self.load_from_file() {
-            println!("Loaded from file.");
-            return (true, mem_tree, filename_cache);
-        }
-        println!("Begining building in memory tree.");
-        let repo = gix::open(&self.repo_path).unwrap();
-        let oids = repo
-            .objects
-            .iter()
-            .unwrap()
-            .filter_map(|oid_res| oid_res.ok())
-            .collect::<Vec<ObjectId>>();
-        println!("Found {} oids", oids.len());
-        let shared_repo = gix::ThreadSafeRepository::open(self.repo_path.clone()).unwrap();
+    pub fn build_filename_set(
+        &self,
+        repo: &ThreadSafeRepository,
+        num_oids: u64,
+    ) -> Result<FilenameSet, Box<dyn std::error::Error>> {
         let tl = ThreadLocal::new();
-
-        println!("Starting to build set of filenames.");
         let style = ProgressStyle::default_bar().template(
             "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}/{len:7} ({eta}) {per_sec}").expect("error with progress bar style");
-        let progress = ProgressBar::new(oids.len() as u64);
+        let progress = ProgressBar::new(num_oids);
         progress.set_style(style);
-        let filename_start = Instant::now();
-        let filenames: IndexSet<String> = repo
+        let filenames: FilenameSet = repo
             .objects
             .iter()
             .unwrap()
@@ -140,7 +129,7 @@ where
             .par_bridge()
             .flat_map(|oid_res| {
                 let Ok(oid) = oid_res else { return vec![] };
-                let repo: &Repository = tl.get_or(|| shared_repo.clone().to_thread_local());
+                let repo: &Repository = tl.get_or(|| repo.clone().to_thread_local());
                 let header = repo.find_header(oid).expect("Failed to find header");
                 if header.kind() != gix::object::Kind::Tree {
                     return vec![];
@@ -156,7 +145,7 @@ where
             })
             .fold(
                 || IndexSet::new(),
-                |mut acc: IndexSet<String>, filename: String| {
+                |mut acc: FilenameSet, filename: String| {
                     acc.insert(filename);
                     acc
                 },
@@ -168,12 +157,41 @@ where
                     acc
                 },
             );
+        Ok(filenames)
+    }
 
-        println!(
-            "Done collecting {} filenames in {} secs",
-            filenames.len(),
-            filename_start.elapsed().as_secs(),
-        );
+    pub fn build_in_memory_tree(&self) -> (bool, FlatGitRepo, FilenameCache) {
+        if let Ok((mem_tree, filename_cache)) = self.load_from_file() {
+            println!("Loaded from file.");
+            return (true, mem_tree, filename_cache);
+        }
+        println!("Begining building in memory tree.");
+        let repo = gix::open(&self.repo_path).unwrap();
+        let oids = repo
+            .objects
+            .iter()
+            .unwrap()
+            .filter_map(|oid_res| oid_res.ok())
+            .collect::<Vec<ObjectId>>();
+        let num_oids = oids.len() as u64;
+        println!("Found {} oids", oids.len());
+        let shared_repo = gix::ThreadSafeRepository::open(self.repo_path.clone()).unwrap();
+        let tl = ThreadLocal::new();
+
+        let filenames: FilenameSet =
+            match self.load_cache::<FilenameSet>("filenames") {
+                Ok(f) => {
+                    println!("Loaded {} filenames from cache.", f.len());
+                    f
+                }
+                Err(e) => {
+                    println!("Computing filenames from scratch due to error: {}", e);
+                    let filenames = self.build_filename_set(&shared_repo, num_oids).unwrap();
+                    self.save_cache("filenames", &filenames);
+                    filenames
+                }
+            };
+        println!("Startig to build in memory tree");
         let style = ProgressStyle::default_bar().template(
             "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}/{len:7} ({eta}) {per_sec}").expect("error with progress bar style");
         let progress = ProgressBar::new(oids.len() as u64);
@@ -249,24 +267,25 @@ where
         let filename_cache: FilenameCache = oid_entries
             .par_iter()
             .progress_with(progress)
-            .filter_map(|(oid, child)| match child {
-                TreeChild::Tree(tree) => Some((
-                    oid.clone(),
-                    tree.children
-                        .iter()
-                        .filter_map(|(filename_idx, child_oid, child_kind)| match child_kind {
-                            TreeChildKind::Blob => Some(BlobParent {
+            .flat_map(|(oid, child)| match child {
+                TreeChild::Tree(tree) => tree
+                    .children
+                    .iter()
+                    .filter_map(|(filename_idx, child_oid, child_kind)| match child_kind {
+                        TreeChildKind::Blob => Some((
+                            child_oid.clone(),
+                            BlobParent {
                                 tree_id: oid.clone(),
                                 filename_idx: *filename_idx,
-                            }),
-                            _ => None,
-                        })
-                        .collect::<Vec<BlobParent>>(),
-                )),
-                _ => None,
+                            },
+                        )),
+                        _ => None,
+                    })
+                    .collect::<Vec<(ObjectId, BlobParent)>>(),
+                _ => vec![],
             })
             .fold(HashMap::new, |mut acc: FilenameCache, (oid, entry)| {
-                acc.entry(oid).or_insert_with(SmallVec::new).extend(entry);
+                acc.entry(oid).or_insert_with(SmallVec::new).push(entry);
                 acc
             })
             .reduce(HashMap::new, |mut acc, cur| {
@@ -634,5 +653,28 @@ where
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
         Ok((mem_tree, filename_cache))
+    }
+
+    fn load_cache<Cache>(&self, cache_name: &str) -> io::Result<Cache>
+    where
+        Cache: DeserializeOwned,
+    {
+        let cache_path = format!("{}/{}.bin", self.repo_path, cache_name);
+        let cache_file = File::open(cache_path)?;
+        let cache_reader = BufReader::new(cache_file);
+        let cache: Cache = bincode::deserialize_from(cache_reader)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        Ok(cache)
+    }
+    fn save_cache<Cache>(&self, cache_name: &str, cache: &Cache) -> io::Result<()>
+    where
+        Cache: Serialize,
+    {
+        let cache_path = format!("{}/{}.bin", self.repo_path, cache_name);
+        let cache_file = File::create(cache_path)?;
+        let mut cache_writer = BufWriter::new(cache_file);
+        bincode::serialize_into(&mut cache_writer, cache)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        Ok(())
     }
 }
