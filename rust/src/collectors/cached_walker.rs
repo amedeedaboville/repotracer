@@ -7,7 +7,9 @@ use rayon::iter::{IntoParallelRefIterator, ParallelBridge, ParallelIterator};
 use rayon::prelude::*;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
+use smallset::SmallSet;
 use std::any::Any;
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::BufWriter;
 use std::io::{self, BufReader};
@@ -15,7 +17,6 @@ use thread_local::ThreadLocal;
 
 use gix::{ObjectId, Repository, ThreadSafeRepository, Tree};
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
-use smallvec::SmallVec;
 use std::{
     collections::HashMap,
     time::{Duration, Instant},
@@ -44,7 +45,7 @@ type MyEntry = (MyOid, FilenameIdx, TreeChildKind);
 type FlatGitRepo = HashMap<MyOid, TreeChild>;
 type FilenameSet = IndexSet<String>;
 type FilenameIdx = usize;
-type FilenameCache = HashMap<FilenameIdx, SmallVec<[FilenameIdx; 1]>>;
+type FilenameCache = HashMap<FilenameIdx, HashSet<FilenameIdx>>;
 type OidSet = IndexSet<ObjectId>;
 type EntrySet = IndexSet<MyEntry>;
 
@@ -353,7 +354,7 @@ where
                 entries
             }
         };
-        println!("Building flat hashmap of all trees in the repo.");
+        println!("Getting flat hashmap of all trees in the repo.");
         let oid_entries = match self.load_cache::<FlatGitRepo>("flat_tree") {
             Ok(f) => {
                 println!("Loaded {} trees from cache.", f.len());
@@ -369,32 +370,27 @@ where
             }
         };
         println!("Building filename cache");
-        let filename_cache = match self.load_cache::<FilenameCache>("oid_to_filename") {
-            Ok(f) => {
-                println!(
-                    "Loaded the filenames of {} unique objects from cache.",
-                    f.len()
-                );
-                f
-            }
-            Err(e) => {
-                println!(
-                    "Collecting object filenames from scratch due to error: {}",
-                    e
-                );
-                let entries = self
-                    .build_filename_cache(
-                        &shared_repo,
-                        &oid_set,
-                        &entries,
-                        &oid_entries,
-                        &filenames,
-                    )
-                    .unwrap();
-                self.save_cache("oid_to_filename", &entries);
-                entries
-            }
-        };
+        let filename_cache =
+            match self.load_cache::<FilenameCache>("filename_cache") {
+                Ok(f) => {
+                    println!(
+                        "Loaded the filenames of {} unique objects from cache.",
+                        f.len()
+                    );
+                    f
+                }
+                Err(e) => {
+                    println!(
+                        "Collecting object filenames from scratch due to error: {}",
+                        e
+                    );
+                    let entries = self
+                        .build_filename_cache(&shared_repo, &oid_set, &entries, &oid_entries)
+                        .unwrap();
+                    self.save_cache("filename_cache", &entries);
+                    entries
+                }
+            };
 
         (
             false,
@@ -411,7 +407,6 @@ where
         oid_set: &OidSet,
         entry_set: &EntrySet,
         flat_repo: &FlatGitRepo,
-        filenames: &FilenameSet,
     ) -> Result<FilenameCache, Box<dyn std::error::Error>> {
         let style = ProgressStyle::default_bar().template(
             "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}/{len:7} ({eta}) {per_sec}").expect("error with progress bar style");
@@ -436,12 +431,12 @@ where
                 _ => vec![],
             })
             .fold(HashMap::new, |mut acc: FilenameCache, (oid, entry)| {
-                acc.entry(oid).or_insert_with(SmallVec::new).push(entry);
+                acc.entry(oid).or_insert_with(HashSet::new).insert(entry);
                 acc
             })
             .reduce(HashMap::new, |mut acc, cur| {
                 for (key, value) in cur {
-                    acc.entry(key).or_insert_with(SmallVec::new).extend(value);
+                    acc.entry(key).or_insert_with(HashSet::new).extend(value);
                 }
                 acc
             });
@@ -583,17 +578,12 @@ where
         println!("Processing all files in the object database");
         let start_time = Instant::now();
 
-        let filename_cache_entries =
-            filename_cache
-                .iter()
-                .flat_map(|(oid, parents)| {
-                    parents
-                        .iter()
-                        .map(move |parent| (oid.clone(), parent.clone()))
-                })
-                .count();
+        let filename_cache_entries: usize = filename_cache
+            .iter()
+            .map(|(_oid, filenames)| filenames.iter().count())
+            .sum();
         println!(
-            "Have {} oids, and {} entries in the filename cache, for {} blobs",
+            "Have {} objects, and {} entries in the filename cache for {} blobs",
             oid_set.len(),
             filename_cache_entries,
             filename_cache.len()
