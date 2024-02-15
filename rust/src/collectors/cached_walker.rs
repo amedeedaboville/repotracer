@@ -89,7 +89,7 @@ pub enum TreeChildKind {
 }
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TreeEntry {
-    pub oid: MyOid,
+    pub oid_idx: MyOid,
     pub children: Vec<EntryIdx>,
 }
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -172,7 +172,6 @@ where
         oid_set: &OidSet,
         filename_set: &FilenameSet,
     ) -> Result<EntrySet, Box<dyn std::error::Error>> {
-        let num_oids = oid_set.len() as u64;
         let tl = ThreadLocal::new();
         let style = ProgressStyle::default_bar().template(
             "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}/{len:7} ({eta}) {per_sec}").expect("error with progress bar style");
@@ -300,7 +299,7 @@ where
                         acc.insert(
                             oid_idx,
                             TreeChild::Tree(TreeEntry {
-                                oid: oid_idx,
+                                oid_idx,
                                 children: tree_entry_children,
                             }),
                         );
@@ -699,15 +698,15 @@ where
         path: &str,
         tree: &TreeEntry,
         repo: &Repository,
-        mem_tree: &FlatGitRepo,
+        flat_tree: &FlatGitRepo,
         filename_set: &IndexSet<String>,
         oid_set: &OidSet,
         entry_set: &IndexSet<MyEntry>,
     ) -> Result<(T, usize), Box<dyn std::error::Error>> {
-        if self.cache.contains_key(&(tree.oid, None)) {
+        if self.cache.contains_key(&(tree.oid_idx, None)) {
             return Ok((
                 self.cache
-                    .get(&(tree.oid, None))
+                    .get(&(tree.oid_idx, None))
                     .unwrap()
                     .clone()
                     .unwrap_left(),
@@ -721,67 +720,68 @@ where
             .filter_map(|entry_idx| {
                 let entry = entry_set
                     .get_index(*entry_idx as usize)
-                    .expect(&format!("Did not find entry_idx {entry_idx} in entry_set"));
+                    .expect("Did not find entry_idx in entry_set");
                 let MyEntry {
                     oid_idx,
                     filename_idx,
                     kind,
                 } = entry;
-                let (oid, _) = oid_set
-                    .get_index(*oid_idx)
-                    .expect(&format!("Did not find {oid_idx} in oid_set"));
+                // let (oid, _) = oid_set
+                //     .get_index(*oid_idx)
+                //     .expect("Did not find {oid_idx} in oid_set");
                 let entry_name = filename_set
                     .get_index(*filename_idx)
-                    .expect(&format!("Did not find {filename_idx} in filename_set"));
+                    .expect("Did not find {filename_idx} in filename_set");
                 let entry_path = format!("{path}/{entry_name}");
-                let cache_key_if_folder = &(*oid_idx, None);
-                if self.cache.contains_key(cache_key_if_folder) {
-                    return Some((
-                        entry_path,
-                        self.cache
-                            .get(cache_key_if_folder)
-                            .expect(&format!(
-                                "Didn't find result in cahe (folder key) even though it exists"
-                            ))
-                            .clone(),
-                    ));
-                }
-                let cache_key_if_blob = &(*oid_idx, Some(*filename_idx));
-                if self.cache.contains_key(cache_key_if_blob) {
-                    return Some((
-                        entry_path,
-                        self.cache
-                            .get(cache_key_if_blob)
-                            .expect(&format!("Did not find result in blob cacahe"))
-                            .clone(),
-                    ));
-                }
                 match kind {
                     TreeChildKind::Blob => {
-                        acc += 1;
-                        match self.file_measurer.measure_entry(repo, &entry_path, oid) {
-                            Ok(measurement) => Some((entry_path, Either::Right(measurement))),
-                            Err(_) => {
-                                println!("Measuring blob with oid {oid} failed");
-                                None
-                            }
-                        }
+                        let cache_key_if_blob = &(*oid_idx, Some(*filename_idx));
+                        //todo figure out how to conditionally disable the cache
+                        // if self.cache.contains_key(cache_key_if_blob) {
+                        return Some((
+                            entry_path,
+                            self.cache
+                                .get(cache_key_if_blob)
+                                .expect("Did not find result in blob cache")
+                                .clone(),
+                        ));
+                        // }
+                        // acc += 1;
+                        // match self.file_measurer.measure_entry(repo, &entry_path, oid) {
+                        //     Ok(measurement) => Some((entry_path, Either::Right(measurement))),
+                        //     Err(_) => {
+                        //         println!("Measuring blob with oid {oid} failed");
+                        //         None
+                        //     }
+                        // }
                     }
                     TreeChildKind::Tree => {
-                        let child_object = mem_tree
+                        let cache_key_if_folder = &(*oid_idx, None);
+                        if self.cache.contains_key(cache_key_if_folder) {
+                            return Some((
+                                entry_path,
+                                self.cache
+                                    .get(cache_key_if_folder)
+                                    .expect(
+                                "Didn't find result in cache (folder key) even though it exists"
+                            )
+                                    .clone(),
+                            ));
+                        }
+                        let child_object = flat_tree
                             .get(oid_idx)
-                            .expect("Did not find {oid_idx} in flat repo");
+                            .expect("Did not find oid_idx in flat repo");
                         let (child_result, processed) = self
                             .measure_tree(
                                 &entry_path,
                                 child_object.unwrap_tree(),
                                 repo,
-                                mem_tree,
+                                flat_tree,
                                 filename_set,
                                 oid_set,
                                 entry_set,
                             )
-                            .expect("Measure tree for {oid_idx} failed");
+                            .expect("Measure tree for oid_idx failed");
 
                         let r = Either::Left(child_result);
                         acc += processed;
@@ -792,7 +792,7 @@ where
             .collect::<TreeDataCollection<T, F>>();
         let res = self.tree_reducer.reduce(repo, child_results)?;
         self.cache
-            .insert((tree.oid, None), Either::Left(res.clone()));
+            .insert((tree.oid_idx, None), Either::Left(res.clone()));
         Ok((res, acc))
     }
 
