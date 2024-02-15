@@ -14,6 +14,7 @@ use std::collections::HashSet;
 use std::fs::File;
 use std::io::BufWriter;
 use std::io::{self, BufReader};
+use std::str::FromStr;
 use thread_local::ThreadLocal;
 
 use ahash::{AHashMap, AHashSet};
@@ -46,7 +47,6 @@ fn count_commits(repo: &Repository) -> Result<usize, Box<dyn std::error::Error>>
 }
 
 type MyOid = usize;
-type MyEntry = (MyOid, FilenameIdx, TreeChildKind);
 type FlatGitRepo = AHashMap<MyOid, TreeChild>;
 type FilenameSet = IndexSet<String>;
 type FilenameIdx = usize;
@@ -54,6 +54,12 @@ type FilenameCache = AHashMap<FilenameIdx, HashSet<FilenameIdx>>;
 type OidSet = IndexSet<ObjectId>;
 type EntrySet = IndexSet<MyEntry>;
 
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Hash)]
+pub struct MyEntry {
+    pub oid_idx: MyOid,
+    pub filename_idx: FilenameIdx,
+    pub kind: TreeChildKind,
+}
 pub struct RepoCachedInfo {
     pub flat_tree: FlatGitRepo,
     pub filename_cache: FilenameCache,
@@ -199,7 +205,11 @@ where
                         EntryKind::Tree => TreeChildKind::Tree,
                         _ => continue,
                     };
-                    acc.insert((filename_idx, child_oid_idx, kind));
+                    acc.insert(MyEntry {
+                        filename_idx,
+                        oid_idx: child_oid_idx,
+                        kind,
+                    });
                 }
                 acc
             })
@@ -235,13 +245,15 @@ where
             .par_bridge()
             .fold(AHashMap::new, |mut acc: FlatGitRepo, oid_res| {
                 let Ok(oid) = oid_res else { return acc };
+                let oid_idx = oid_set.get_index_of(&oid).unwrap();
+                //Duplicate object
+                if acc.contains_key(&oid_idx) { return acc }
                 let repo: &Repository = tl.get_or(|| repo.clone().to_thread_local());
                 let obj =
                     match repo.find_object(oid) {
                         Ok(obj) => obj,
                         Err(_) => return acc,
                     };
-                let oid_idx = oid_set.get_index_of(&oid).unwrap();
                 match obj.kind {
                     gix::object::Kind::Tree => {
                         let tree_entry_children = obj
@@ -260,8 +272,24 @@ where
                                     EntryKind::Tree => TreeChildKind::Tree,
                                     _ => return None,
                                 };
-                                let entry = (filename_idx, child_oid_idx, kind);
-                                let entry_idx = entry_set.get_index_of(&entry).unwrap();
+                                let tree_entry = MyEntry {filename_idx, oid_idx: child_oid_idx, kind};
+                                let entry_idx = entry_set.get_index_of(&tree_entry).unwrap();
+                                if child_oid
+                                    == ObjectId::from_str(
+                                        "00000264228858f73a003e22cb157df1634519cb".into(),
+                                    )
+                                    .unwrap()
+                                {
+                                    println!(
+                                        "Processing tree entry for child {:?} (child_idx {}) (parent tree {} idx {}) with mode {:?}. Has entry id {}",
+                                        child_oid,
+                                        child_oid_idx,
+                                        oid,
+                                        oid_idx,
+                                        entry.mode.as_str(),
+                                        entry_idx
+                                    );
+                                }
                                 Some(entry_idx)
                             })
                             .collect::<Vec<usize>>();
@@ -349,7 +377,9 @@ where
                 entries
             }
         };
-        let filename_cache = self.build_filename_cache(&entries, &oid_entries).unwrap();
+        let filename_cache = self
+            .build_filename_cache(&entries, &oid_set, &oid_entries)
+            .unwrap();
 
         (
             false,
@@ -363,6 +393,7 @@ where
     pub fn build_filename_cache(
         &self,
         entry_set: &EntrySet,
+        oid_set: &OidSet,
         flat_repo: &FlatGitRepo,
     ) -> Result<FilenameCache, Box<dyn std::error::Error>> {
         let start = Instant::now();
@@ -374,12 +405,30 @@ where
             .par_iter()
             .progress_with(progress)
             .fold(AHashMap::new, |mut acc: FilenameCache, (oid_idx, child)| {
+                let oid = oid_set.get_index(*oid_idx).unwrap();
+                let mut debug = false;
+                if *oid == ObjectId::from_str("6e37fc5b0155dd4755770b92be273c9f099a55ef").unwrap() {
+                    println!("Processing tree {}", oid_idx);
+                    debug = true;
+                }
                 match child {
                     TreeChild::Tree(tree) => {
-                        let acc_entry = acc.entry(*oid_idx).or_insert_with(HashSet::new);
                         for entry_idx in &tree.children {
-                            let (filename_idx, _, child_kind) =
-                                entry_set.get_index(*entry_idx).unwrap();
+                            if debug {
+                                println!("Parent tree has child with entry id {}", entry_idx);
+                            }
+                            let MyEntry {
+                                oid_idx: child_oid_idx,
+                                filename_idx,
+                                kind: child_kind,
+                            } = entry_set.get_index(*entry_idx).unwrap();
+                            let acc_entry = acc.entry(*child_oid_idx).or_insert_with(HashSet::new);
+                            if debug {
+                                println!(
+                                    "This entry contains {} {} {:?} ",
+                                    filename_idx, oid_idx, child_kind
+                                );
+                            }
                             if *child_kind == TreeChildKind::Blob {
                                 acc_entry.insert(*filename_idx);
                             }
@@ -421,7 +470,7 @@ where
         let mut inner_repo = gix::open(&self.repo_path)?;
         inner_repo.object_cache_size(50_000_000);
         let start_time = Instant::now();
-        let (loaded_from_file, mem_tree, filename_cache, filename_set, oid_set, entry_set) =
+        let (loaded_from_file, flat_tree, filename_cache, filename_set, oid_set, entry_set) =
             self.build_in_memory_tree();
         println!(
             "Built in memory tree in {} seconds",
@@ -430,11 +479,11 @@ where
         if batch_objects {
             self.batch_process_objects(&inner_repo, &filename_cache, &oid_set);
         }
-        if !loaded_from_file {
-            if let Err(e) = self.save_to_file(&filename_cache, &mem_tree) {
-                eprintln!("Failed to save to file: {}", e);
-            }
-        }
+        // if !loaded_from_file {
+        //     if let Err(e) = self.save_to_file(&filename_cache, &mem_tree) {
+        //         eprintln!("Failed to save to file: {}", e);
+        //     }
+        // }
         let commit_count = count_commits(&gix::open(&self.repo_path)?)?;
         println!("Found {commit_count} commits. Starting to walk the repo.");
         let head_id = inner_repo.head_id();
@@ -504,13 +553,13 @@ where
 
             let tree = info.object().unwrap().tree().unwrap();
             let tree_alias_idx = oid_set.get_index_of(&tree.id).unwrap();
-            let tree_lookedup = mem_tree.get(&tree_alias_idx).unwrap();
+            let tree_lookedup = flat_tree.get(&tree_alias_idx).unwrap();
             let (res, processed) = self
                 .measure_tree(
                     "",
                     tree_lookedup.unwrap_tree(),
                     &inner_repo,
-                    &mem_tree,
+                    &flat_tree,
                     &filename_set,
                     &oid_set,
                     &entry_set,
@@ -585,10 +634,13 @@ where
                     match obj.kind {
                         gix::object::Kind::Blob => {
                             let oid_idx = oid_set.get_index_of(&oid).unwrap();
-                            let parent_trees = filename_cache.get(&oid_idx).expect(
-                                format!("No parent trees in filename cache for blob: {}", oid)
-                                    .as_str(),
-                            );
+                            let Some(parent_trees) = filename_cache.get(&oid_idx) else {
+                                println!(
+                                    "No parent trees in filename cache for blob: {} with idx {}",
+                                    oid, oid_idx
+                                );
+                                return acc;
+                            };
                             for filename_idx in parent_trees {
                                 let parent_filename = "parentfilename".to_owned();
                                 let file_res =
@@ -698,26 +750,27 @@ where
             .iter()
             .filter_map(|entry_idx| {
                 let entry = entry_set.get_index(*entry_idx).unwrap();
-                let (filename_idx, oid_idx, kind) = entry;
+                let filename_idx = &entry.filename_idx;
+                let oid_idx = &entry.oid_idx;
+                let kind = &entry.kind;
                 let oid = oid_set.get_index(*oid_idx).unwrap();
                 let entry_name = filename_set.get_index(*filename_idx).unwrap();
                 let entry_path = format!("{path}/{entry_name}");
-                let entry_name = "entry".to_owned();
                 let cache_key_if_folder = &(*oid_idx, None);
                 if self.cache.contains_key(cache_key_if_folder) {
-                    return Some((entry_name, self.cache.get(cache_key_if_folder).unwrap().clone()));
+                    return Some((entry_path, self.cache.get(cache_key_if_folder).unwrap().clone()));
                 }
                         let cache_key_if_blob = &(*oid_idx, Some(*filename_idx));
                         if self.cache.contains_key(cache_key_if_blob) {
-                            return Some((entry_name, self.cache.get(cache_key_if_folder).unwrap().clone()));
+                            return Some((entry_path, self.cache.get(cache_key_if_folder).unwrap().clone()));
                         }
                 match kind {
                     TreeChildKind::Blob => {
                         acc += 1;
                         match self
                             .file_measurer
-                            .measure_entry(repo, path, oid) {
-                                Ok(measurement) => Some((entry_name, Either::Right(measurement))),
+                            .measure_entry(repo, &entry_path, oid) {
+                                Ok(measurement) => Some((entry_path, Either::Right(measurement))),
                                 Err(_) => None,
                             }
                     }
@@ -725,7 +778,7 @@ where
                         let child_object = mem_tree.get(oid_idx).unwrap();
                         let (child_result, processed) = self
                             .measure_tree(
-                                &format!("{path}/{entry_name}"),
+                                &entry_path,
                                 child_object.unwrap_tree(),
                                 repo,
                                 mem_tree,
@@ -737,7 +790,7 @@ where
 
                         let r = Either::Left(child_result);
                         acc += processed;
-                        Some((entry_name, r))
+                        Some((entry_path, r))
                     }
                     _  => {
                         println!("Warning: skiping unsupported git object type {:?} under '{entry_name}' in tree {}", kind, oid);
@@ -750,28 +803,6 @@ where
         self.cache
             .insert((tree.oid, None), Either::Left(res.clone()));
         Ok((res, acc))
-    }
-
-    fn save_to_file(
-        &self,
-        filename_cache: &FilenameCache,
-        mem_tree: &FlatGitRepo,
-    ) -> io::Result<()> {
-        let filename_cache_path = format!("{}/filename_cache.bin", self.repo_path);
-        let mem_tree_path = format!("{}/mem_tree.bin", self.repo_path);
-
-        let filename_cache_file = File::create(filename_cache_path)?;
-        let mem_tree_file = File::create(mem_tree_path)?;
-
-        let mut filename_cache_writer = BufWriter::new(filename_cache_file);
-        let mut mem_tree_writer = BufWriter::new(mem_tree_file);
-
-        bincode::serialize_into(&mut filename_cache_writer, &filename_cache)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-        bincode::serialize_into(&mut mem_tree_writer, &mem_tree)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-
-        Ok(())
     }
 
     fn load_cache<Cache>(&self, cache_name: &str) -> io::Result<Cache>
