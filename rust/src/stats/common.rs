@@ -48,7 +48,13 @@ where
 
     fn measure_bytes(&self, contents: &[u8]) -> Result<T, Box<dyn std::error::Error>>;
 }
-pub trait TreeReducer<TreeData, FileData> {
+pub trait PossiblyEmpty {
+    fn is_empty(&self) -> bool;
+}
+pub trait TreeReducer<TreeData, FileData>
+where
+    TreeData: PossiblyEmpty,
+{
     fn reduce(
         &self,
         repo: &Repository,
@@ -61,6 +67,11 @@ pub type TreeDataCollection<Tree, Leaf> = BTreeMap<String, Either<Tree, Leaf>>;
 pub struct FileCount(pub usize);
 unsafe impl Send for FileCount {}
 unsafe impl Sync for FileCount {}
+impl PossiblyEmpty for FileCount {
+    fn is_empty(&self) -> bool {
+        self.0 == 0
+    }
+}
 pub struct FileCountReducer {}
 impl TreeReducer<FileCount, NumMatches> for FileCountReducer {
     fn reduce(
@@ -91,6 +102,11 @@ pub struct NumMatches(pub usize);
 
 unsafe impl Send for NumMatches {}
 unsafe impl Sync for NumMatches {}
+impl PossiblyEmpty for NumMatches {
+    fn is_empty(&self) -> bool {
+        self.0 == 0
+    }
+}
 pub struct NumMatchesReducer {}
 impl TreeReducer<NumMatches, NumMatches> for NumMatchesReducer {
     fn reduce(

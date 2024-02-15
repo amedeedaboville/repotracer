@@ -3,7 +3,7 @@ use anyhow::Error;
 use gix::Repository;
 use tokei::{CodeStats, Config, Language, LanguageType, Report};
 
-use super::common::{Either, TreeDataCollection, TreeReducer};
+use super::common::{Either, PossiblyEmpty, TreeDataCollection, TreeReducer};
 
 pub struct TokeiCollector {}
 
@@ -31,6 +31,16 @@ impl FileMeasurement<CodeStats> for TokeiCollector {
 }
 
 pub struct TokeiReducer {}
+impl PossiblyEmpty for CodeStats {
+    fn is_empty(&self) -> bool {
+        self.lines() == 0
+    }
+}
+impl PossiblyEmpty for Report {
+    fn is_empty(&self) -> bool {
+        self.is_empty()
+    }
+}
 impl TreeReducer<Report, CodeStats> for TokeiReducer {
     fn reduce(
         &self,

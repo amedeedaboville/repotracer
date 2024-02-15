@@ -10,9 +10,11 @@ use rayon::prelude::*;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
 use smallset::SmallSet;
+use smallvec::SmallVec;
 use std::any::Any;
 use std::collections::HashSet;
 use std::fs::File;
+use std::hash::Hash;
 use std::io::BufWriter;
 use std::io::{self, BufReader};
 use std::str::FromStr;
@@ -32,7 +34,8 @@ use std::fmt::Debug;
 use std::io::Write;
 
 use crate::stats::common::{
-    BlobMeasurer, Either, FileMeasurement, PathMeasurement, TreeDataCollection, TreeReducer,
+    BlobMeasurer, Either, FileMeasurement, PathMeasurement, PossiblyEmpty, TreeDataCollection,
+    TreeReducer,
 };
 #[derive(Debug)]
 pub struct CommitStat {
@@ -109,7 +112,7 @@ pub struct CachedWalker<T, F> {
 }
 impl<T, F> CachedWalker<T, F>
 where
-    T: Debug + Clone + Send + Sync + 'static,
+    T: Debug + Clone + Send + Sync + 'static + PossiblyEmpty,
     F: Debug + Clone + Send + Sync + 'static,
 {
     pub fn new(
@@ -133,6 +136,7 @@ where
         repo: &ThreadSafeRepository,
         oid_set: &OidSet,
     ) -> Result<FilenameSet, Box<dyn std::error::Error>> {
+        let start = Instant::now();
         let tl = ThreadLocal::new();
         let style = ProgressStyle::default_bar().template(
             "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}/{len:7} ({eta}) {per_sec}").expect("error with progress bar style");
@@ -161,9 +165,11 @@ where
                 },
             );
         println!(
-            "Built filename set with {} unique filenames",
-            filenames.len()
+            "Built filename set with {} unique filenames in {} secs",
+            filenames.len(),
+            start.elapsed().as_secs()
         );
+
         Ok(filenames)
     }
     pub fn build_entries_set(
@@ -315,6 +321,7 @@ where
         Ok(oid_entries)
     }
     pub fn build_oid_set(&self, repo: &Repository) -> Result<OidSet, Box<dyn std::error::Error>> {
+        let start = Instant::now();
         let oids = repo
             .objects
             .iter()
@@ -329,6 +336,7 @@ where
             })
             .collect::<Vec<(ObjectId, Kind)>>();
         let oid_set = oids.into_iter().collect::<IndexSet<(ObjectId, Kind)>>();
+        println!("Built object set in {} seconds", start.elapsed().as_secs());
         Ok(oid_set)
     }
     pub fn build_in_memory_tree(
@@ -401,9 +409,7 @@ where
                 entries
             }
         };
-        let filename_cache = self
-            .build_filename_cache(&entries, &oid_set, &oid_entries)
-            .unwrap();
+        let filename_cache = self.build_filename_cache(&entries, &oid_entries).unwrap();
 
         (
             false,
@@ -417,7 +423,6 @@ where
     pub fn build_filename_cache(
         &self,
         entry_set: &EntrySet,
-        oid_set: &OidSet,
         flat_repo: &FlatGitRepo,
     ) -> Result<FilenameCache, Box<dyn std::error::Error>> {
         let start = Instant::now();
@@ -435,26 +440,15 @@ where
                     filename_idx,
                     kind,
                 } = entry;
-                // let oid = oid_set.get_index(oid_idx).unwrap();
-                // let mut debug = false;
-                // if *oid == ObjectId::from_str("6e37fc5b0155dd4755770b92be273c9f099a55ef").unwrap() {
-                //     println!("Processing tree {}", oid_idx);
-                //     debug = true;
-                // }
                 if *kind != TreeChildKind::Blob {
                     return acc;
                 }
-                // if debug {
-                //     println!("Parent tree has child with entry id {}", entry_idx);
-                // }
-                let acc_entry = acc.entry(*oid_idx).or_insert_with(HashSet::new);
-                // if debug {
-                //     println!(
-                //         "This entry contains {} {} {:?} ",
-                //         filename_idx, oid_idx, child_kind
-                //     );
-                // }
-                acc_entry.insert(*filename_idx);
+                if acc.contains_key(oid_idx) {
+                    let acc_entry = acc.get_mut(oid_idx).unwrap();
+                    acc_entry.insert(*filename_idx);
+                } else {
+                    acc.insert(*oid_idx, HashSet::from([*filename_idx]));
+                }
                 acc
             })
             .reduce(
@@ -575,7 +569,7 @@ where
             let tree_lookedup = flat_tree.get(&tree_alias_idx).unwrap();
             let (res, processed) = self
                 .measure_tree(
-                    "",
+                    SmallVec::new(),
                     tree_lookedup.unwrap_tree(),
                     &inner_repo,
                     &flat_tree,
@@ -695,7 +689,7 @@ where
     }
     fn measure_tree(
         &mut self,
-        path: &str,
+        path: SmallVec<[FilenameIdx; 10]>,
         tree: &TreeEntry,
         repo: &Repository,
         flat_tree: &FlatGitRepo,
@@ -718,21 +712,22 @@ where
             .children
             .iter()
             .filter_map(|entry_idx| {
-                let entry = entry_set
-                    .get_index(*entry_idx as usize)
-                    .expect("Did not find entry_idx in entry_set");
                 let MyEntry {
                     oid_idx,
                     filename_idx,
                     kind,
-                } = entry;
-                // let (oid, _) = oid_set
-                //     .get_index(*oid_idx)
-                //     .expect("Did not find {oid_idx} in oid_set");
-                let entry_name = filename_set
-                    .get_index(*filename_idx as usize)
-                    .expect("Did not find {filename_idx} in filename_set");
-                let entry_path = format!("{path}/{entry_name}");
+                } = entry_set
+                    .get_index(*entry_idx as usize)
+                    .expect("Did not find entry_idx in entry_set");
+                let mut new_path = path.clone();
+                new_path.push(*filename_idx);
+                let path_pieces = new_path
+                    .iter()
+                    .map(|idx| filename_set.get_index(*idx as usize).unwrap())
+                    .map(AsRef::as_ref)
+                    .collect::<Vec<&str>>();
+                let entry_path = path_pieces.join("/");
+
                 match kind {
                     TreeChildKind::Blob => {
                         let cache_key_if_blob = &(*oid_idx, Some(*filename_idx));
@@ -768,13 +763,13 @@ where
                                     .clone(),
                             ));
                         }
-                        let child_object = flat_tree
+                        let child = flat_tree
                             .get(oid_idx)
                             .expect("Did not find oid_idx in flat repo");
                         let (child_result, processed) = self
                             .measure_tree(
-                                &entry_path,
-                                child_object.unwrap_tree(),
+                                new_path,
+                                child.unwrap_tree(),
                                 repo,
                                 flat_tree,
                                 filename_set,
@@ -782,10 +777,11 @@ where
                                 entry_set,
                             )
                             .expect("Measure tree for oid_idx failed");
-
-                        let r = Either::Left(child_result);
                         acc += processed;
-                        Some((entry_path, r))
+                        match child_result.is_empty() {
+                            true => None,
+                            false => Some((entry_path, Either::Left(child_result))),
+                        }
                     }
                 }
             })
