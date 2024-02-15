@@ -27,3 +27,6 @@ serde_with = "3.6.1"
 bincode = "1.3.3"
 indexmap = {version = "2.2.3", features=["serde"]}
 smallset = "0.1.1"
+flate2 = { version = "1.0.28", features = ["rust_backend"] }
+gzp = "0.11.3"
+ahash = {version = "0.8.8", features = ["serde"]}

@@ -1,4 +1,5 @@
-use bincode;
+use bincode::{deserialize, serialize};
+use flate2::read::{GzDecoder, ZlibDecoder};
 use gix::objs::tree::{Entry, EntryKind, EntryMode};
 use gix::revision::walk::Info;
 use indexmap::IndexSet;
@@ -15,6 +16,7 @@ use std::io::BufWriter;
 use std::io::{self, BufReader};
 use thread_local::ThreadLocal;
 
+use ahash::{AHashMap, AHashSet};
 use gix::{ObjectId, Repository, ThreadSafeRepository, Tree};
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use std::{
@@ -22,7 +24,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+use flate2::{write::ZlibEncoder, Compression};
+use gzp::{deflate::Gzip, ZBuilder, ZWriter};
 use std::fmt::Debug;
+use std::io::Write;
 
 use crate::stats::common::{
     BlobMeasurer, Either, FileMeasurement, PathMeasurement, TreeDataCollection, TreeReducer,
@@ -42,10 +47,10 @@ fn count_commits(repo: &Repository) -> Result<usize, Box<dyn std::error::Error>>
 
 type MyOid = usize;
 type MyEntry = (MyOid, FilenameIdx, TreeChildKind);
-type FlatGitRepo = HashMap<MyOid, TreeChild>;
+type FlatGitRepo = AHashMap<MyOid, TreeChild>;
 type FilenameSet = IndexSet<String>;
 type FilenameIdx = usize;
-type FilenameCache = HashMap<FilenameIdx, HashSet<FilenameIdx>>;
+type FilenameCache = AHashMap<FilenameIdx, HashSet<FilenameIdx>>;
 type OidSet = IndexSet<ObjectId>;
 type EntrySet = IndexSet<MyEntry>;
 
@@ -86,7 +91,7 @@ pub struct BlobParent {
 }
 
 pub struct CachedWalker<T, F> {
-    cache: HashMap<(MyOid, Option<FilenameIdx>), Either<T, F>>,
+    cache: AHashMap<(MyOid, Option<FilenameIdx>), Either<T, F>>,
     filename_cache: FilenameCache,
     mem_tree: FlatGitRepo,
     repo_path: String,
@@ -105,10 +110,10 @@ where
         tree_reducer: Box<dyn TreeReducer<T, F> + Sync + Send>, // Adjusted type here
     ) -> Self {
         CachedWalker {
-            filename_cache: HashMap::new(),
-            cache: HashMap::new(),
+            filename_cache: AHashMap::new(),
+            cache: AHashMap::new(),
             repo: gix::open(&repo_path).unwrap(),
-            mem_tree: HashMap::new(),
+            mem_tree: AHashMap::new(),
             repo_path,
             file_measurer,
             tree_reducer,
@@ -142,18 +147,10 @@ where
                     return acc;
                 }
                 let obj = repo.find_object(oid).expect("Failed to find object");
-                obj.into_tree()
-                    .decode()
-                    .unwrap()
-                    .entries
-                    .iter()
-                    .map(|entry| entry.filename.to_string())
-                    .collect::<Vec<String>>()
-                    .into_iter()
-                    .fold(acc, |mut acc, filename| {
-                        acc.insert(filename);
-                        acc
-                    })
+                for entry in obj.into_tree().decode().unwrap().entries.iter() {
+                    acc.insert(entry.filename.to_string());
+                }
+                acc
             })
             .reduce(
                 || IndexSet::new(),
@@ -185,37 +182,25 @@ where
             )
             .progress_with(progress)
             .par_bridge()
-            .flat_map(|oid_res| {
-                let Ok(oid) = oid_res else { return vec![] };
+            .fold(IndexSet::new, |mut acc: EntrySet, oid_res| {
+                let Ok(oid) = oid_res else { return acc };
                 let repo: &Repository = tl.get_or(|| repo.clone().to_thread_local());
                 let header = repo.find_header(oid).expect("Failed to find header");
                 if header.kind() != gix::object::Kind::Tree {
-                    return vec![];
+                    return acc;
                 }
                 let obj = repo.find_object(oid).expect("Failed to find object");
-                let oid_idx = oid_set.get_index_of(&oid).unwrap();
-                obj.into_tree()
-                    .decode()
-                    .unwrap()
-                    .entries
-                    .iter()
-                    .filter_map(|entry| {
-                        let filename_idx =
-                            filenames.get_index_of(&entry.filename.to_string()).unwrap();
-                        let child_oid: ObjectId = entry.oid.into();
-                        let child_oid_idx = oid_set.get_index_of(&child_oid).unwrap();
-                        let kind = match entry.mode.into() {
-                            EntryKind::Blob => TreeChildKind::Blob,
-                            EntryKind::Tree => TreeChildKind::Tree,
-                            _ => return None,
-                        };
-                        let entry = (filename_idx, child_oid_idx, kind);
-                        Some(entry)
-                    })
-                    .collect::<Vec<MyEntry>>()
-            })
-            .fold(IndexSet::new, |mut acc: IndexSet<MyEntry>, entry| {
-                acc.insert(entry);
+                for entry in obj.into_tree().decode().unwrap().entries.iter() {
+                    let child_oid: ObjectId = entry.oid.into();
+                    let child_oid_idx = oid_set.get_index_of(&child_oid).unwrap();
+                    let filename_idx = filenames.get_index_of(&entry.filename.to_string()).unwrap();
+                    let kind = match entry.mode.into() {
+                        EntryKind::Blob => TreeChildKind::Blob,
+                        EntryKind::Tree => TreeChildKind::Tree,
+                        _ => continue,
+                    };
+                    acc.insert((filename_idx, child_oid_idx, kind));
+                }
                 acc
             })
             .reduce(IndexSet::new, |mut acc, cur| {
@@ -239,63 +224,63 @@ where
             "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}/{len:7} ({eta}) {per_sec}").expect("error with progress bar style");
         let progress = ProgressBar::new(oid_set.len() as u64);
         progress.set_style(style);
-        let oid_entries: HashMap<MyOid, TreeChild> =
-            repo.objects
-                .iter()
-                .unwrap()
-                .with_ordering(
-                    gix::odb::store::iter::Ordering::PackAscendingOffsetThenLooseLexicographical,
-                )
-                .progress_with(progress)
-                .par_bridge()
-                .fold(HashMap::new, |mut acc: FlatGitRepo, oid_res| {
-                    let Ok(oid) = oid_res else { return acc };
-                    let repo: &Repository = tl.get_or(|| repo.clone().to_thread_local());
-                    let obj = match repo.find_object(oid) {
+        let oid_entries: AHashMap<MyOid, TreeChild> = repo
+            .objects
+            .iter()
+            .unwrap()
+            .with_ordering(
+                gix::odb::store::iter::Ordering::PackAscendingOffsetThenLooseLexicographical,
+            )
+            .progress_with(progress)
+            .par_bridge()
+            .fold(AHashMap::new, |mut acc: FlatGitRepo, oid_res| {
+                let Ok(oid) = oid_res else { return acc };
+                let repo: &Repository = tl.get_or(|| repo.clone().to_thread_local());
+                let obj =
+                    match repo.find_object(oid) {
                         Ok(obj) => obj,
                         Err(_) => return acc,
                     };
-                    let oid_idx = oid_set.get_index_of(&oid).unwrap();
-                    match obj.kind {
-                        gix::object::Kind::Tree => {
-                            let tree_entry_children = obj
-                                .into_tree()
-                                .decode()
-                                .unwrap()
-                                .entries
-                                .iter()
-                                .filter_map(|entry| {
-                                    let filename_idx = filenames
-                                        .get_index_of(&entry.filename.to_string())
-                                        .unwrap();
-                                    let child_oid: ObjectId = entry.oid.into();
-                                    let child_oid_idx = oid_set.get_index_of(&child_oid).unwrap();
-                                    let kind = match entry.mode.into() {
-                                        EntryKind::Blob => TreeChildKind::Blob,
-                                        EntryKind::Tree => TreeChildKind::Tree,
-                                        _ => return None,
-                                    };
-                                    let entry = (filename_idx, child_oid_idx, kind);
-                                    let entry_idx = entry_set.get_index_of(&entry).unwrap();
-                                    Some(entry_idx)
-                                })
-                                .collect::<Vec<usize>>();
-                            acc.insert(
-                                oid_idx,
-                                TreeChild::Tree(TreeEntry {
-                                    oid: oid_idx,
-                                    children: tree_entry_children,
-                                }),
-                            );
-                        }
-                        _ => {}
+                let oid_idx = oid_set.get_index_of(&oid).unwrap();
+                match obj.kind {
+                    gix::object::Kind::Tree => {
+                        let tree_entry_children = obj
+                            .into_tree()
+                            .decode()
+                            .unwrap()
+                            .entries
+                            .iter()
+                            .filter_map(|entry| {
+                                let filename_idx =
+                                    filenames.get_index_of(&entry.filename.to_string()).unwrap();
+                                let child_oid: ObjectId = entry.oid.into();
+                                let child_oid_idx = oid_set.get_index_of(&child_oid).unwrap();
+                                let kind = match entry.mode.into() {
+                                    EntryKind::Blob => TreeChildKind::Blob,
+                                    EntryKind::Tree => TreeChildKind::Tree,
+                                    _ => return None,
+                                };
+                                let entry = (filename_idx, child_oid_idx, kind);
+                                let entry_idx = entry_set.get_index_of(&entry).unwrap();
+                                Some(entry_idx)
+                            })
+                            .collect::<Vec<usize>>();
+                        acc.insert(
+                            oid_idx,
+                            TreeChild::Tree(TreeEntry {
+                                oid: oid_idx,
+                                children: tree_entry_children,
+                            }),
+                        );
                     }
-                    acc
-                })
-                .reduce(HashMap::new, |mut acc, cur| {
-                    acc.extend(cur);
-                    acc
-                });
+                    _ => {}
+                }
+                acc
+            })
+            .reduce(AHashMap::new, |mut acc, cur| {
+                acc.extend(cur);
+                acc
+            });
         Ok(oid_entries)
     }
     pub fn build_in_memory_tree(
@@ -349,7 +334,7 @@ where
                 entries
             }
         };
-        println!("Getting flat hashmap of all trees in the repo.");
+        println!("Getting flat AHashMap of all trees in the repo.");
         let oid_entries = match self.load_cache::<FlatGitRepo>("flat_tree") {
             Ok(f) => {
                 println!("Loaded {} trees from cache.", f.len());
@@ -364,25 +349,7 @@ where
                 entries
             }
         };
-        println!("Building filename cache");
-        let filename_cache = match self.load_cache::<FilenameCache>("filename_cache") {
-            Ok(f) => {
-                println!(
-                    "Loaded the filenames of {} unique objects from cache.",
-                    f.len()
-                );
-                f
-            }
-            Err(e) => {
-                println!(
-                    "Collecting object filenames from scratch due to error: {}",
-                    e
-                );
-                let entries = self.build_filename_cache(&entries, &oid_entries).unwrap();
-                self.save_cache("filename_cache", &entries);
-                entries
-            }
-        };
+        let filename_cache = self.build_filename_cache(&entries, &oid_entries).unwrap();
 
         (
             false,
@@ -406,7 +373,7 @@ where
         let mut filename_cache = flat_repo
             .par_iter()
             .progress_with(progress)
-            .fold(HashMap::new, |mut acc: FilenameCache, (oid_idx, child)| {
+            .fold(AHashMap::new, |mut acc: FilenameCache, (oid_idx, child)| {
                 match child {
                     TreeChild::Tree(tree) => {
                         let acc_entry = acc.entry(*oid_idx).or_insert_with(HashSet::new);
@@ -423,7 +390,7 @@ where
                 acc
             })
             .reduce(
-                || HashMap::with_capacity(flat_repo.len()),
+                || AHashMap::with_capacity(flat_repo.len()),
                 |mut acc: FilenameCache, cur: FilenameCache| {
                     for (key, value) in cur {
                         // The uncommented code is ~10x faster than this "idiomatic" version
@@ -609,37 +576,47 @@ where
             )
             .par_bridge()
             .progress_with(progress)
-            .flat_map(|oid_res| {
-                let Ok(oid) = oid_res else { return vec![] };
-                let repo: &Repository = tl.get_or(|| shared_repo.clone().to_thread_local());
-                let obj = repo.find_object(oid).expect("Failed to find object");
-                match obj.kind {
-                    gix::object::Kind::Blob => {
-                        let oid_idx = oid_set.get_index_of(&oid).unwrap();
-                        let parent_trees = filename_cache.get(&oid_idx).expect(
-                            format!("No parent trees in filename cache for blob: {}", oid).as_str(),
-                        );
-                        parent_trees
-                            .iter()
-                            .filter_map(|filename_idx| {
+            .fold(
+                AHashMap::new,
+                |mut acc: AHashMap<(MyOid, Option<FilenameIdx>), Either<T, F>>, oid_res| {
+                    let Ok(oid) = oid_res else { return acc };
+                    let repo: &Repository = tl.get_or(|| shared_repo.clone().to_thread_local());
+                    let obj = repo.find_object(oid).expect("Failed to find object");
+                    match obj.kind {
+                        gix::object::Kind::Blob => {
+                            let oid_idx = oid_set.get_index_of(&oid).unwrap();
+                            let parent_trees = filename_cache.get(&oid_idx).expect(
+                                format!("No parent trees in filename cache for blob: {}", oid)
+                                    .as_str(),
+                            );
+                            for filename_idx in parent_trees {
                                 let parent_filename = "parentfilename".to_owned();
                                 let file_res =
                                     self.file_measurer
                                         .measure_entry(repo, &parent_filename, &oid);
                                 match file_res {
-                                    Ok(measurement) => Some((
-                                        (oid_idx, Some(*filename_idx)),
-                                        Either::Right(measurement),
-                                    )),
-                                    Err(_) => None,
+                                    Ok(measurement) => {
+                                        acc.insert(
+                                            (oid_idx, Some(*filename_idx)),
+                                            Either::Right(measurement),
+                                        );
+                                    }
+                                    Err(_) => {}
                                 }
-                            })
-                            .collect::<Vec<((MyOid, Option<usize>), Either<T, F>)>>()
-                    }
-                    _ => vec![],
-                }
-            })
-            .collect::<HashMap<(MyOid, Option<FilenameIdx>), Either<T, F>>>();
+                            }
+                        }
+                        _ => {}
+                    };
+                    acc
+                },
+            )
+            .reduce(
+                || AHashMap::new(),
+                |mut acc: AHashMap<(MyOid, Option<FilenameIdx>), Either<T, F>>, cur| {
+                    acc.extend(cur);
+                    acc
+                },
+            );
 
         println!(
             "Processed {} blobs (files) in {} seconds",
@@ -687,7 +664,7 @@ where
     //                 _ => None,
     //             }
     //         })
-    //         .collect::<HashMap<ObjectId, Either<T, F>>>();
+    //         .collect::<AHashMap<ObjectId, Either<T, F>>>();
 
     //     println!(
     //         "Processed {} blobs (files) in {} seconds",
@@ -797,33 +774,20 @@ where
         Ok(())
     }
 
-    fn load_from_file(&self) -> io::Result<(FlatGitRepo, FilenameCache)> {
-        let filename_cache_path = format!("{}/filename_cache.bin", self.repo_path);
-        let mem_tree_path = format!("{}/mem_tree.bin", self.repo_path);
-
-        let filename_cache_file = File::open(filename_cache_path)?;
-        let mem_tree_file = File::open(mem_tree_path)?;
-
-        let filename_cache_reader = BufReader::new(filename_cache_file);
-        let mem_tree_reader = BufReader::new(mem_tree_file);
-
-        let filename_cache: FilenameCache = bincode::deserialize_from(filename_cache_reader)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-        let mem_tree: FlatGitRepo = bincode::deserialize_from(mem_tree_reader)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-
-        Ok((mem_tree, filename_cache))
-    }
-
     fn load_cache<Cache>(&self, cache_name: &str) -> io::Result<Cache>
     where
         Cache: DeserializeOwned,
     {
+        let start_time = Instant::now();
         let cache_path = format!("{}/{}.bin", self.repo_path, cache_name);
         let cache_file = File::open(cache_path)?;
         let cache_reader = BufReader::new(cache_file);
         let cache: Cache = bincode::deserialize_from(cache_reader)
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        println!(
+            "Loaded {cache_name} in {} seconds",
+            start_time.elapsed().as_secs()
+        );
         Ok(cache)
     }
     fn save_cache<Cache>(&self, cache_name: &str, cache: &Cache) -> io::Result<()>
