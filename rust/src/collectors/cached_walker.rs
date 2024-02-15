@@ -1,6 +1,7 @@
 use bincode::{deserialize, serialize};
 use flate2::read::{GzDecoder, ZlibDecoder};
 use gix::objs::tree::{Entry, EntryKind, EntryMode};
+use gix::objs::Kind;
 use gix::revision::walk::Info;
 use indexmap::IndexSet;
 use indicatif::{ParallelProgressIterator, ProgressIterator};
@@ -50,9 +51,10 @@ type MyOid = usize;
 type FlatGitRepo = AHashMap<MyOid, TreeChild>;
 type FilenameSet = IndexSet<String>;
 type FilenameIdx = usize;
-type FilenameCache = AHashMap<FilenameIdx, HashSet<FilenameIdx>>;
-type OidSet = IndexSet<ObjectId>;
+type FilenameCache = AHashMap<MyOid, HashSet<FilenameIdx>>;
+type OidSet = IndexSet<(ObjectId, Kind)>;
 type EntrySet = IndexSet<MyEntry>;
+type EntryIdx = u32;
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Hash)]
 pub struct MyEntry {
@@ -88,7 +90,7 @@ pub enum TreeChildKind {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TreeEntry {
     pub oid: MyOid,
-    pub children: Vec<usize>,
+    pub children: Vec<EntryIdx>,
 }
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct BlobParent {
@@ -129,30 +131,23 @@ where
     pub fn build_filename_set(
         &self,
         repo: &ThreadSafeRepository,
-        num_oids: u64,
+        oid_set: &OidSet,
     ) -> Result<FilenameSet, Box<dyn std::error::Error>> {
         let tl = ThreadLocal::new();
         let style = ProgressStyle::default_bar().template(
             "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}/{len:7} ({eta}) {per_sec}").expect("error with progress bar style");
-        let progress = ProgressBar::new(num_oids);
+        let progress = ProgressBar::new(oid_set.len() as u64);
         progress.set_style(style);
-        let filenames: FilenameSet = repo
-            .objects
+        let filenames: FilenameSet = oid_set
             .iter()
-            .unwrap()
-            .with_ordering(
-                gix::odb::store::iter::Ordering::PackAscendingOffsetThenLooseLexicographical,
-            )
             .progress_with(progress)
             .par_bridge()
-            .fold(IndexSet::new, |mut acc: IndexSet<String>, oid_res| {
-                let Ok(oid) = oid_res else { return acc };
+            .fold(IndexSet::new, |mut acc: IndexSet<String>, (oid, kind)| {
                 let repo: &Repository = tl.get_or(|| repo.clone().to_thread_local());
-                let header = repo.find_header(oid).expect("Failed to find header");
-                if header.kind() != gix::object::Kind::Tree {
+                if !kind.is_tree() {
                     return acc;
                 }
-                let obj = repo.find_object(oid).expect("Failed to find object");
+                let obj = repo.find_object(*oid).expect("Failed to find object");
                 for entry in obj.into_tree().decode().unwrap().entries.iter() {
                     acc.insert(entry.filename.to_string());
                 }
@@ -165,49 +160,57 @@ where
                     acc
                 },
             );
+        println!(
+            "Built filename set with {} unique filenames",
+            filenames.len()
+        );
         Ok(filenames)
     }
     pub fn build_entries_set(
         &self,
         repo: &ThreadSafeRepository,
         oid_set: &OidSet,
-        filenames: &FilenameSet,
+        filename_set: &FilenameSet,
     ) -> Result<EntrySet, Box<dyn std::error::Error>> {
         let num_oids = oid_set.len() as u64;
         let tl = ThreadLocal::new();
         let style = ProgressStyle::default_bar().template(
             "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}/{len:7} ({eta}) {per_sec}").expect("error with progress bar style");
-        let progress = ProgressBar::new(num_oids);
+        let progress = ProgressBar::new(oid_set.len() as u64);
         progress.set_style(style);
-        let entries = repo
-            .objects
+        let entries = oid_set
             .iter()
-            .unwrap()
-            .with_ordering(
-                gix::odb::store::iter::Ordering::PackAscendingOffsetThenLooseLexicographical,
-            )
-            .progress_with(progress)
             .par_bridge()
-            .fold(IndexSet::new, |mut acc: EntrySet, oid_res| {
-                let Ok(oid) = oid_res else { return acc };
+            .progress_with(progress)
+            .fold(IndexSet::new, |mut acc: EntrySet, (oid, kind)| {
                 let repo: &Repository = tl.get_or(|| repo.clone().to_thread_local());
-                let header = repo.find_header(oid).expect("Failed to find header");
-                if header.kind() != gix::object::Kind::Tree {
+                if !kind.is_tree() {
                     return acc;
                 }
-                let obj = repo.find_object(oid).expect("Failed to find object");
+                let obj = repo.find_object(*oid).expect("Failed to find object");
                 for entry in obj.into_tree().decode().unwrap().entries.iter() {
                     let child_oid: ObjectId = entry.oid.into();
-                    let child_oid_idx = oid_set.get_index_of(&child_oid).unwrap();
-                    let filename_idx = filenames.get_index_of(&entry.filename.to_string()).unwrap();
+                    let filename_idx = filename_set
+                        .get_index_of(&entry.filename.to_string())
+                        .unwrap();
                     let kind = match entry.mode.into() {
                         EntryKind::Blob => TreeChildKind::Blob,
                         EntryKind::Tree => TreeChildKind::Tree,
                         _ => continue,
                     };
+                    let other_kind =
+                        match entry.mode.into() {
+                            EntryKind::Blob => Kind::Blob,
+                            EntryKind::Tree => Kind::Tree,
+                            _ => {
+                                println!("unreachable new code");
+                                continue;
+                            }
+                        };
+                    let child_oid_idx = oid_set.get_index_of(&(child_oid, other_kind)).unwrap();
                     acc.insert(MyEntry {
-                        filename_idx,
                         oid_idx: child_oid_idx,
+                        filename_idx,
                         kind,
                     });
                 }
@@ -234,25 +237,19 @@ where
             "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}/{len:7} ({eta}) {per_sec}").expect("error with progress bar style");
         let progress = ProgressBar::new(oid_set.len() as u64);
         progress.set_style(style);
-        let oid_entries: AHashMap<MyOid, TreeChild> = repo
-            .objects
-            .iter()
-            .unwrap()
-            .with_ordering(
-                gix::odb::store::iter::Ordering::PackAscendingOffsetThenLooseLexicographical,
-            )
+        let oid_entries: AHashMap<MyOid, TreeChild> = oid_set.iter()
             .progress_with(progress)
             .par_bridge()
-            .fold(AHashMap::new, |mut acc: FlatGitRepo, oid_res| {
-                let Ok(oid) = oid_res else { return acc };
-                let oid_idx = oid_set.get_index_of(&oid).unwrap();
+            .fold(AHashMap::new, |mut acc: FlatGitRepo, (oid, kind) | {
+                //todo just use enumerate here
+                let oid_idx = oid_set.get_index_of(&(*oid, *kind)).unwrap();
                 //Duplicate object
                 if acc.contains_key(&oid_idx) { return acc }
                 let repo: &Repository = tl.get_or(|| repo.clone().to_thread_local());
                 let obj =
-                    match repo.find_object(oid) {
+                    match repo.find_object(*oid) {
                         Ok(obj) => obj,
-                        Err(_) => return acc,
+                        Err(_) => {println!("Error fetching object {oid}"); return acc},
                     };
                 match obj.kind {
                     gix::object::Kind::Tree => {
@@ -266,14 +263,21 @@ where
                                 let filename_idx =
                                     filenames.get_index_of(&entry.filename.to_string()).unwrap();
                                 let child_oid: ObjectId = entry.oid.into();
-                                let child_oid_idx = oid_set.get_index_of(&child_oid).unwrap();
+                                //todo we gotta standardize of the EnttryKidn enums
+                                let child_kind = match entry.mode.into() {
+                                    EntryKind::Blob => Kind::Blob,
+                                    EntryKind::Tree => Kind::Tree,
+                                    _ => return None,
+                                };
+                                //also indexSet could be an IndexMap of oid->kind
+                                let child_oid_idx = oid_set.get_index_of(&(child_oid, child_kind)).unwrap();
                                 let kind = match entry.mode.into() {
                                     EntryKind::Blob => TreeChildKind::Blob,
                                     EntryKind::Tree => TreeChildKind::Tree,
                                     _ => return None,
                                 };
-                                let tree_entry = MyEntry {filename_idx, oid_idx: child_oid_idx, kind};
-                                let entry_idx = entry_set.get_index_of(&tree_entry).unwrap();
+                                let tree_entry = MyEntry {oid_idx: child_oid_idx,filename_idx,  kind};
+                                let entry_idx = entry_set.get_index_of(&tree_entry).unwrap() as EntryIdx;
                                 if child_oid
                                     == ObjectId::from_str(
                                         "00000264228858f73a003e22cb157df1634519cb".into(),
@@ -292,7 +296,7 @@ where
                                 }
                                 Some(entry_idx)
                             })
-                            .collect::<Vec<usize>>();
+                            .collect::<Vec<EntryIdx>>();
                         acc.insert(
                             oid_idx,
                             TreeChild::Tree(TreeEntry {
@@ -311,6 +315,23 @@ where
             });
         Ok(oid_entries)
     }
+    pub fn build_oid_set(&self, repo: &Repository) -> Result<OidSet, Box<dyn std::error::Error>> {
+        let oids = repo
+            .objects
+            .iter()
+            .unwrap()
+            .with_ordering(
+                gix::odb::store::iter::Ordering::PackAscendingOffsetThenLooseLexicographical,
+            )
+            .filter_map(|oid_res| {
+                oid_res
+                    .map(|oid| (oid, repo.find_header(oid).unwrap().kind()))
+                    .ok()
+            })
+            .collect::<Vec<(ObjectId, Kind)>>();
+        let oid_set = oids.into_iter().collect::<IndexSet<(ObjectId, Kind)>>();
+        Ok(oid_set)
+    }
     pub fn build_in_memory_tree(
         &self,
     ) -> (
@@ -323,15 +344,19 @@ where
     ) {
         println!("Begining building in memory tree.");
         let repo = gix::open(&self.repo_path).unwrap();
-        let oids = repo
-            .objects
-            .iter()
-            .unwrap()
-            .filter_map(|oid_res| oid_res.ok())
-            .collect::<Vec<ObjectId>>();
-        let num_oids = oids.len() as u64;
-        let oid_set = oids.into_iter().collect::<IndexSet<ObjectId>>();
-        println!("Found {} oids", num_oids);
+        let oid_set: OidSet = match self.load_cache::<OidSet>("oids") {
+            Ok(f) => {
+                println!("Loaded {} objects from cache.", f.len());
+                f
+            }
+            Err(e) => {
+                println!("Computing object set from scratch due to error: {}", e);
+                let oids = self.build_oid_set(&repo).unwrap();
+                self.save_cache("oids", &oids);
+                oids
+            }
+        };
+        println!("Found {} oids", oid_set.len());
         let shared_repo = gix::ThreadSafeRepository::open(self.repo_path.clone()).unwrap();
 
         let filenames: FilenameSet =
@@ -342,7 +367,7 @@ where
                 }
                 Err(e) => {
                     println!("Computing filenames from scratch due to error: {}", e);
-                    let filenames = self.build_filename_set(&shared_repo, num_oids).unwrap();
+                    let filenames = self.build_filename_set(&shared_repo, &oid_set).unwrap();
                     self.save_cache("filenames", &filenames);
                     filenames
                 }
@@ -399,43 +424,38 @@ where
         let start = Instant::now();
         let style = ProgressStyle::default_bar().template(
             "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}/{len:7} ({eta}) {per_sec}").expect("error with progress bar style");
-        let progress = ProgressBar::new(flat_repo.len() as u64);
+        let progress = ProgressBar::new(entry_set.len() as u64);
         progress.set_style(style);
-        let mut filename_cache = flat_repo
-            .par_iter()
+        let mut filename_cache = entry_set
+            .iter()
+            .par_bridge()
             .progress_with(progress)
-            .fold(AHashMap::new, |mut acc: FilenameCache, (oid_idx, child)| {
-                let oid = oid_set.get_index(*oid_idx).unwrap();
-                let mut debug = false;
-                if *oid == ObjectId::from_str("6e37fc5b0155dd4755770b92be273c9f099a55ef").unwrap() {
-                    println!("Processing tree {}", oid_idx);
-                    debug = true;
+            .fold(AHashMap::new, |mut acc: FilenameCache, entry: &MyEntry| {
+                let MyEntry {
+                    oid_idx,
+                    filename_idx,
+                    kind,
+                } = entry;
+                // let oid = oid_set.get_index(oid_idx).unwrap();
+                // let mut debug = false;
+                // if *oid == ObjectId::from_str("6e37fc5b0155dd4755770b92be273c9f099a55ef").unwrap() {
+                //     println!("Processing tree {}", oid_idx);
+                //     debug = true;
+                // }
+                if *kind != TreeChildKind::Blob {
+                    return acc;
                 }
-                match child {
-                    TreeChild::Tree(tree) => {
-                        for entry_idx in &tree.children {
-                            if debug {
-                                println!("Parent tree has child with entry id {}", entry_idx);
-                            }
-                            let MyEntry {
-                                oid_idx: child_oid_idx,
-                                filename_idx,
-                                kind: child_kind,
-                            } = entry_set.get_index(*entry_idx).unwrap();
-                            let acc_entry = acc.entry(*child_oid_idx).or_insert_with(HashSet::new);
-                            if debug {
-                                println!(
-                                    "This entry contains {} {} {:?} ",
-                                    filename_idx, oid_idx, child_kind
-                                );
-                            }
-                            if *child_kind == TreeChildKind::Blob {
-                                acc_entry.insert(*filename_idx);
-                            }
-                        }
-                    }
-                    _ => {}
-                }
+                // if debug {
+                //     println!("Parent tree has child with entry id {}", entry_idx);
+                // }
+                let acc_entry = acc.entry(*oid_idx).or_insert_with(HashSet::new);
+                // if debug {
+                //     println!(
+                //         "This entry contains {} {} {:?} ",
+                //         filename_idx, oid_idx, child_kind
+                //     );
+                // }
+                acc_entry.insert(*filename_idx);
                 acc
             })
             .reduce(
@@ -552,7 +572,7 @@ where
             }
 
             let tree = info.object().unwrap().tree().unwrap();
-            let tree_alias_idx = oid_set.get_index_of(&tree.id).unwrap();
+            let tree_alias_idx = oid_set.get_index_of(&(tree.id, Kind::Tree)).unwrap();
             let tree_lookedup = flat_tree.get(&tree_alias_idx).unwrap();
             let (res, processed) = self
                 .measure_tree(
@@ -594,7 +614,7 @@ where
         &mut self,
         repo: &Repository,
         filename_cache: &FilenameCache,
-        oid_set: &IndexSet<ObjectId>,
+        oid_set: &OidSet,
     ) {
         println!("Processing all files in the object database");
         let start_time = Instant::now();
@@ -616,29 +636,27 @@ where
         let tl = ThreadLocal::new();
         let path = self.repo_path.clone();
         let shared_repo = gix::ThreadSafeRepository::open(path.clone()).unwrap();
-        self.cache = repo
-            .objects
+        self.cache = oid_set
             .iter()
-            .unwrap()
-            .with_ordering(
-                gix::odb::store::iter::Ordering::PackAscendingOffsetThenLooseLexicographical,
-            )
             .par_bridge()
             .progress_with(progress)
             .fold(
                 AHashMap::new,
-                |mut acc: AHashMap<(MyOid, Option<FilenameIdx>), Either<T, F>>, oid_res| {
-                    let Ok(oid) = oid_res else { return acc };
+                |mut acc: AHashMap<(MyOid, Option<FilenameIdx>), Either<T, F>>, (oid, kind)| {
+                    if !kind.is_blob() {
+                        return acc;
+                    }
                     let repo: &Repository = tl.get_or(|| shared_repo.clone().to_thread_local());
-                    let obj = repo.find_object(oid).expect("Failed to find object");
+                    let obj = repo.find_object(*oid).expect("Failed to find object");
                     match obj.kind {
                         gix::object::Kind::Blob => {
-                            let oid_idx = oid_set.get_index_of(&oid).unwrap();
+                            //todo just use enumerate instead of re-looking up
+                            let oid_idx = oid_set.get_index_of(&(*oid, *kind)).unwrap();
                             let Some(parent_trees) = filename_cache.get(&oid_idx) else {
-                                println!(
-                                    "No parent trees in filename cache for blob: {} with idx {}",
-                                    oid, oid_idx
-                                );
+                                // println!(
+                                //     "No parent trees in filename cache for blob: {} with idx {}",
+                                //     oid, oid_idx
+                                // );
                                 return acc;
                             };
                             for filename_idx in parent_trees {
@@ -676,54 +694,6 @@ where
             start_time.elapsed().as_secs()
         );
     }
-    // fn fill_cache_including_filename(&mut self, repo: &Repository) {
-    //     println!("Processing all files in the object database");
-    //     let start_time = Instant::now();
-
-    //     let oids = repo
-    //         .objects
-    //         .iter()
-    //         .unwrap()
-    //         .filter_map(|oid_res| oid_res.ok())
-    //         .collect::<Vec<ObjectId>>();
-    //     println!("done collecting oids.");
-    //     let style = ProgressStyle::default_bar().template(
-    //         "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}/{len:7} ({eta}) {per_sec}").expect("error with progress bar style");
-    //     let progress = ProgressBar::new(oids.len() as u64);
-    //     progress.set_style(style);
-    //     let tl = ThreadLocal::new();
-    //     let path = self.repo_path.clone();
-    //     let shared_repo = gix::ThreadSafeRepository::open(path.clone()).unwrap();
-    //     self.cache = repo
-    //         .objects
-    //         .iter()
-    //         .unwrap()
-    //         .with_ordering(
-    //             gix::odb::store::iter::Ordering::PackAscendingOffsetThenLooseLexicographical,
-    //         )
-    //         .par_bridge()
-    //         .progress_with(progress)
-    //         .filter_map(|oid_res| {
-    //             let Ok(oid) = oid_res else { return None };
-    //             let repo: &Repository = tl.get_or(|| shared_repo.clone().to_thread_local());
-    //             let obj = repo.find_object(oid).expect("Failed to find object");
-    //             match obj.kind {
-    //                 gix::object::Kind::Blob => self
-    //                     .file_measurer
-    //                     .measure_data(&obj.data)
-    //                     .ok()
-    //                     .map(|r| (oid, Either::Right(r))),
-    //                 _ => None,
-    //             }
-    //         })
-    //         .collect::<AHashMap<ObjectId, Either<T, F>>>();
-
-    //     println!(
-    //         "Processed {} blobs (files) in {} seconds",
-    //         self.cache.len(),
-    //         start_time.elapsed().as_secs()
-    //     );
-    // }
     fn measure_tree(
         &mut self,
         path: &str,
@@ -731,7 +701,7 @@ where
         repo: &Repository,
         mem_tree: &FlatGitRepo,
         filename_set: &IndexSet<String>,
-        oid_set: &IndexSet<ObjectId>,
+        oid_set: &OidSet,
         entry_set: &IndexSet<MyEntry>,
     ) -> Result<(T, usize), Box<dyn std::error::Error>> {
         if self.cache.contains_key(&(tree.oid, None)) {
@@ -749,33 +719,58 @@ where
             .children
             .iter()
             .filter_map(|entry_idx| {
-                let entry = entry_set.get_index(*entry_idx).unwrap();
-                let filename_idx = &entry.filename_idx;
-                let oid_idx = &entry.oid_idx;
-                let kind = &entry.kind;
-                let oid = oid_set.get_index(*oid_idx).unwrap();
-                let entry_name = filename_set.get_index(*filename_idx).unwrap();
+                let entry = entry_set
+                    .get_index(*entry_idx as usize)
+                    .expect(&format!("Did not find entry_idx {entry_idx} in entry_set"));
+                let MyEntry {
+                    oid_idx,
+                    filename_idx,
+                    kind,
+                } = entry;
+                let (oid, _) = oid_set
+                    .get_index(*oid_idx)
+                    .expect(&format!("Did not find {oid_idx} in oid_set"));
+                let entry_name = filename_set
+                    .get_index(*filename_idx)
+                    .expect(&format!("Did not find {filename_idx} in filename_set"));
                 let entry_path = format!("{path}/{entry_name}");
                 let cache_key_if_folder = &(*oid_idx, None);
                 if self.cache.contains_key(cache_key_if_folder) {
-                    return Some((entry_path, self.cache.get(cache_key_if_folder).unwrap().clone()));
+                    return Some((
+                        entry_path,
+                        self.cache
+                            .get(cache_key_if_folder)
+                            .expect(&format!(
+                                "Didn't find result in cahe (folder key) even though it exists"
+                            ))
+                            .clone(),
+                    ));
                 }
-                        let cache_key_if_blob = &(*oid_idx, Some(*filename_idx));
-                        if self.cache.contains_key(cache_key_if_blob) {
-                            return Some((entry_path, self.cache.get(cache_key_if_folder).unwrap().clone()));
-                        }
+                let cache_key_if_blob = &(*oid_idx, Some(*filename_idx));
+                if self.cache.contains_key(cache_key_if_blob) {
+                    return Some((
+                        entry_path,
+                        self.cache
+                            .get(cache_key_if_blob)
+                            .expect(&format!("Did not find result in blob cacahe"))
+                            .clone(),
+                    ));
+                }
                 match kind {
                     TreeChildKind::Blob => {
                         acc += 1;
-                        match self
-                            .file_measurer
-                            .measure_entry(repo, &entry_path, oid) {
-                                Ok(measurement) => Some((entry_path, Either::Right(measurement))),
-                                Err(_) => None,
+                        match self.file_measurer.measure_entry(repo, &entry_path, oid) {
+                            Ok(measurement) => Some((entry_path, Either::Right(measurement))),
+                            Err(_) => {
+                                println!("Measuring blob with oid {oid} failed");
+                                None
                             }
+                        }
                     }
                     TreeChildKind::Tree => {
-                        let child_object = mem_tree.get(oid_idx).unwrap();
+                        let child_object = mem_tree
+                            .get(oid_idx)
+                            .expect("Did not find {oid_idx} in flat repo");
                         let (child_result, processed) = self
                             .measure_tree(
                                 &entry_path,
@@ -784,17 +779,13 @@ where
                                 mem_tree,
                                 filename_set,
                                 oid_set,
-                                entry_set
+                                entry_set,
                             )
-                            .unwrap();
+                            .expect("Measure tree for {oid_idx} failed");
 
                         let r = Either::Left(child_result);
                         acc += processed;
                         Some((entry_path, r))
-                    }
-                    _  => {
-                        println!("Warning: skiping unsupported git object type {:?} under '{entry_name}' in tree {}", kind, oid);
-                        None
                     }
                 }
             })
