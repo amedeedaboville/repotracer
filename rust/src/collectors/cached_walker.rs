@@ -50,7 +50,7 @@ fn count_commits(repo: &Repository) -> Result<usize, Box<dyn std::error::Error>>
 type MyOid = usize;
 type FlatGitRepo = AHashMap<MyOid, TreeChild>;
 type FilenameSet = IndexSet<String>;
-type FilenameIdx = usize;
+type FilenameIdx = u32;
 type FilenameCache = AHashMap<MyOid, HashSet<FilenameIdx>>;
 type OidSet = IndexSet<(ObjectId, Kind)>;
 type EntrySet = IndexSet<MyEntry>;
@@ -191,7 +191,7 @@ where
                     let child_oid: ObjectId = entry.oid.into();
                     let filename_idx = filename_set
                         .get_index_of(&entry.filename.to_string())
-                        .unwrap();
+                        .unwrap() as FilenameIdx;
                     let kind = match entry.mode.into() {
                         EntryKind::Blob => TreeChildKind::Blob,
                         EntryKind::Tree => TreeChildKind::Tree,
@@ -260,7 +260,7 @@ where
                             .iter()
                             .filter_map(|entry| {
                                 let filename_idx =
-                                    filenames.get_index_of(&entry.filename.to_string()).unwrap();
+                                    filenames.get_index_of(&entry.filename.to_string()).unwrap() as FilenameIdx;
                                 let child_oid: ObjectId = entry.oid.into();
                                 //todo we gotta standardize of the EnttryKidn enums
                                 let child_kind = match entry.mode.into() {
@@ -275,7 +275,7 @@ where
                                     EntryKind::Tree => TreeChildKind::Tree,
                                     _ => return None,
                                 };
-                                let tree_entry = MyEntry {oid_idx: child_oid_idx,filename_idx,  kind};
+                                let tree_entry = MyEntry {oid_idx: child_oid_idx, filename_idx,  kind};
                                 let entry_idx = entry_set.get_index_of(&tree_entry).unwrap() as EntryIdx;
                                 if child_oid
                                     == ObjectId::from_str(
@@ -730,7 +730,7 @@ where
                 //     .get_index(*oid_idx)
                 //     .expect("Did not find {oid_idx} in oid_set");
                 let entry_name = filename_set
-                    .get_index(*filename_idx)
+                    .get_index(*filename_idx as usize)
                     .expect("Did not find {filename_idx} in filename_set");
                 let entry_path = format!("{path}/{entry_name}");
                 match kind {
