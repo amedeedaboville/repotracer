@@ -206,7 +206,8 @@ where
                                 continue;
                             }
                         };
-                    let child_oid_idx = oid_set.get_index_of(&(child_oid, other_kind)).unwrap();
+                    let child_oid_idx =
+                        oid_set.get_index_of(&(child_oid, other_kind)).unwrap() as MyOid;
                     acc.insert(MyEntry {
                         oid_idx: child_oid_idx,
                         filename_idx,
@@ -241,7 +242,7 @@ where
             .par_bridge()
             .fold(AHashMap::new, |mut acc: FlatGitRepo, (oid, kind) | {
                 //todo just use enumerate here
-                let oid_idx = oid_set.get_index_of(&(*oid, *kind)).unwrap();
+                let oid_idx = oid_set.get_index_of(&(*oid, *kind)).unwrap() as MyOid;
                 //Duplicate object
                 if acc.contains_key(&oid_idx) { return acc }
                 let repo: &Repository = tl.get_or(|| repo.clone().to_thread_local());
@@ -269,7 +270,7 @@ where
                                     _ => return None,
                                 };
                                 //also indexSet could be an IndexMap of oid->kind
-                                let child_oid_idx = oid_set.get_index_of(&(child_oid, child_kind)).unwrap();
+                                let child_oid_idx = oid_set.get_index_of(&(child_oid, child_kind)).unwrap() as MyOid;
                                 let kind = match entry.mode.into() {
                                     EntryKind::Blob => TreeChildKind::Blob,
                                     EntryKind::Tree => TreeChildKind::Tree,
@@ -472,7 +473,13 @@ where
             start_time.elapsed().as_secs_f64()
         );
         let mut cache = DashMap::with_capacity(flat_tree.len());
-        self.batch_process_objects(&safe_repo, &mut cache, &filename_cache, &oid_set);
+        self.batch_process_objects(
+            &safe_repo,
+            &mut cache,
+            &filename_cache,
+            &filename_set,
+            &oid_set,
+        );
         let tree_processing_start = Instant::now();
         let commit_count = count_commits(&inner_repo)?; //todo we could have the oid_set also store commits... idk
         println!("Found {commit_count} commits to walk through.");
@@ -503,7 +510,7 @@ where
             .rev() //todo not sure this does anything
             .progress_with_style(style)
             .map(|(commit_oid, tree_oid)| {
-                let tree_oid_idx = oid_set.get_index_of(&(tree_oid, Kind::Tree)).unwrap();
+                let tree_oid_idx = oid_set.get_index_of(&(tree_oid, Kind::Tree)).unwrap() as MyOid;
                 let tree_entry = flat_tree.get(&tree_oid_idx).unwrap().unwrap_tree();
                 let (res, _processed) = self
                     .measure_tree(
@@ -533,6 +540,7 @@ where
         shared_repo: &ThreadSafeRepository,
         cache: &mut ResultCache<T, F>,
         filename_cache: &FilenameCache,
+        filename_set: &FilenameSet,
         oid_set: &OidSet,
     ) {
         println!("Processing all blobs in the repo");
@@ -554,62 +562,49 @@ where
         let progress = ProgressBar::new(oid_set.len() as u64);
         progress.set_style(style);
         let tl = ThreadLocal::new();
-        *cache =
-            oid_set
-                .iter()
-                .par_bridge()
-                .progress_with(progress)
-                .fold(
-                    AHashMap::new,
-                    |mut acc: AHashMap<(MyOid, Option<FilenameIdx>), Either<T, F>>, (oid, kind)| {
-                        if !kind.is_blob() {
-                            return acc;
+        *cache = oid_set
+            .iter()
+            .enumerate()
+            .par_bridge()
+            .progress_with(progress)
+            .fold(
+                AHashMap::new,
+                |mut acc: AHashMap<(MyOid, Option<FilenameIdx>), Either<T, F>>,
+                 (oid_idx, (oid, kind))| {
+                    if !kind.is_blob() {
+                        return acc;
+                    }
+                    let repo: &Repository = tl.get_or(|| shared_repo.clone().to_thread_local());
+                    let oid_idx = oid_idx as MyOid;
+                    let Some(parent_trees) = filename_cache.get(&oid_idx) else {
+                        // println!(
+                        //     "No parent trees in filename cache for blob: {} with idx {}",
+                        //     oid, oid_idx
+                        // );
+                        return acc;
+                    };
+                    for filename_idx in parent_trees {
+                        let parent_filename =
+                            filename_set.get_index(*filename_idx as usize).unwrap();
+                        if let Ok(measurement) =
+                            self.file_measurer
+                                .measure_entry(repo, &parent_filename, oid)
+                        {
+                            acc.insert((oid_idx, Some(*filename_idx)), Either::Right(measurement));
                         }
-                        let repo: &Repository = tl.get_or(|| shared_repo.clone().to_thread_local());
-                        let obj = repo.find_object(*oid).expect("Failed to find object");
-                        match obj.kind {
-                            gix::object::Kind::Blob => {
-                                //todo just use enumerate instead of re-looking up
-                                let oid_idx = oid_set.get_index_of(&(*oid, *kind)).unwrap();
-                                let Some(parent_trees) = filename_cache.get(&oid_idx) else {
-                                    // println!(
-                                    //     "No parent trees in filename cache for blob: {} with idx {}",
-                                    //     oid, oid_idx
-                                    // );
-                                    return acc;
-                                };
-                                for filename_idx in parent_trees {
-                                    let parent_filename = "parentfilename".to_owned();
-                                    let file_res = self.file_measurer.measure_entry(
-                                        repo,
-                                        &parent_filename,
-                                        oid,
-                                    );
-                                    match file_res {
-                                        Ok(measurement) => {
-                                            acc.insert(
-                                                (oid_idx, Some(*filename_idx)),
-                                                Either::Right(measurement),
-                                            );
-                                        }
-                                        Err(_) => {}
-                                    }
-                                }
-                            }
-                            _ => {}
-                        };
-                        acc
-                    },
-                )
-                .reduce(
-                    AHashMap::new,
-                    |mut acc: AHashMap<(MyOid, Option<FilenameIdx>), Either<T, F>>, cur| {
-                        acc.extend(cur);
-                        acc
-                    },
-                )
-                .into_iter()
-                .collect();
+                    }
+                    acc
+                },
+            )
+            .reduce(
+                AHashMap::new,
+                |mut acc: AHashMap<(MyOid, Option<FilenameIdx>), Either<T, F>>, cur| {
+                    acc.extend(cur);
+                    acc
+                },
+            )
+            .into_iter()
+            .collect();
 
         println!(
             "Processed {} blobs (files) in {} seconds",
