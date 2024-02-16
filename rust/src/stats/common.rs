@@ -1,8 +1,5 @@
-use gix::{object::tree::EntryRef, oid, ObjectId, Repository};
-use std::{
-    collections::{BTreeMap, HashMap},
-    fmt::Display,
-};
+use gix::{ObjectId, Repository, ThreadSafeRepository};
+use std::{collections::BTreeMap, fmt::Display};
 
 #[derive(Debug, Clone)]
 pub enum Either<L, R> {
@@ -51,13 +48,13 @@ where
 pub trait PossiblyEmpty {
     fn is_empty(&self) -> bool;
 }
-pub trait TreeReducer<TreeData, FileData>
+pub trait TreeReducer<TreeData, FileData>: Send + Sync
 where
     TreeData: PossiblyEmpty,
 {
     fn reduce(
         &self,
-        repo: &Repository,
+        repo: &ThreadSafeRepository,
         child_data: TreeDataCollection<TreeData, FileData>,
     ) -> Result<TreeData, Box<dyn std::error::Error>>;
 }
@@ -76,7 +73,7 @@ pub struct FileCountReducer {}
 impl TreeReducer<FileCount, NumMatches> for FileCountReducer {
     fn reduce(
         &self,
-        _repo: &Repository,
+        _repo: &ThreadSafeRepository,
         child_data: TreeDataCollection<FileCount, NumMatches>,
     ) -> Result<FileCount, Box<dyn std::error::Error>> {
         let mut count = FileCount(0);
@@ -111,7 +108,7 @@ pub struct NumMatchesReducer {}
 impl TreeReducer<NumMatches, NumMatches> for NumMatchesReducer {
     fn reduce(
         &self,
-        _repo: &Repository,
+        _repo: &ThreadSafeRepository,
         child_data: TreeDataCollection<NumMatches, NumMatches>,
     ) -> Result<NumMatches, Box<dyn std::error::Error>> {
         let mut count = NumMatches(0);
@@ -129,7 +126,7 @@ pub trait PathMeasurement<T> {
     fn measure_path(&self, repo: &Repository, path: &str) -> Result<T, Box<dyn std::error::Error>>;
 }
 
-pub trait BlobMeasurer<F>: Sync
+pub trait BlobMeasurer<F>: Send + Sync
 where
     F: Send + Sync,
 {
@@ -144,7 +141,7 @@ where
 }
 
 pub struct FileContentsMeasurer<F> {
-    pub callback: Box<dyn FileMeasurement<F>>,
+    pub callback: Box<dyn FileMeasurement<F> + Send + Sync>,
 }
 impl<F> BlobMeasurer<F> for FileContentsMeasurer<F>
 where
@@ -156,7 +153,7 @@ where
         path: &str,
         oid: &ObjectId,
     ) -> Result<F, Box<dyn std::error::Error>> {
-        let obj = repo.find_object(oid.clone())?;
+        let obj = repo.find_object(*oid)?;
         let content = std::str::from_utf8(&obj.data).unwrap_or_default();
         self.callback.measure_file(repo, path, content)
     }
@@ -165,20 +162,21 @@ where
     }
 }
 pub struct FilePathMeasurer<F> {
-    pub callback: Box<dyn PathMeasurement<F> + Sync>, // Add + Sync here
+    pub callback: Box<dyn PathMeasurement<F> + Send + Sync>,
 }
+unsafe impl<F: Send> Send for FilePathMeasurer<F> {}
 
 impl<F> BlobMeasurer<F> for FilePathMeasurer<F>
 where
-    F: Send + Sync,
+    F: Send + Sync + 'static,
 {
     fn measure_entry(
         &self,
         repo: &Repository,
         path: &str,
-        oid: &ObjectId,
+        _oid: &ObjectId,
     ) -> Result<F, Box<dyn std::error::Error>> {
-        self.callback.measure_path(repo, &path)
+        self.callback.measure_path(repo, path)
     }
     fn measure_data(&self, _contents: &[u8]) -> Result<F, Box<dyn std::error::Error>> {
         unimplemented!()

@@ -30,3 +30,4 @@ smallset = "0.1.1"
 flate2 = { version = "1.0.28", features = ["rust_backend"] }
 gzp = "0.11.3"
 ahash = {version = "0.8.8", features = ["serde"]}
+dashmap = "5.5.3"

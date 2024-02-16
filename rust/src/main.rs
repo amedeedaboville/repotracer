@@ -1,10 +1,10 @@
 use clap::{Arg, Command};
-use indicatif::{ProgressBar, ProgressIterator, ProgressStyle};
+use indicatif::{ProgressBar, ProgressStyle};
 use repotracer::collectors::cached_walker::CachedWalker;
 use repotracer::stats::common::{FileContentsMeasurer, FilePathMeasurer, NumMatchesReducer};
 use repotracer::stats::filecount::PathBlobCollector;
 use repotracer::stats::grep::RipgrepCollector;
-use repotracer::stats::tokei::{TokeiCollector, TokeiReducer};
+use repotracer::stats::tokei::TokeiCollector;
 use std::fs;
 use std::path::Path;
 use std::process::Stdio;
@@ -63,10 +63,10 @@ fn main() {
             let file_measurer = Box::new(FileContentsMeasurer {
                 callback: Box::new(RipgrepCollector::new(pattern)),
             });
-            let path_measurer = Box::new(FilePathMeasurer {
+            let _path_measurer = Box::new(FilePathMeasurer {
                 callback: Box::new(PathBlobCollector::new(pattern)),
             });
-            let tokei_measurer = Box::new(FileContentsMeasurer {
+            let _tokei_measurer = Box::new(FileContentsMeasurer {
                 callback: Box::new(TokeiCollector::new()),
             });
             let mut walker = CachedWalker::new(
@@ -76,7 +76,7 @@ fn main() {
                 // tokei_measurer,
                 // Box::new(TokeiReducer {}),
             );
-            walker.walk_repo_and_collect_stats(true);
+            walker.walk_repo_and_collect_stats().unwrap();
         }
         Some(("clone", sub_m)) => {
             let clone_urls = sub_m
@@ -101,8 +101,8 @@ fn clone_list_of_repos(clone_urls: Vec<String>) {
     );
 
     for clone_url in clone_urls.iter() {
-        progress_bar.set_message(format!("{}", clone_url));
-        match clone_repo(&clone_url) {
+        progress_bar.set_message(clone_url.to_string());
+        match clone_repo(clone_url) {
             Ok(_) => {}
             Err(e) => {
                 progress_bar.println(format!("Failed to clone {}: {}", clone_url, e));
@@ -137,7 +137,7 @@ fn clone_repo(clone_url: &str) -> Result<(), String> {
                 let domain = parsed_url.domain().unwrap_or("unknown").to_string();
                 let path_segments: Vec<&str> = parsed_url
                     .path_segments()
-                    .map_or_else(|| Vec::new(), |c| c.collect());
+                    .map_or_else(Vec::new, |c| c.collect());
                 if path_segments.len() >= 2 {
                     let repo_name = path_segments
                         .last()

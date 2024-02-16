@@ -1,7 +1,7 @@
-use std::path;
+
 
 use crate::stats::common::{NumMatches, PathMeasurement};
-use anyhow::Error;
+
 use gix::Repository;
 use globset::{Glob, GlobMatcher};
 

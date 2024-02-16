@@ -1,11 +1,17 @@
-use crate::stats::common::{FileMeasurement, NumMatches};
+use crate::stats::common::FileMeasurement;
 use anyhow::Error;
-use gix::Repository;
-use tokei::{CodeStats, Config, Language, LanguageType, Report};
+use gix::{Repository, ThreadSafeRepository};
+use tokei::{CodeStats, Config, LanguageType, Report};
 
 use super::common::{Either, PossiblyEmpty, TreeDataCollection, TreeReducer};
 
 pub struct TokeiCollector {}
+
+impl Default for TokeiCollector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl TokeiCollector {
     pub fn new() -> Self {
@@ -44,7 +50,7 @@ impl PossiblyEmpty for Report {
 impl TreeReducer<Report, CodeStats> for TokeiReducer {
     fn reduce(
         &self,
-        _repo: &Repository,
+        _repo: &ThreadSafeRepository,
         child_data: TreeDataCollection<Report, CodeStats>,
     ) -> Result<Report, Box<dyn std::error::Error>> {
         let mut report = Report::new(std::path::PathBuf::from("."));

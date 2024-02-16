@@ -26,8 +26,8 @@ impl RipgrepCollector {
 impl FileMeasurement<NumMatches> for RipgrepCollector {
     fn measure_file(
         &self,
-        repo: &Repository,
-        path: &str,
+        _repo: &Repository,
+        _path: &str,
         contents: &str,
     ) -> Result<NumMatches, Box<dyn std::error::Error>> {
         let matches = self.get_matches(contents)?;
