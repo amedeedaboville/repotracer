@@ -237,77 +237,89 @@ where
             "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}/{len:7} ({eta}) {per_sec}").expect("error with progress bar style");
         let progress = ProgressBar::new(oid_set.len() as u64);
         progress.set_style(style);
-        let oid_entries: AHashMap<MyOid, TreeChild> = oid_set
-            .iter()
-            .enumerate()
-            .progress_with(progress)
-            .par_bridge()
-            .fold(
-                AHashMap::new,
-                |mut acc: FlatGitRepo, (oid_idx, (oid, kind))| {
-                    let oid_idx = oid_idx as MyOid;
-                    //Duplicate object
-                    if acc.contains_key(&oid_idx) || !kind.is_tree() {
-                        return acc;
-                    }
-                    let repo: &Repository = tl.get_or(|| repo.clone().to_thread_local());
-                    let obj = match repo.find_object(*oid) {
-                        Ok(obj) => obj,
-                        Err(_) => {
-                            println!("Error fetching object {oid}");
+        let oid_entries: AHashMap<MyOid, TreeChild> =
+            oid_set
+                .iter()
+                .enumerate()
+                .progress_with(progress)
+                .par_bridge()
+                .fold(
+                    AHashMap::new,
+                    |mut acc: FlatGitRepo, (oid_idx, (oid, kind))| {
+                        let mut oid_idx = oid_idx as MyOid;
+                        //todo we can eventually stop looking up and just use enumerate, but I don't trust it yet
+                        let oid_idx_lookedup =
+                            oid_set.get_index_of(&(*oid, *kind)).unwrap() as MyOid;
+                        if oid_idx != oid_idx_lookedup {
+                            println!(
+                            "WARNING: oid_idx: {oid_idx} != oid_idx_lookedup: {oid_idx_lookedup}"
+                        );
+                            oid_idx = oid_idx_lookedup;
+                        }
+                        //Duplicate object
+                        if acc.contains_key(&oid_idx) || !kind.is_tree() {
                             return acc;
                         }
-                    };
-                    let tree_entry_children = obj
-                        .into_tree()
-                        .decode()
-                        .unwrap()
-                        .entries
-                        .iter()
-                        .filter_map(|entry| {
-                            let filename_idx = filenames
-                                .get_index_of(&entry.filename.to_string())
-                                .unwrap()
-                                as FilenameIdx;
-                            let child_oid: ObjectId = entry.oid.into();
-                            //todo we gotta standardize all these EntryKind enums
-                            let child_kind = match entry.mode.into() {
-                                EntryKind::Blob => Kind::Blob,
-                                EntryKind::Tree => Kind::Tree,
-                                _ => return None,
-                            };
-                            //also indexSet could be an IndexMap of oid->kind
-                            let child_oid_idx =
-                                oid_set.get_index_of(&(child_oid, child_kind)).unwrap() as MyOid;
-                            let kind = match entry.mode.into() {
-                                EntryKind::Blob => TreeChildKind::Blob,
-                                EntryKind::Tree => TreeChildKind::Tree,
-                                _ => return None,
-                            };
-                            let tree_entry = MyEntry {
-                                oid_idx: child_oid_idx,
-                                filename_idx,
-                                kind,
-                            };
-                            let entry_idx =
-                                entry_set.get_index_of(&tree_entry).unwrap() as EntryIdx;
-                            Some(entry_idx)
-                        })
-                        .collect::<Vec<EntryIdx>>();
-                    acc.insert(
-                        oid_idx,
-                        TreeChild::Tree(TreeEntry {
+                        let repo: &Repository = tl.get_or(|| repo.clone().to_thread_local());
+                        let obj = match repo.find_object(*oid) {
+                            Ok(obj) => obj,
+                            Err(_) => {
+                                println!("Error fetching object {oid}");
+                                return acc;
+                            }
+                        };
+                        let tree_entry_children = obj
+                            .into_tree()
+                            .decode()
+                            .unwrap()
+                            .entries
+                            .iter()
+                            .filter_map(|entry| {
+                                let filename_idx = filenames
+                                    .get_index_of(&entry.filename.to_string())
+                                    .unwrap()
+                                    as FilenameIdx;
+                                let child_oid: ObjectId = entry.oid.into();
+                                //todo we gotta standardize all these EntryKind enums
+                                let child_kind = match entry.mode.into() {
+                                    EntryKind::Blob => Kind::Blob,
+                                    EntryKind::Tree => Kind::Tree,
+                                    _ => return None,
+                                };
+                                //also indexSet could be an IndexMap of oid->kind
+                                let child_oid_idx = oid_set
+                                    .get_index_of(&(child_oid, child_kind))
+                                    .unwrap()
+                                    as MyOid;
+                                let kind = match entry.mode.into() {
+                                    EntryKind::Blob => TreeChildKind::Blob,
+                                    EntryKind::Tree => TreeChildKind::Tree,
+                                    _ => return None,
+                                };
+                                let tree_entry = MyEntry {
+                                    oid_idx: child_oid_idx,
+                                    filename_idx,
+                                    kind,
+                                };
+                                let entry_idx =
+                                    entry_set.get_index_of(&tree_entry).unwrap() as EntryIdx;
+                                Some(entry_idx)
+                            })
+                            .collect::<Vec<EntryIdx>>();
+                        acc.insert(
                             oid_idx,
-                            children: tree_entry_children,
-                        }),
-                    );
+                            TreeChild::Tree(TreeEntry {
+                                oid_idx,
+                                children: tree_entry_children,
+                            }),
+                        );
+                        acc
+                    },
+                )
+                .reduce(AHashMap::new, |mut acc, cur| {
+                    acc.extend(cur);
                     acc
-                },
-            )
-            .reduce(AHashMap::new, |mut acc, cur| {
-                acc.extend(cur);
-                acc
-            });
+                });
         Ok(oid_entries)
     }
     pub fn build_oid_set(&self, repo: &Repository) -> Result<OidSet, Box<dyn std::error::Error>> {
