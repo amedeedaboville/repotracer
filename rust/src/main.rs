@@ -170,7 +170,8 @@ fn clone_repo(clone_url: &str) -> Result<(), String> {
 
     let output = std::process::Command::new("git")
         .arg("clone")
-        .arg("--no-checkout --single-branch")
+        .arg("--no-checkout")
+        .arg("--single-branch")
         .arg(&full_clone_url)
         .arg(format!("{}/{}/{}", domain, org_name, repo_name))
         .stdout(Stdio::inherit()) // This pipes the output to the current process's stdout

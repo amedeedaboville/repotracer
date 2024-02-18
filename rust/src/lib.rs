@@ -10,4 +10,5 @@ pub mod stats {
 
 pub mod collectors {
     pub mod cached_walker;
+    pub mod repo_cache_data;
 }

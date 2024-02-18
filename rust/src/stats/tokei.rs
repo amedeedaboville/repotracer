@@ -44,7 +44,7 @@ impl PossiblyEmpty for CodeStats {
 }
 impl PossiblyEmpty for Report {
     fn is_empty(&self) -> bool {
-        self.is_empty()
+        self.stats.is_empty()
     }
 }
 impl TreeReducer<Report, CodeStats> for TokeiReducer {
