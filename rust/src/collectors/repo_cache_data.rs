@@ -20,6 +20,8 @@ use std::time::Instant;
 
 use std::fmt::Debug;
 
+use crate::util::pb_style;
+
 pub type MyOid = u32;
 pub type FlatGitRepo = AHashMap<MyOid, TreeChild>;
 pub type FilenameSet = IndexSet<String>;
@@ -74,10 +76,15 @@ struct PartialRepoCacheData {
     pub filename_cache: Option<FilenameCache>,
     pub tree_entry_set: Option<EntrySet>,
 }
-
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct OidSetWithInfo {
+    pub set: OidSet,
+    pub num_trees: usize,
+    pub num_blobs: usize,
+}
 pub struct RepoCacheData {
     pub repo_safe: ThreadSafeRepository,
-    pub oid_set: OidSet,
+    pub oid_set: OidSetWithInfo,
     pub filename_set: FilenameSet,
     pub flat_tree: FlatGitRepo,
     pub filename_cache: FilenameCache,
@@ -105,38 +112,52 @@ impl RepoCacheData {
         // );
     }
 }
-pub fn build_oid_set(repo: &Repository) -> Result<OidSet, Box<dyn std::error::Error>> {
+pub fn build_oid_set(repo: &Repository) -> Result<OidSetWithInfo, Box<dyn std::error::Error>> {
     let start = Instant::now();
-    let oids = repo
+    let mut num_trees = 0;
+    let mut num_blobs = 0;
+    let mut oids = Vec::new();
+    for oid_res in repo
         .objects
         .iter()
         .unwrap()
         .with_ordering(gix::odb::store::iter::Ordering::PackAscendingOffsetThenLooseLexicographical)
-        .filter_map(|oid_res| {
-            oid_res
-                .map(|oid| (oid, repo.find_header(oid).unwrap().kind()))
-                .ok()
-        })
-        .collect::<Vec<(ObjectId, Kind)>>();
+    {
+        if let Ok(oid) = oid_res {
+            let kind = repo.find_header(oid).unwrap().kind();
+            match kind {
+                Kind::Tree => num_trees += 1,
+                Kind::Blob => num_blobs += 1,
+                _ => continue,
+            }
+            oids.push((oid, kind));
+        }
+    }
     let oid_set = oids.into_iter().collect::<IndexSet<(ObjectId, Kind)>>();
     println!(
         "Built object set in {} seconds",
         start.elapsed().as_secs_f64()
     );
-    Ok(oid_set)
+    Ok(OidSetWithInfo {
+        set: oid_set,
+        num_trees,
+        num_blobs,
+    })
 }
 pub fn build_filename_set(
     repo: &ThreadSafeRepository,
-    oid_set: &OidSet,
+    oid_set: &OidSetWithInfo,
 ) -> Result<FilenameSet, Box<dyn std::error::Error>> {
     let start = Instant::now();
     let tl = ThreadLocal::new();
     let style = ProgressStyle::default_bar().template(
             "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}/{len:7} ({eta}) {per_sec}").expect("error with progress bar style");
-    let progress = ProgressBar::new(oid_set.len() as u64);
+    let progress = ProgressBar::new(oid_set.num_trees as u64);
     progress.set_style(style);
     let filenames: FilenameSet = oid_set
+        .set
         .iter()
+        .filter(|(_, kind)| kind.is_tree())
         .progress_with(progress)
         .par_bridge()
         .fold(IndexSet::new, |mut acc: IndexSet<String>, (oid, kind)| {
@@ -167,17 +188,17 @@ pub fn build_filename_set(
 }
 pub fn build_entries_set(
     repo: &ThreadSafeRepository,
-    oid_set: &OidSet,
+    oid_set: &OidSetWithInfo,
     filename_set: &FilenameSet,
 ) -> Result<EntrySet, Box<dyn std::error::Error>> {
     let tl = ThreadLocal::new();
-    let style = ProgressStyle::default_bar().template(
-            "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}/{len:7} ({eta}) {per_sec}").expect("error with progress bar style");
-    let progress = ProgressBar::new(oid_set.len() as u64);
-    progress.set_style(style);
+    let progress = ProgressBar::new(oid_set.num_trees as u64);
+    progress.set_style(pb_style());
     let entries =
         oid_set
+            .set
             .iter()
+            .filter(|(_, kind)| kind.is_tree())
             .par_bridge()
             .progress_with(progress)
             .fold(IndexSet::new, |mut acc: EntrySet, (oid, kind)| {
@@ -206,7 +227,7 @@ pub fn build_entries_set(
                             }
                         };
                     let child_oid_idx =
-                        oid_set.get_index_of(&(child_oid, other_kind)).unwrap() as MyOid;
+                        oid_set.set.get_index_of(&(child_oid, other_kind)).unwrap() as MyOid;
                     acc.insert(MyEntry {
                         oid_idx: child_oid_idx,
                         filename_idx,
@@ -226,87 +247,75 @@ pub fn build_entries_set(
 
 pub fn build_flat_tree(
     repo: &ThreadSafeRepository,
-    oid_set: &OidSet,
+    oid_set: &OidSetWithInfo,
     entry_set: &EntrySet,
     filenames: &FilenameSet,
 ) -> Result<FlatGitRepo, Box<dyn std::error::Error>> {
     let tl = ThreadLocal::new();
-    let style = ProgressStyle::default_bar().template(
-            "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}/{len:7} ({eta}) {per_sec}").expect("error with progress bar style");
-    let progress = ProgressBar::new(oid_set.len() as u64);
-    progress.set_style(style);
+    let progress = ProgressBar::new(oid_set.num_trees as u64);
+    progress.set_style(pb_style());
     let oid_entries: AHashMap<MyOid, TreeChild> = oid_set
+        .set
         .iter()
-        .enumerate()
+        .filter(|(_, kind)| kind.is_tree())
         .progress_with(progress)
         .par_bridge()
-        .fold(
-            AHashMap::new,
-            |mut acc: FlatGitRepo, (oid_idx, (oid, kind))| {
-                let mut oid_idx = oid_idx as MyOid;
-                //todo we can eventually stop looking up and just use enumerate, but I don't trust it yet
-                let oid_idx_lookedup = oid_set.get_index_of(&(*oid, *kind)).unwrap() as MyOid;
-                if oid_idx != oid_idx_lookedup {
-                    println!("WARNING: oid_idx: {oid_idx} != oid_idx_lookedup: {oid_idx_lookedup}");
-                    oid_idx = oid_idx_lookedup;
-                }
-                //Duplicate object
-                if acc.contains_key(&oid_idx) || !kind.is_tree() {
+        .fold(AHashMap::new, |mut acc: FlatGitRepo, (oid, kind)| {
+            let oid_idx = oid_set.set.get_index_of(&(*oid, *kind)).unwrap() as MyOid;
+            //Duplicate object
+            if acc.contains_key(&oid_idx) || !kind.is_tree() {
+                return acc;
+            }
+            let repo: &Repository = tl.get_or(|| repo.clone().to_thread_local());
+            let obj = match repo.find_object(*oid) {
+                Ok(obj) => obj,
+                Err(_) => {
+                    println!("Error fetching object {oid}");
                     return acc;
                 }
-                let repo: &Repository = tl.get_or(|| repo.clone().to_thread_local());
-                let obj =
-                    match repo.find_object(*oid) {
-                        Ok(obj) => obj,
-                        Err(_) => {
-                            println!("Error fetching object {oid}");
-                            return acc;
-                        }
+            };
+            let tree_entry_children = obj
+                .into_tree()
+                .decode()
+                .unwrap()
+                .entries
+                .iter()
+                .filter_map(|entry| {
+                    let filename_idx =
+                        filenames.get_index_of(&entry.filename.to_string()).unwrap() as FilenameIdx;
+                    let child_oid: ObjectId = entry.oid.into();
+                    //todo we gotta standardize all these EntryKind enums
+                    let child_kind = match entry.mode.into() {
+                        EntryKind::Blob => Kind::Blob,
+                        EntryKind::Tree => Kind::Tree,
+                        _ => return None,
                     };
-                let tree_entry_children = obj
-                    .into_tree()
-                    .decode()
-                    .unwrap()
-                    .entries
-                    .iter()
-                    .filter_map(|entry| {
-                        let filename_idx = filenames
-                            .get_index_of(&entry.filename.to_string())
-                            .unwrap() as FilenameIdx;
-                        let child_oid: ObjectId = entry.oid.into();
-                        //todo we gotta standardize all these EntryKind enums
-                        let child_kind = match entry.mode.into() {
-                            EntryKind::Blob => Kind::Blob,
-                            EntryKind::Tree => Kind::Tree,
-                            _ => return None,
-                        };
-                        //also indexSet could be an IndexMap of oid->kind
-                        let child_oid_idx =
-                            oid_set.get_index_of(&(child_oid, child_kind)).unwrap() as MyOid;
-                        let kind = match entry.mode.into() {
-                            EntryKind::Blob => TreeChildKind::Blob,
-                            EntryKind::Tree => TreeChildKind::Tree,
-                            _ => return None,
-                        };
-                        let tree_entry = MyEntry {
-                            oid_idx: child_oid_idx,
-                            filename_idx,
-                            kind,
-                        };
-                        let entry_idx = entry_set.get_index_of(&tree_entry).unwrap() as EntryIdx;
-                        Some(entry_idx)
-                    })
-                    .collect::<Vec<EntryIdx>>();
-                acc.insert(
+                    //also indexSet could be an IndexMap of oid->kind
+                    let child_oid_idx =
+                        oid_set.set.get_index_of(&(child_oid, child_kind)).unwrap() as MyOid;
+                    let kind = match entry.mode.into() {
+                        EntryKind::Blob => TreeChildKind::Blob,
+                        EntryKind::Tree => TreeChildKind::Tree,
+                        _ => return None,
+                    };
+                    let tree_entry = MyEntry {
+                        oid_idx: child_oid_idx,
+                        filename_idx,
+                        kind,
+                    };
+                    let entry_idx = entry_set.get_index_of(&tree_entry).unwrap() as EntryIdx;
+                    Some(entry_idx)
+                })
+                .collect::<Vec<EntryIdx>>();
+            acc.insert(
+                oid_idx,
+                TreeChild::Tree(TreeEntry {
                     oid_idx,
-                    TreeChild::Tree(TreeEntry {
-                        oid_idx,
-                        children: tree_entry_children,
-                    }),
-                );
-                acc
-            },
-        )
+                    children: tree_entry_children,
+                }),
+            );
+            acc
+        })
         .reduce(AHashMap::new, |mut acc, cur| {
             acc.extend(cur);
             acc
@@ -316,12 +325,21 @@ pub fn build_flat_tree(
 pub fn load_caches(
     repo: &Repository,
     shared_repo: &ThreadSafeRepository,
-) -> (FlatGitRepo, FilenameCache, FilenameSet, OidSet, EntrySet) {
+) -> (
+    FlatGitRepo,
+    FilenameCache,
+    FilenameSet,
+    OidSetWithInfo,
+    EntrySet,
+) {
     // let repo_path = repo.path().to_str().unwrap();
-    let oid_set: OidSet = load_and_save_cache(shared_repo, "oids", |_| {
-        build_oid_set(repo)
-    });
-    println!("Found {} objects", oid_set.len());
+    let oid_set: OidSetWithInfo = load_and_save_cache(shared_repo, "oids", |_| build_oid_set(repo));
+    println!(
+        "Found {} objects: {} trees and {} blobs.",
+        oid_set.set.len(),
+        oid_set.num_trees,
+        oid_set.num_blobs
+    );
 
     let filenames: FilenameSet = load_and_save_cache(shared_repo, "filenames", |shared_repo| {
         build_filename_set(shared_repo, &oid_set)
@@ -368,10 +386,8 @@ fn build_filename_cache(
     flat_repo: &FlatGitRepo,
 ) -> Result<FilenameCache, Box<dyn std::error::Error>> {
     let start = Instant::now();
-    let style = ProgressStyle::default_bar().template(
-            "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}/{len:7} ({eta}) {per_sec}").expect("error with progress bar style");
     let progress = ProgressBar::new(entry_set.len() as u64);
-    progress.set_style(style);
+    progress.set_style(pb_style());
     let mut filename_cache =
         entry_set
             .iter()
@@ -426,6 +442,7 @@ where
 {
     let start_time = Instant::now();
     let cache_path = format!("{}/{}.bin", repo_path, cache_name);
+    // println!("Loading {cache_name} from {cache_path}");
     let cache_file = File::open(cache_path)?;
     let cache_reader = BufReader::new(cache_file);
     let cache: Cache = bincode::deserialize_from(cache_reader)

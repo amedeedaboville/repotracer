@@ -1,7 +1,6 @@
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 
-
 use super::list_in_range::Granularity;
 use super::repo_cache_data::{
     FilenameIdx, MyEntry, MyOid, RepoCacheData, TreeChildKind, TreeEntry,
@@ -99,7 +98,8 @@ where
             .rev() //todo not sure this does anything
             .progress_with_style(pb_style())
             .map(|(commit_oid, tree_oid)| {
-                let tree_oid_idx = oid_set.get_index_of(&(tree_oid, Kind::Tree)).unwrap() as MyOid;
+                let tree_oid_idx =
+                    oid_set.set.get_index_of(&(tree_oid, Kind::Tree)).unwrap() as MyOid;
                 let tree_entry = flat_tree.get(&tree_oid_idx).unwrap().unwrap_tree();
                 let (res, _processed) = self
                     .measure_tree(SmallVec::new(), tree_entry, &cache)
@@ -125,12 +125,13 @@ where
             ..
         } = &self.repo_caches;
         let start_time = Instant::now();
-        let progress = ProgressBar::new(oid_set.len() as u64);
+        let progress = ProgressBar::new(oid_set.num_blobs as u64);
         progress.set_style(pb_style());
         let tl = ThreadLocal::new();
         *cache = oid_set
+            .set
             .iter()
-            .enumerate()
+            .filter(|(_, kind)| kind.is_blob())
             .par_bridge()
             .progress_with(progress)
             .fold(
@@ -139,30 +140,34 @@ where
                     (MyOid, Option<FilenameIdx>),
                     MeasurementData<TreeData, FileData>,
                 >,
-                 (oid_idx, (oid, kind))| {
+                 (oid, kind)| {
                     if !kind.is_blob() {
                         return acc;
                     }
                     let repo: &Repository = tl.get_or(|| shared_repo.clone().to_thread_local());
-                    let oid_idx = oid_idx as MyOid;
+                    let oid_idx = oid_set.set.get_index_of(&(*oid, Kind::Blob)).unwrap() as MyOid;
                     let Some(parent_trees) = filename_cache.get(&oid_idx) else {
-                        // println!(
-                        //     "No parent trees in filename cache for blob: {} with idx {}",
-                        //     oid, oid_idx
-                        // );
+                        // println!("No parent trees in filename cache for blob {oid_idx}");
                         return acc;
                     };
                     for filename_idx in parent_trees {
                         let parent_filename =
                             filename_set.get_index(*filename_idx as usize).unwrap();
-                        if let Ok(measurement) =
-                            self.file_measurer.measure_entry(repo, parent_filename, oid)
-                        {
-                            acc.insert(
-                                (oid_idx, Some(*filename_idx)),
-                                MeasurementData::FileData(measurement),
-                            );
-                        }
+                        match self.file_measurer.measure_entry(repo, parent_filename, oid) {
+                            Ok(measurement) => {
+                                acc.insert(
+                                    (oid_idx, Some(*filename_idx)),
+                                    MeasurementData::FileData(measurement),
+                                );
+                            }
+                            Err(_) => {
+                                // if *filename_idx == 181 || *filename_idx == 263 {
+                                //     println!(
+                                //         "Error with measurement for ({oid_idx},{filename_idx}), {e}",
+                                //     );
+                                // }
+                            }
+                        };
                     }
                     acc
                 },
@@ -181,6 +186,10 @@ where
             .into_iter()
             .collect();
 
+        println!(
+            "Entry for 6250 181: {:?}",
+            cache.get(&(6250u32, Some(181u32)))
+        );
         println!(
             "Processed {} blobs (files) in {} seconds",
             cache.len(),
@@ -215,13 +224,18 @@ where
             .children
             .iter()
             .filter_map(|entry_idx| {
+                let Some(entry) = entry_set.get_index(*entry_idx as usize) else {
+                    panic!(
+                        "Did not find {} in entry_set, even though it has {} items",
+                        *entry_idx,
+                        entry_set.len()
+                    );
+                };
                 let MyEntry {
                     oid_idx,
                     filename_idx,
                     kind,
-                } = entry_set
-                    .get_index(*entry_idx as usize)
-                    .expect("Did not find entry_idx in entry_set");
+                } = entry;
                 let mut new_path = path.clone();
                 new_path.push(*filename_idx);
                 let path_pieces = new_path
@@ -234,13 +248,13 @@ where
                 match kind {
                     TreeChildKind::Blob => {
                         let cache_key_if_blob = &(*oid_idx, Some(*filename_idx));
-                        return Some((
-                            entry_path,
-                            cache
-                                .get(cache_key_if_blob)
-                                .expect("Did not find result in blob cache")
-                                .clone(),
-                        ));
+                        let Some(cache_res) = cache.get(cache_key_if_blob) else {
+                            return None;
+                            // panic!(
+                            //     "Did not find result for {oid_idx}, {filename_idx} in blob cache\n"
+                            // )
+                        };
+                        return Some((entry_path, cache_res.clone()));
                     }
                     TreeChildKind::Tree => {
                         let cache_key_if_folder = &(*oid_idx, None);

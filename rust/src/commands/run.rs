@@ -14,26 +14,34 @@ pub fn run_command(repo: Option<&String>, stat: Option<&String>) {
     }
 }
 fn run_stat(repo: &str, stat: &str) {
-    println!("Running {stat} on {repo}");
     let repo_config = config::get_repo_config(repo);
     let repo_path = repo_config
         .storage_path
         .as_ref()
         .expect("Repo doesn't have a storage path, I don't know where to look for it.");
 
+    println!("Running {stat} on {repo} stored at {repo_path}");
     let pattern = "TODO";
-    // let file_measurer = Box::new(RipgrepCollector::new(pattern));
+    match stat {
+        "tokei" => {
+            let file_measurer = Box::new(TokeiCollector::new());
+            let mut walker: CachedWalker<Report, CodeStats> =
+                CachedWalker::new(repo_path.to_owned(), file_measurer);
+            walker
+                .walk_repo_and_collect_stats(Granularity::Daily, (None, None))
+                .unwrap();
+        }
+        "grep" => {
+            let file_measurer = Box::new(RipgrepCollector::new(pattern));
+            let mut walker: CachedWalker<NumMatches, NumMatches> =
+                CachedWalker::new(repo_path.to_owned(), file_measurer);
+            walker
+                .walk_repo_and_collect_stats(Granularity::Daily, (None, None))
+                .unwrap();
+        }
+        _ => println!("Unknown stat {stat}"),
+    }
     // let _path_measurer = Box::new(FilePathMeasurer {
     //     callback: Box::new(PathBlobCollector::new(pattern)),
     // });
-    let file_measurer = Box::new(TokeiCollector::new());
-    let mut walker: CachedWalker<Report, CodeStats> = CachedWalker::new(
-        repo_path.to_owned(),
-        file_measurer,
-        // tokei_measurer,
-        // Box::new(TokeiReducer {}),
-    );
-    walker
-        .walk_repo_and_collect_stats(Granularity::Daily, (None, None))
-        .unwrap();
 }
