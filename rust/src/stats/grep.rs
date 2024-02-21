@@ -33,10 +33,6 @@ impl FileMeasurement<NumMatches> for RipgrepCollector {
         let matches = self.get_matches(contents)?;
         Ok(NumMatches(matches.len()))
     }
-    fn measure_bytes(&self, contents: &[u8]) -> Result<NumMatches, Box<dyn std::error::Error>> {
-        let matches = grep_slice(&self.pattern, contents)?;
-        Ok(NumMatches(matches.len()))
-    }
 }
 
 fn grep_slice(pattern: &str, contents: &[u8]) -> Result<Vec<(u64, String)>, Error> {

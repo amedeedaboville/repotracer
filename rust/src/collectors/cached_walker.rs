@@ -1,19 +1,27 @@
+use chrono::{DateTime, Utc};
 use dashmap::DashMap;
+use gix::parallel::Reduce;
 
+use super::list_in_range::Granularity;
 use super::repo_cache_data::{
     FilenameIdx, MyEntry, MyOid, RepoCacheData, TreeChildKind, TreeEntry,
 };
-use crate::stats::common::{BlobMeasurer, Either, PossiblyEmpty, TreeDataCollection, TreeReducer};
+use crate::collectors::list_in_range::list_commits_with_granularity;
+use crate::stats::common::{
+    FileMeasurement, MeasurementData, PossiblyEmpty, ReduceFrom, TreeDataCollection,
+};
+use crate::util::pb_style;
 use ahash::AHashMap;
 use gix::objs::Kind;
 use gix::{ObjectId, Repository};
 
+use indicatif::ProgressBar;
 use indicatif::{ParallelProgressIterator, ProgressIterator};
-use indicatif::{ProgressBar, ProgressStyle};
 use rayon::iter::ParallelIterator;
 use rayon::prelude::*;
 use smallvec::SmallVec;
 use std::fmt::Debug;
+use std::marker::PhantomData;
 use std::time::Instant;
 use thread_local::ThreadLocal;
 
@@ -32,33 +40,34 @@ fn count_commits(repo: &Repository) -> Result<usize, Box<dyn std::error::Error>>
         .count())
 }
 
-type ResultCache<T, F> = DashMap<(MyOid, Option<FilenameIdx>), Either<T, F>>;
+type ResultCache<T, F> = DashMap<(MyOid, Option<FilenameIdx>), MeasurementData<T, F>>;
 pub struct CachedWalker<T, F> {
     repo_path: String,
     repo_caches: RepoCacheData,
-    file_measurer: Box<dyn BlobMeasurer<F>>,
-    tree_reducer: Box<dyn TreeReducer<T, F> + Sync + Send>, // Going to use this across threads
+    file_measurer: Box<dyn FileMeasurement<F>>,
+    _marker: PhantomData<T>,
 }
-impl<T, F> CachedWalker<T, F>
+impl<TreeData, FileData> CachedWalker<TreeData, FileData>
 where
-    T: Debug + Clone + Send + Sync + 'static + PossiblyEmpty,
-    F: Debug + Clone + Send + Sync + 'static,
+    TreeData: Debug + Clone + Send + Sync + 'static + PossiblyEmpty + ReduceFrom<FileData>,
+    FileData: Debug + Clone + Send + Sync + 'static + PossiblyEmpty,
 {
     pub fn new(
         repo_path: String,
-        file_measurer: Box<dyn BlobMeasurer<F>>, // Changed type here
-        tree_reducer: Box<dyn TreeReducer<T, F> + Sync + Send>, // Adjusted type here
+        file_measurer: Box<dyn FileMeasurement<FileData>>, // Changed type here
     ) -> Self {
-        CachedWalker {
+        CachedWalker::<TreeData, FileData> {
             repo_caches: RepoCacheData::new(&repo_path),
             repo_path,
             file_measurer,
-            tree_reducer,
+            _marker: PhantomData,
         }
     }
 
     pub fn walk_repo_and_collect_stats(
         &mut self,
+        granularity: Granularity,
+        range: (Option<DateTime<Utc>>, Option<DateTime<Utc>>),
     ) -> Result<Vec<CommitStat>, Box<dyn std::error::Error>> {
         let RepoCacheData {
             oid_set,
@@ -67,37 +76,28 @@ where
             ..
         } = &self.repo_caches;
         let inner_repo = safe_repo.clone().to_thread_local();
-        let mut cache = DashMap::with_capacity(flat_tree.len());
+        let mut cache: DashMap<(MyOid, Option<FilenameIdx>), MeasurementData<TreeData, FileData>> =
+            DashMap::with_capacity(flat_tree.len());
         self.batch_process_objects(&mut cache);
         let tree_processing_start = Instant::now();
-        let commit_count = count_commits(&inner_repo)?; //todo we could have the oid_set also store commits... idk
-        println!("Found {commit_count} commits to walk through.");
-        let revwalk = inner_repo
-            .rev_walk(inner_repo.head_id())
-            .first_parent_only()
-            .use_commit_graph(true)
-            .all()?;
-
-        println!("Getting commit oids and their associated tree oids");
-        let commit_oids = revwalk
-            .progress_count(commit_count as u64)
-            .filter_map(|info_res| match info_res {
-                Ok(info) => Some((info.id, info.object().unwrap().tree().unwrap().id)),
-                Err(e) => {
-                    println!("Error with commit: {:?}", e);
-                    None
-                }
-            })
-            .collect::<Vec<(ObjectId, ObjectId)>>();
+        let commits_to_process =
+            list_commits_with_granularity(&inner_repo, granularity, range.0, range.1)?;
         println!("Collecting file results into trees for each commit:");
+        let commit_count = commits_to_process.len();
 
-        let style = ProgressStyle::default_bar()
-            .template("[{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}/{len:7} ({eta}) {per_sec}")
-            .expect("error with progress bar style");
-        let commit_stats = commit_oids
+        let oids =
+            commits_to_process
+                .iter()
+                .map(|commit| {
+                    let commit_oid = commit.id;
+                    let tree_oid = commit.tree().unwrap().id;
+                    (commit_oid, tree_oid)
+                })
+                .collect::<Vec<_>>();
+        let commit_stats = oids
             .into_par_iter()
             .rev() //todo not sure this does anything
-            .progress_with_style(style)
+            .progress_with_style(pb_style())
             .map(|(commit_oid, tree_oid)| {
                 let tree_oid_idx = oid_set.get_index_of(&(tree_oid, Kind::Tree)).unwrap() as MyOid;
                 let tree_entry = flat_tree.get(&tree_oid_idx).unwrap().unwrap_tree();
@@ -115,7 +115,7 @@ where
         println!("{:?}", commit_stats.iter().take(5).collect::<Vec<_>>());
         Ok(commit_stats)
     }
-    fn batch_process_objects(&self, cache: &mut ResultCache<T, F>) {
+    fn batch_process_objects(&self, cache: &mut ResultCache<TreeData, FileData>) {
         println!("Processing all blobs in the repo");
         let RepoCacheData {
             filename_cache,
@@ -125,10 +125,8 @@ where
             ..
         } = &self.repo_caches;
         let start_time = Instant::now();
-        let style = ProgressStyle::default_bar().template(
-            "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}/{len:7} ({eta}) {per_sec}").expect("error with progress bar style");
         let progress = ProgressBar::new(oid_set.len() as u64);
-        progress.set_style(style);
+        progress.set_style(pb_style());
         let tl = ThreadLocal::new();
         *cache = oid_set
             .iter()
@@ -137,7 +135,10 @@ where
             .progress_with(progress)
             .fold(
                 AHashMap::new,
-                |mut acc: AHashMap<(MyOid, Option<FilenameIdx>), Either<T, F>>,
+                |mut acc: AHashMap<
+                    (MyOid, Option<FilenameIdx>),
+                    MeasurementData<TreeData, FileData>,
+                >,
                  (oid_idx, (oid, kind))| {
                     if !kind.is_blob() {
                         return acc;
@@ -155,10 +156,12 @@ where
                         let parent_filename =
                             filename_set.get_index(*filename_idx as usize).unwrap();
                         if let Ok(measurement) =
-                            self.file_measurer
-                                .measure_entry(repo, parent_filename, oid)
+                            self.file_measurer.measure_entry(repo, parent_filename, oid)
                         {
-                            acc.insert((oid_idx, Some(*filename_idx)), Either::Right(measurement));
+                            acc.insert(
+                                (oid_idx, Some(*filename_idx)),
+                                MeasurementData::FileData(measurement),
+                            );
                         }
                     }
                     acc
@@ -166,7 +169,11 @@ where
             )
             .reduce(
                 AHashMap::new,
-                |mut acc: AHashMap<(MyOid, Option<FilenameIdx>), Either<T, F>>, cur| {
+                |mut acc: AHashMap<
+                    (MyOid, Option<FilenameIdx>),
+                    MeasurementData<TreeData, FileData>,
+                >,
+                 cur| {
                     acc.extend(cur);
                     acc
                 },
@@ -184,8 +191,8 @@ where
         &self,
         path: SmallVec<[FilenameIdx; 20]>,
         tree: &TreeEntry,
-        cache: &DashMap<(MyOid, Option<FilenameIdx>), Either<T, F>>,
-    ) -> Result<(T, usize), Box<dyn std::error::Error>> {
+        cache: &DashMap<(MyOid, Option<FilenameIdx>), MeasurementData<TreeData, FileData>>,
+    ) -> Result<(TreeData, usize), Box<dyn std::error::Error>> {
         let RepoCacheData {
             repo_safe: repo,
             flat_tree,
@@ -199,7 +206,7 @@ where
                     .get(&(tree.oid_idx, None))
                     .unwrap()
                     .clone()
-                    .unwrap_left(),
+                    .unwrap_tree(),
                 0,
             ));
         }
@@ -257,14 +264,14 @@ where
                         acc += processed;
                         match child_result.is_empty() {
                             true => None,
-                            false => Some((entry_path, Either::Left(child_result))),
+                            false => Some((entry_path, MeasurementData::TreeData(child_result))),
                         }
                     }
                 }
             })
-            .collect::<TreeDataCollection<T, F>>();
-        let res = self.tree_reducer.reduce(repo, child_results)?;
-        cache.insert((tree.oid_idx, None), Either::Left(res.clone()));
+            .collect::<TreeDataCollection<TreeData, FileData>>();
+        let res: TreeData = TreeData::reduce(repo, child_results)?;
+        cache.insert((tree.oid_idx, None), MeasurementData::TreeData(res.clone()));
         Ok((res, acc))
     }
 }

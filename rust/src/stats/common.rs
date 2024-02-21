@@ -2,63 +2,75 @@ use gix::{ObjectId, Repository, ThreadSafeRepository};
 use std::{collections::BTreeMap, fmt::Display};
 
 #[derive(Debug, Clone)]
-pub enum Either<L, R> {
-    Left(L),
-    Right(R),
+pub enum MeasurementData<L, R> {
+    TreeData(L),
+    FileData(R),
 }
-impl<L, R> Either<L, R>
+impl<L, R> MeasurementData<L, R>
 where
     L: Display,
     R: Display,
 {
     pub fn to_string(&self) -> String {
         match self {
-            Either::Left(l) => l.to_string(),
-            Either::Right(r) => r.to_string(),
+            MeasurementData::TreeData(l) => l.to_string(),
+            MeasurementData::FileData(r) => r.to_string(),
         }
     }
 }
-impl<L, R> Either<L, R> {
-    pub fn unwrap_left(self) -> L {
+impl<L, R> MeasurementData<L, R> {
+    pub fn unwrap_tree(self) -> L {
         match self {
-            Either::Left(l) => l,
-            Either::Right(_) => panic!("Called unwrap_left on Either::Right"),
+            MeasurementData::TreeData(l) => l,
+            MeasurementData::FileData(_) => panic!("Called unwrap_left on Either::Right"),
         }
     }
-    pub fn unwrap_right(self) -> R {
+    pub fn unwrap_file(self) -> R {
         match self {
-            Either::Left(_) => panic!("Called unwrap_right on Either::Left"),
-            Either::Right(r) => r,
+            MeasurementData::TreeData(_) => panic!("Called unwrap_right on Either::Left"),
+            MeasurementData::FileData(r) => r,
         }
     }
 }
-pub trait FileMeasurement<T>: Sync
+// File level measurements measure the contents of a file.
+// Then when we aggregate file-level results we sometimes store them
+// in a different type of TreeData. This trait allows us to
+// reduce the file-level measurements into the tree-level measurements.
+pub trait ReduceFrom<T>
 where
-    T: Send,
+    Self: Sized,
+{
+    fn reduce(
+        repo: &ThreadSafeRepository,
+        child_data: TreeDataCollection<Self, T>,
+    ) -> Result<Self, Box<dyn std::error::Error>>;
+}
+pub trait FileMeasurement<FileData>: Send + Sync
+where
+    FileData: Send + PossiblyEmpty,
 {
     fn measure_file(
         &self,
         repo: &Repository,
         path: &str,
         contents: &str,
-    ) -> Result<T, Box<dyn std::error::Error>>;
+    ) -> Result<FileData, Box<dyn std::error::Error>>;
 
-    fn measure_bytes(&self, contents: &[u8]) -> Result<T, Box<dyn std::error::Error>>;
+    fn measure_entry(
+        &self,
+        repo: &Repository,
+        path: &str,
+        oid: &ObjectId,
+    ) -> Result<FileData, Box<dyn std::error::Error>> {
+        let obj = repo.find_object(*oid)?;
+        let content = std::str::from_utf8(&obj.data).unwrap_or_default();
+        self.measure_file(repo, path, content)
+    }
 }
 pub trait PossiblyEmpty {
     fn is_empty(&self) -> bool;
 }
-pub trait TreeReducer<TreeData, FileData>: Send + Sync
-where
-    TreeData: PossiblyEmpty,
-{
-    fn reduce(
-        &self,
-        repo: &ThreadSafeRepository,
-        child_data: TreeDataCollection<TreeData, FileData>,
-    ) -> Result<TreeData, Box<dyn std::error::Error>>;
-}
-pub type TreeDataCollection<Tree, Leaf> = BTreeMap<String, Either<Tree, Leaf>>;
+pub type TreeDataCollection<Tree, Leaf> = BTreeMap<String, MeasurementData<Tree, Leaf>>;
 
 #[derive(Debug, Clone, Copy)]
 pub struct FileCount(pub usize);
@@ -69,26 +81,23 @@ impl PossiblyEmpty for FileCount {
         self.0 == 0
     }
 }
-pub struct FileCountReducer {}
-impl TreeReducer<FileCount, NumMatches> for FileCountReducer {
+impl ReduceFrom<NumMatches> for FileCount {
     fn reduce(
-        &self,
         _repo: &ThreadSafeRepository,
         child_data: TreeDataCollection<FileCount, NumMatches>,
     ) -> Result<FileCount, Box<dyn std::error::Error>> {
         let mut count = FileCount(0);
         for entry in child_data {
-            count.0 +=
-                match entry {
-                    (_name, Either::Left(tree_val)) => tree_val.0,
-                    (_name, Either::Right(leaf)) => {
-                        if leaf.0 > 0 {
-                            1
-                        } else {
-                            0
-                        }
+            count.0 += match entry {
+                (_name, MeasurementData::TreeData(tree_val)) => tree_val.0,
+                (_name, MeasurementData::FileData(leaf)) => {
+                    if leaf.0 > 0 {
+                        1
+                    } else {
+                        0
                     }
                 }
+            }
         }
         Ok(count)
     }
@@ -104,81 +113,18 @@ impl PossiblyEmpty for NumMatches {
         self.0 == 0
     }
 }
-pub struct NumMatchesReducer {}
-impl TreeReducer<NumMatches, NumMatches> for NumMatchesReducer {
+impl ReduceFrom<NumMatches> for NumMatches {
     fn reduce(
-        &self,
         _repo: &ThreadSafeRepository,
         child_data: TreeDataCollection<NumMatches, NumMatches>,
     ) -> Result<NumMatches, Box<dyn std::error::Error>> {
         let mut count = NumMatches(0);
         for entry in child_data {
             count.0 += match entry {
-                (_name, Either::Left(tree_val)) => tree_val.0,
-                (_name, Either::Right(leaf)) => leaf.0,
+                (_name, MeasurementData::TreeData(tree_val)) => tree_val.0,
+                (_name, MeasurementData::FileData(leaf)) => leaf.0,
             }
         }
         Ok(count)
-    }
-}
-
-pub trait PathMeasurement<T> {
-    fn measure_path(&self, repo: &Repository, path: &str) -> Result<T, Box<dyn std::error::Error>>;
-}
-
-pub trait BlobMeasurer<F>: Send + Sync
-where
-    F: Send + Sync,
-{
-    fn measure_entry(
-        &self,
-        repo: &Repository,
-        path: &str,
-        oid: &ObjectId,
-    ) -> Result<F, Box<dyn std::error::Error>>;
-
-    fn measure_data(&self, contents: &[u8]) -> Result<F, Box<dyn std::error::Error>>;
-}
-
-pub struct FileContentsMeasurer<F> {
-    pub callback: Box<dyn FileMeasurement<F> + Send + Sync>,
-}
-impl<F> BlobMeasurer<F> for FileContentsMeasurer<F>
-where
-    F: Send + Sync,
-{
-    fn measure_entry(
-        &self,
-        repo: &Repository,
-        path: &str,
-        oid: &ObjectId,
-    ) -> Result<F, Box<dyn std::error::Error>> {
-        let obj = repo.find_object(*oid)?;
-        let content = std::str::from_utf8(&obj.data).unwrap_or_default();
-        self.callback.measure_file(repo, path, content)
-    }
-    fn measure_data(&self, contents: &[u8]) -> Result<F, Box<dyn std::error::Error>> {
-        self.callback.measure_bytes(contents)
-    }
-}
-pub struct FilePathMeasurer<F> {
-    pub callback: Box<dyn PathMeasurement<F> + Send + Sync>,
-}
-unsafe impl<F: Send> Send for FilePathMeasurer<F> {}
-
-impl<F> BlobMeasurer<F> for FilePathMeasurer<F>
-where
-    F: Send + Sync + 'static,
-{
-    fn measure_entry(
-        &self,
-        repo: &Repository,
-        path: &str,
-        _oid: &ObjectId,
-    ) -> Result<F, Box<dyn std::error::Error>> {
-        self.callback.measure_path(repo, path)
-    }
-    fn measure_data(&self, _contents: &[u8]) -> Result<F, Box<dyn std::error::Error>> {
-        unimplemented!()
     }
 }

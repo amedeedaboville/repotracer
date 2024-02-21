@@ -3,7 +3,7 @@ use anyhow::Error;
 use gix::{Repository, ThreadSafeRepository};
 use tokei::{CodeStats, Config, LanguageType, Report};
 
-use super::common::{Either, PossiblyEmpty, TreeDataCollection, TreeReducer};
+use super::common::{MeasurementData, PossiblyEmpty, ReduceFrom, TreeDataCollection};
 
 pub struct TokeiCollector {}
 
@@ -30,10 +30,6 @@ impl FileMeasurement<CodeStats> for TokeiCollector {
             .ok_or_else(|| Error::msg(format!("Failed to get language type for path: '{path}'")))?;
         Ok(language.parse_from_slice(contents, &config))
     }
-
-    fn measure_bytes(&self, _contents: &[u8]) -> Result<CodeStats, Box<dyn std::error::Error>> {
-        unimplemented!()
-    }
 }
 
 pub struct TokeiReducer {}
@@ -47,17 +43,16 @@ impl PossiblyEmpty for Report {
         self.stats.is_empty()
     }
 }
-impl TreeReducer<Report, CodeStats> for TokeiReducer {
+impl ReduceFrom<CodeStats> for Report {
     fn reduce(
-        &self,
         _repo: &ThreadSafeRepository,
         child_data: TreeDataCollection<Report, CodeStats>,
     ) -> Result<Report, Box<dyn std::error::Error>> {
         let mut report = Report::new(std::path::PathBuf::from("."));
         for entry in child_data {
             report += match entry {
-                (_name, Either::Left(report)) => report.stats,
-                (_name, Either::Right(code_stats)) => code_stats,
+                (_name, MeasurementData::TreeData(report)) => report.stats,
+                (_name, MeasurementData::FileData(code_stats)) => code_stats,
             }
         }
         Ok(report)

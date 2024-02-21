@@ -1,6 +1,4 @@
-
-
-use crate::stats::common::{NumMatches, PathMeasurement};
+use crate::stats::common::{FileMeasurement, NumMatches};
 
 use gix::Repository;
 use globset::{Glob, GlobMatcher};
@@ -22,11 +20,12 @@ impl PathBlobCollector {
     }
 }
 
-impl PathMeasurement<NumMatches> for PathBlobCollector {
-    fn measure_path(
+impl FileMeasurement<NumMatches> for PathBlobCollector {
+    fn measure_file(
         &self,
         _repo: &Repository,
         path: &str,
+        _contents: &str,
     ) -> Result<NumMatches, Box<dyn std::error::Error>> {
         if path.ends_with(std::path::MAIN_SEPARATOR) {
             return Ok(NumMatches(0));
