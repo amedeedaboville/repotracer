@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::cell::OnceCell;
+
 use std::collections::HashMap;
 use std::env;
 use std::fs::File;
@@ -8,15 +8,15 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 #[derive(Serialize, Deserialize, Debug)]
-struct StatConfig {
-    name: String,
-    description: String,
+pub struct StatConfig {
+    pub name: Option<String>,
+    pub description: String,
     #[serde(rename = "type")]
-    type_: String,
-    params: Value, // Using serde_json::Value to represent any JSON value
-    path_in_repo: Option<String>,
-    start: Option<String>,
-    end: Option<String>,
+    pub type_: String,
+    pub params: Value, // Using serde_json::Value to represent any JSON value
+    pub path_in_repo: Option<String>,
+    pub start: Option<String>,
+    pub end: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -36,10 +36,10 @@ pub struct GlobalConfig {
 }
 use std::sync::OnceLock;
 
-static CONFIG: OnceLock<GlobalConfig> = OnceLock::new();
+static GLOBAL_CONFIG: OnceLock<GlobalConfig> = OnceLock::new();
 
-pub fn get_repo_config(repo: &str) -> &GlobalConfig {
-    CONFIG.get_or_init(|| {
+pub fn global_config() -> &'static GlobalConfig {
+    GLOBAL_CONFIG.get_or_init(|| {
         let path = get_config_path();
         if !path.exists() {
             let root_dir = get_root_dir();
@@ -52,6 +52,13 @@ pub fn get_repo_config(repo: &str) -> &GlobalConfig {
         }
         GlobalConfig::read_from_file(&path).unwrap()
     })
+}
+pub fn get_repo_config(repo: &str) -> &RepoConfig {
+    let global = global_config();
+    global
+        .repos
+        .get(repo)
+        .expect("We don't have a config for this repo")
 }
 /*
 const DEFAULT_REPOS: HashMap<String, RepoConfig> =

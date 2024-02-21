@@ -1,7 +1,7 @@
 use chrono::{DateTime, Datelike, Duration, NaiveDateTime, Timelike, Utc};
 use gix::Commit;
-use gix::{Repository, ThreadSafeRepository};
-use indicatif::ProgressIterator;
+use gix::{Repository};
+
 use std::collections::BTreeMap;
 use std::option::Option;
 
@@ -41,7 +41,7 @@ pub fn list_commits_with_granularity(
     for info_result in revwalk {
         let info = info_result?;
         let commit = info.object().unwrap();
-        let tree = commit.tree().unwrap();
+        let _tree = commit.tree().unwrap();
         let commit_time = commit.time()?;
         let datetime = DateTime::<Utc>::from_naive_utc_and_offset(
             NaiveDateTime::from_timestamp(commit_time.seconds, 0),
