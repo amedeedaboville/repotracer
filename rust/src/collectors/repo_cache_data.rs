@@ -69,18 +69,22 @@ impl TreeChild {
     }
 }
 
-struct PartialRepoCacheData {
-    pub oid_set: Option<OidSet>,
-    pub filename_set: Option<FilenameSet>,
-    pub flat_tree: Option<FlatGitRepo>,
-    pub filename_cache: Option<FilenameCache>,
-    pub tree_entry_set: Option<EntrySet>,
-}
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct OidSetWithInfo {
-    pub set: OidSet,
+    set: OidSet,
     pub num_trees: usize,
     pub num_blobs: usize,
+}
+impl OidSetWithInfo {
+    pub fn iter_trees(&self) -> impl Iterator<Item = &(ObjectId, Kind)> + '_ {
+        self.set.iter().filter(|(_, kind)| kind.is_tree())
+    }
+    pub fn iter_blobs(&self) -> impl Iterator<Item = &(ObjectId, Kind)> + '_ {
+        self.set.iter().filter(|(_, kind)| kind.is_blob())
+    }
+    pub fn get_index_of(&self, elem: &(ObjectId, Kind)) -> Option<usize> {
+        self.set.get_index_of(elem)
+    }
 }
 pub struct RepoCacheData {
     pub repo_safe: ThreadSafeRepository,
@@ -155,16 +159,11 @@ pub fn build_filename_set(
     let progress = ProgressBar::new(oid_set.num_trees as u64);
     progress.set_style(style);
     let filenames: FilenameSet = oid_set
-        .set
-        .iter()
-        .filter(|(_, kind)| kind.is_tree())
+        .iter_trees()
         .progress_with(progress)
         .par_bridge()
-        .fold(IndexSet::new, |mut acc: IndexSet<String>, (oid, kind)| {
+        .fold(IndexSet::new, |mut acc: IndexSet<String>, (oid, _kind)| {
             let repo: &Repository = tl.get_or(|| repo.clone().to_thread_local());
-            if !kind.is_tree() {
-                return acc;
-            }
             let obj = repo.find_object(*oid).expect("Failed to find object");
             for entry in obj.into_tree().decode().unwrap().entries.iter() {
                 acc.insert(entry.filename.to_string());
@@ -194,54 +193,47 @@ pub fn build_entries_set(
     let tl = ThreadLocal::new();
     let progress = ProgressBar::new(oid_set.num_trees as u64);
     progress.set_style(pb_style());
-    let entries =
-        oid_set
-            .set
-            .iter()
-            .filter(|(_, kind)| kind.is_tree())
-            .par_bridge()
-            .progress_with(progress)
-            .fold(IndexSet::new, |mut acc: EntrySet, (oid, kind)| {
-                let repo: &Repository = tl.get_or(|| repo.clone().to_thread_local());
-                if !kind.is_tree() {
-                    return acc;
-                }
-                let obj = repo.find_object(*oid).expect("Failed to find object");
-                for entry in obj.into_tree().decode().unwrap().entries.iter() {
-                    let child_oid: ObjectId = entry.oid.into();
-                    let filename_idx = filename_set
-                        .get_index_of(&entry.filename.to_string())
-                        .unwrap() as FilenameIdx;
-                    let kind = match entry.mode.into() {
-                        EntryKind::Blob => TreeChildKind::Blob,
-                        EntryKind::Tree => TreeChildKind::Tree,
-                        _ => continue,
-                    };
-                    let other_kind =
-                        match entry.mode.into() {
-                            EntryKind::Blob => Kind::Blob,
-                            EntryKind::Tree => Kind::Tree,
-                            _ => {
-                                println!("unreachable new code");
-                                continue;
-                            }
-                        };
-                    let child_oid_idx =
-                        oid_set.set.get_index_of(&(child_oid, other_kind)).unwrap() as MyOid;
-                    acc.insert(MyEntry {
-                        oid_idx: child_oid_idx,
-                        filename_idx,
-                        kind,
-                    });
-                }
-                acc
-            })
-            .reduce(IndexSet::new, |mut acc, cur| {
-                for entry in cur {
-                    acc.insert(entry);
-                }
-                acc
-            });
+    let entries = oid_set
+        .iter_trees()
+        .par_bridge()
+        .progress_with(progress)
+        .fold(IndexSet::new, |mut acc: EntrySet, (oid, _kind)| {
+            let repo: &Repository = tl.get_or(|| repo.clone().to_thread_local());
+            let obj = repo.find_object(*oid).expect("Failed to find object");
+            for entry in obj.into_tree().decode().unwrap().entries.iter() {
+                let child_oid: ObjectId = entry.oid.into();
+                let filename_idx = filename_set
+                    .get_index_of(&entry.filename.to_string())
+                    .unwrap() as FilenameIdx;
+                let kind = match entry.mode.into() {
+                    EntryKind::Blob => TreeChildKind::Blob,
+                    EntryKind::Tree => TreeChildKind::Tree,
+                    _ => continue,
+                };
+                let other_kind = match entry.mode.into() {
+                    EntryKind::Blob => Kind::Blob,
+                    EntryKind::Tree => Kind::Tree,
+                    _ => {
+                        println!("unreachable new code");
+                        continue;
+                    }
+                };
+                let child_oid_idx =
+                    oid_set.get_index_of(&(child_oid, other_kind)).unwrap() as MyOid;
+                acc.insert(MyEntry {
+                    oid_idx: child_oid_idx,
+                    filename_idx,
+                    kind,
+                });
+            }
+            acc
+        })
+        .reduce(IndexSet::new, |mut acc, cur| {
+            for entry in cur {
+                acc.insert(entry);
+            }
+            acc
+        });
     Ok(entries)
 }
 
@@ -255,15 +247,13 @@ pub fn build_flat_tree(
     let progress = ProgressBar::new(oid_set.num_trees as u64);
     progress.set_style(pb_style());
     let oid_entries: AHashMap<MyOid, TreeChild> = oid_set
-        .set
-        .iter()
-        .filter(|(_, kind)| kind.is_tree())
+        .iter_trees()
         .progress_with(progress)
         .par_bridge()
         .fold(AHashMap::new, |mut acc: FlatGitRepo, (oid, kind)| {
-            let oid_idx = oid_set.set.get_index_of(&(*oid, *kind)).unwrap() as MyOid;
+            let oid_idx = oid_set.get_index_of(&(*oid, *kind)).unwrap() as MyOid;
             //Duplicate object
-            if acc.contains_key(&oid_idx) || !kind.is_tree() {
+            if acc.contains_key(&oid_idx) {
                 return acc;
             }
             let repo: &Repository = tl.get_or(|| repo.clone().to_thread_local());
@@ -292,7 +282,7 @@ pub fn build_flat_tree(
                     };
                     //also indexSet could be an IndexMap of oid->kind
                     let child_oid_idx =
-                        oid_set.set.get_index_of(&(child_oid, child_kind)).unwrap() as MyOid;
+                        oid_set.get_index_of(&(child_oid, child_kind)).unwrap() as MyOid;
                     let kind = match entry.mode.into() {
                         EntryKind::Blob => TreeChildKind::Blob,
                         EntryKind::Tree => TreeChildKind::Tree,

@@ -98,8 +98,7 @@ where
             .rev() //todo not sure this does anything
             .progress_with_style(pb_style())
             .map(|(commit_oid, tree_oid)| {
-                let tree_oid_idx =
-                    oid_set.set.get_index_of(&(tree_oid, Kind::Tree)).unwrap() as MyOid;
+                let tree_oid_idx = oid_set.get_index_of(&(tree_oid, Kind::Tree)).unwrap() as MyOid;
                 let tree_entry = flat_tree.get(&tree_oid_idx).unwrap().unwrap_tree();
                 let (res, _processed) = self
                     .measure_tree(SmallVec::new(), tree_entry, &cache)
@@ -129,9 +128,7 @@ where
         progress.set_style(pb_style());
         let tl = ThreadLocal::new();
         *cache = oid_set
-            .set
-            .iter()
-            .filter(|(_, kind)| kind.is_blob())
+            .iter_blobs()
             .par_bridge()
             .progress_with(progress)
             .fold(
@@ -140,12 +137,9 @@ where
                     (MyOid, Option<FilenameIdx>),
                     MeasurementData<TreeData, FileData>,
                 >,
-                 (oid, kind)| {
-                    if !kind.is_blob() {
-                        return acc;
-                    }
+                 (oid, _kind)| {
                     let repo: &Repository = tl.get_or(|| shared_repo.clone().to_thread_local());
-                    let oid_idx = oid_set.set.get_index_of(&(*oid, Kind::Blob)).unwrap() as MyOid;
+                    let oid_idx = oid_set.get_index_of(&(*oid, Kind::Blob)).unwrap() as MyOid;
                     let Some(parent_trees) = filename_cache.get(&oid_idx) else {
                         // println!("No parent trees in filename cache for blob {oid_idx}");
                         return acc;
