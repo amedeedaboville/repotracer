@@ -85,6 +85,9 @@ impl OidSetWithInfo {
     pub fn get_index_of(&self, elem: &(ObjectId, Kind)) -> Option<usize> {
         self.set.get_index_of(elem)
     }
+    pub fn get_index(&self, idx: MyOid) -> Option<&(ObjectId, Kind)> {
+        self.set.get_index(idx as usize)
+    }
 }
 pub struct RepoCacheData {
     pub repo_safe: ThreadSafeRepository,

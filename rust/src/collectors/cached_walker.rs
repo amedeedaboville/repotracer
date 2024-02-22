@@ -3,16 +3,17 @@ use dashmap::DashMap;
 
 use super::list_in_range::Granularity;
 use super::repo_cache_data::{
-    FilenameIdx, MyEntry, MyOid, RepoCacheData, TreeChildKind, TreeEntry,
+    FilenameIdx, MyEntry, MyOid, OidSet, RepoCacheData, TreeChildKind, TreeEntry,
 };
 use crate::collectors::list_in_range::list_commits_with_granularity;
+use crate::collectors::repo_cache_data::EntryIdx;
 use crate::stats::common::{
     FileMeasurement, MeasurementData, PossiblyEmpty, ReduceFrom, TreeDataCollection,
 };
 use crate::util::pb_style;
-use ahash::AHashMap;
+use ahash::{AHashMap, HashSet, HashSetExt};
 use gix::objs::Kind;
-use gix::{ObjectId, Repository};
+use gix::{Commit, ObjectId, Repository};
 
 use indicatif::ProgressBar;
 use indicatif::{ParallelProgressIterator, ProgressIterator};
@@ -41,7 +42,6 @@ fn count_commits(repo: &Repository) -> Result<usize, Box<dyn std::error::Error>>
 
 type ResultCache<T, F> = DashMap<(MyOid, Option<FilenameIdx>), MeasurementData<T, F>>;
 pub struct CachedWalker<T, F> {
-    repo_path: String,
     repo_caches: RepoCacheData,
     file_measurer: Box<dyn FileMeasurement<F>>,
     _marker: PhantomData<T>,
@@ -57,10 +57,49 @@ where
     ) -> Self {
         CachedWalker::<TreeData, FileData> {
             repo_caches: RepoCacheData::new(&repo_path),
-            repo_path,
             file_measurer,
             _marker: PhantomData,
         }
+    }
+    fn gather_objects_to_process(
+        &self,
+        commits_to_process: &Vec<Commit>,
+    ) -> Result<Vec<MyOid>, Box<dyn std::error::Error>> {
+        let RepoCacheData {
+            oid_set,
+            tree_entry_set,
+            flat_tree,
+            ..
+        } = &self.repo_caches;
+        let mut res: HashSet<EntryIdx> = HashSet::with_capacity(oid_set.num_blobs / 3);
+        let processed: HashSet<EntryIdx> = HashSet::new();
+        for commit in commits_to_process.iter().progress() {
+            let commit_tree_objectid = commit.tree()?.id;
+            let commit_tree_oid_idx = oid_set
+                .get_index_of(&(commit_tree_objectid, Kind::Tree))
+                .unwrap() as MyOid;
+            let commit_tree_item = flat_tree.get(&commit_tree_oid_idx).unwrap().unwrap_tree();
+            let mut entries_to_process = commit_tree_item.children.clone();
+            while let Some(entry_idx) = entries_to_process.pop() {
+                if processed.contains(&entry_idx) {
+                    continue;
+                }
+                let MyEntry { oid_idx, kind, .. } =
+                    tree_entry_set.get_index(entry_idx as usize).unwrap();
+                match kind {
+                    TreeChildKind::Blob => {
+                        res.insert(entry_idx);
+                    }
+                    TreeChildKind::Tree => {
+                        let child_tree = flat_tree.get(oid_idx).unwrap().unwrap_tree();
+                        entries_to_process.extend(child_tree.children.clone());
+                    }
+                }
+            }
+        }
+        let mut res_vec = res.into_iter().collect::<Vec<EntryIdx>>();
+        res_vec.sort_by_key(|idx| tree_entry_set.get_index(*idx as usize).unwrap().oid_idx);
+        Ok(res_vec)
     }
 
     pub fn walk_repo_and_collect_stats(
@@ -77,12 +116,21 @@ where
         let inner_repo = safe_repo.clone().to_thread_local();
         let mut cache: DashMap<(MyOid, Option<FilenameIdx>), MeasurementData<TreeData, FileData>> =
             DashMap::with_capacity(flat_tree.len());
-        self.batch_process_objects(&mut cache);
-        let tree_processing_start = Instant::now();
+        println!("Getting commits to process");
         let commits_to_process =
             list_commits_with_granularity(&inner_repo, granularity, range.0, range.1)?;
+        let num_commits = commits_to_process.len();
+        println!("Getting entries to process");
+        let entries_to_process = self.gather_objects_to_process(&commits_to_process).ok();
+        println!(
+            "Processing {num_commits} commits from {:?} to {:?}",
+            range.0, range.1,
+        );
+        self.batch_process_objects(&mut cache, entries_to_process);
+        // self.batch_process_objects(&mut cache, Some(entries_to_process));
+        let tree_processing_start = Instant::now();
         println!("Collecting file results into trees for each commit:");
-        let commit_count = commits_to_process.len();
+        let commit_count = num_commits;
 
         let oids =
             commits_to_process
@@ -114,21 +162,54 @@ where
         println!("{:?}", commit_stats.iter().take(5).collect::<Vec<_>>());
         Ok(commit_stats)
     }
-    fn batch_process_objects(&self, cache: &mut ResultCache<TreeData, FileData>) {
-        println!("Processing all blobs in the repo");
+    fn batch_process_objects(
+        &self,
+        cache: &mut ResultCache<TreeData, FileData>,
+        entries_to_process: Option<Vec<EntryIdx>>,
+    ) {
+        let start_time = Instant::now();
+        println!("Processing blobs");
         let RepoCacheData {
             filename_cache,
             filename_set,
             oid_set,
             repo_safe: shared_repo,
+            tree_entry_set,
             ..
         } = &self.repo_caches;
-        let start_time = Instant::now();
-        let progress = ProgressBar::new(oid_set.num_blobs as u64);
+        let total = if let Some(entries) = &entries_to_process {
+            entries.len()
+        } else {
+            oid_set.num_blobs
+        } as u64;
+        let iter: Box<dyn Iterator<Item = (u32, u32)> + Send> = match entries_to_process {
+            Some(entries) => Box::new(entries.into_iter().map(move |idx| {
+                let MyEntry {
+                    oid_idx,
+                    filename_idx,
+                    ..
+                } = tree_entry_set.get_index(idx as usize).unwrap();
+                (*oid_idx, *filename_idx)
+            })),
+            None => {
+                Box::new(oid_set.iter_blobs().flat_map(|(oid, _kind)| {
+                    let oid_idx = oid_set.get_index_of(&(*oid, Kind::Blob)).unwrap() as MyOid;
+                    let parent_trees = filename_cache.get(&oid_idx);
+                    match parent_trees {
+                        None => vec![].into_iter(), // this is where we used to log
+                        Some(parent_trees) => parent_trees
+                            .iter()
+                            .map(move |filename_idx| (oid_idx, *filename_idx))
+                            .collect::<Vec<(u32, u32)>>()
+                            .into_iter(), // Convert to Vec and then to an iterator
+                    }
+                }))
+            }
+        };
+        let progress = ProgressBar::new(total);
         progress.set_style(pb_style());
         let tl = ThreadLocal::new();
-        *cache = oid_set
-            .iter_blobs()
+        *cache = iter
             .par_bridge()
             .progress_with(progress)
             .fold(
@@ -137,32 +218,25 @@ where
                     (MyOid, Option<FilenameIdx>),
                     MeasurementData<TreeData, FileData>,
                 >,
-                 (oid, _kind)| {
+                 (oid_idx, filename_idx)| {
                     let repo: &Repository = tl.get_or(|| shared_repo.clone().to_thread_local());
-                    let oid_idx = oid_set.get_index_of(&(*oid, Kind::Blob)).unwrap() as MyOid;
-                    let Some(parent_trees) = filename_cache.get(&oid_idx) else {
-                        // println!("No parent trees in filename cache for blob {oid_idx}");
-                        return acc;
+                    let (oid, _kind) = oid_set.get_index(oid_idx).unwrap();
+                    let parent_filename = filename_set.get_index(filename_idx as usize).unwrap();
+                    match self.file_measurer.measure_entry(repo, parent_filename, oid) {
+                        Ok(measurement) => {
+                            acc.insert(
+                                (oid_idx, Some(filename_idx)),
+                                MeasurementData::FileData(measurement),
+                            );
+                        }
+                        Err(_) => {
+                            // if *filename_idx == 181 || *filename_idx == 263 {
+                            //     println!(
+                            //         "Error with measurement for ({oid_idx},{filename_idx}), {e}",
+                            //     );
+                            // }
+                        }
                     };
-                    for filename_idx in parent_trees {
-                        let parent_filename =
-                            filename_set.get_index(*filename_idx as usize).unwrap();
-                        match self.file_measurer.measure_entry(repo, parent_filename, oid) {
-                            Ok(measurement) => {
-                                acc.insert(
-                                    (oid_idx, Some(*filename_idx)),
-                                    MeasurementData::FileData(measurement),
-                                );
-                            }
-                            Err(_) => {
-                                // if *filename_idx == 181 || *filename_idx == 263 {
-                                //     println!(
-                                //         "Error with measurement for ({oid_idx},{filename_idx}), {e}",
-                                //     );
-                                // }
-                            }
-                        };
-                    }
                     acc
                 },
             )

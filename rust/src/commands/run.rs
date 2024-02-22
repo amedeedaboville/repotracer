@@ -1,3 +1,4 @@
+use chrono::{DateTime, NaiveDate, TimeZone, Utc};
 use tokei::{CodeStats, Report};
 
 use crate::collectors::cached_walker::CachedWalker;
@@ -22,13 +23,18 @@ fn run_stat(repo: &str, stat: &str) {
 
     println!("Running {stat} on {repo} stored at {repo_path}");
     let pattern = "TODO";
+
+    let start = NaiveDate::parse_from_str("2023-01-01", "%Y-%m-%d")
+        .expect("Failed to parse date")
+        .and_hms(0, 0, 0); // Assuming start of the day
+    let start: DateTime<Utc> = Utc.from_utc_datetime(&start);
     match stat {
         "tokei" => {
             let file_measurer = Box::new(TokeiCollector::new());
             let mut walker: CachedWalker<Report, CodeStats> =
                 CachedWalker::new(repo_path.to_owned(), file_measurer);
             walker
-                .walk_repo_and_collect_stats(Granularity::Daily, (None, None))
+                .walk_repo_and_collect_stats(Granularity::Daily, (Some(start), None))
                 .unwrap();
         }
         "grep" => {
@@ -36,7 +42,7 @@ fn run_stat(repo: &str, stat: &str) {
             let mut walker: CachedWalker<NumMatches, NumMatches> =
                 CachedWalker::new(repo_path.to_owned(), file_measurer);
             walker
-                .walk_repo_and_collect_stats(Granularity::Daily, (None, None))
+                .walk_repo_and_collect_stats(Granularity::Daily, (Some(start), None))
                 .unwrap();
         }
         _ => println!("Unknown stat {stat}"),
