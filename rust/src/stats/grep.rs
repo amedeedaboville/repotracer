@@ -5,6 +5,10 @@ use grep::matcher::Matcher;
 use grep::regex::RegexMatcher;
 use grep::searcher::sinks::UTF8;
 use grep::searcher::Searcher;
+use polars::frame::row::Row;
+use polars::prelude::Schema;
+
+use super::common::TreeDataCollection;
 
 pub struct RipgrepCollector {
     pattern: String,
@@ -32,6 +36,22 @@ impl FileMeasurement<NumMatches> for RipgrepCollector {
     ) -> Result<NumMatches, Box<dyn std::error::Error>> {
         let matches = self.get_matches(contents)?;
         Ok(NumMatches(matches.len()))
+    }
+    fn summarize_tree_data(
+        &self,
+        child_data: TreeDataCollection<NumMatches>,
+    ) -> Result<Row, Box<dyn std::error::Error>> {
+        let total = child_data
+            .into_iter()
+            .map(|(_, matches)| matches.0 as u64)
+            .sum::<u64>()
+            .into();
+        let row = Row::new(vec![total]);
+        Ok(row)
+    }
+    fn polars_schema(&self) -> polars::prelude::Schema {
+        let field = polars::prelude::Field::new("total", polars::prelude::DataType::UInt64);
+        Schema::from_iter(vec![field])
     }
 }
 

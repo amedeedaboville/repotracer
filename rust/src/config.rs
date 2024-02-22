@@ -31,8 +31,14 @@ pub struct RepoConfig {
 #[derive(Serialize, Deserialize, Debug)]
 pub struct GlobalConfig {
     pub repo_storage_location: Option<String>,
-    pub stat_storage: Option<HashMap<String, Value>>,
+    pub stat_storage: Option<StatStorageConfig>,
     pub repos: HashMap<String, RepoConfig>,
+}
+#[derive(Serialize, Deserialize, Debug)]
+pub struct StatStorageConfig {
+    #[serde(rename = "type")]
+    pub type_: String,
+    pub storage_path: Option<String>,
 }
 use std::sync::OnceLock;
 
@@ -53,12 +59,24 @@ pub fn global_config() -> &'static GlobalConfig {
         GlobalConfig::read_from_file(&path).unwrap()
     })
 }
+static ROOT_DIR: OnceLock<PathBuf> = OnceLock::new();
+fn get_root_dir() -> &'static PathBuf {
+    ROOT_DIR.get_or_init(|| env::current_dir().unwrap().join(".repotracer"))
+}
 pub fn get_repo_config(repo: &str) -> &RepoConfig {
     let global = global_config();
     global
         .repos
         .get(repo)
         .expect("We don't have a config for this repo")
+}
+pub fn get_stats_dir() -> PathBuf {
+    global_config()
+        .stat_storage
+        .as_ref()
+        .and_then(|s| s.storage_path.as_ref())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| get_root_dir().join("stats"))
 }
 /*
 const DEFAULT_REPOS: HashMap<String, RepoConfig> =
@@ -104,7 +122,7 @@ impl GlobalConfig {
     fn new() -> Self {
         Self {
             repo_storage_location: None,
-            stat_storage: Some(HashMap::new()),
+            stat_storage: None,
             repos: HashMap::new(),
         }
     }
@@ -127,10 +145,6 @@ impl GlobalConfig {
     //     let config = Self::read_from_file(get_config_path()).unwrap();
     //     config.repos.get(repo).cloned()
     // }
-}
-
-fn get_root_dir() -> PathBuf {
-    env::current_dir().unwrap().join(".repotracer")
 }
 
 fn get_config_path() -> PathBuf {

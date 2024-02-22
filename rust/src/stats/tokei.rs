@@ -1,9 +1,14 @@
 use crate::stats::common::FileMeasurement;
 use anyhow::Error;
 use gix::{Repository, ThreadSafeRepository};
+use polars::{
+    datatypes::{DataType, Field},
+    frame::row::Row,
+    prelude::Schema,
+};
 use tokei::{CodeStats, Config, LanguageType, Report};
 
-use super::common::{MeasurementData, PossiblyEmpty, ReduceFrom, TreeDataCollection};
+use super::common::{PossiblyEmpty, TreeDataCollection};
 
 pub struct TokeiCollector {}
 
@@ -30,31 +35,29 @@ impl FileMeasurement<CodeStats> for TokeiCollector {
             .ok_or_else(|| Error::msg(format!("Failed to get language type for path: '{path}'")))?;
         Ok(language.parse_from_slice(contents, &config))
     }
+
+    fn summarize_tree_data(
+        &self,
+        tree_data: TreeDataCollection<CodeStats>,
+    ) -> Result<Row, Box<dyn std::error::Error>> {
+        let mut report = Report::new(std::path::PathBuf::from("."));
+        for (filename, entry) in tree_data {
+            report += entry;
+        }
+        //todo we have to pull out the Languages
+        let total = (report.stats.code as u64).into();
+        let row = Row::new(vec![total]); //todo pull out the the language totals
+        Ok(row)
+    }
+
+    fn polars_schema(&self) -> Schema {
+        let field = Field::new("total", DataType::UInt64);
+        Schema::from_iter(vec![field])
+    }
 }
 
-pub struct TokeiReducer {}
 impl PossiblyEmpty for CodeStats {
     fn is_empty(&self) -> bool {
         self.lines() == 0
-    }
-}
-impl PossiblyEmpty for Report {
-    fn is_empty(&self) -> bool {
-        self.stats.is_empty()
-    }
-}
-impl ReduceFrom<CodeStats> for Report {
-    fn reduce(
-        _repo: &ThreadSafeRepository,
-        child_data: TreeDataCollection<Report, CodeStats>,
-    ) -> Result<Report, Box<dyn std::error::Error>> {
-        let mut report = Report::new(std::path::PathBuf::from("."));
-        for entry in child_data {
-            report += match entry {
-                (_name, MeasurementData::TreeData(report)) => report.stats,
-                (_name, MeasurementData::FileData(code_stats)) => code_stats,
-            }
-        }
-        Ok(report)
     }
 }
