@@ -4,6 +4,7 @@ use tokei::{CodeStats, Report};
 use crate::collectors::cached_walker::CachedWalker;
 use crate::collectors::list_in_range::Granularity;
 use crate::config;
+use crate::plotter::plot;
 use crate::stats::common::NumMatches;
 use crate::stats::grep::RipgrepCollector;
 use crate::stats::tokei::TokeiCollector;
@@ -21,6 +22,7 @@ fn run_stat(repo: &str, stat: &str) {
         .storage_path
         .as_ref()
         .expect("Repo doesn't have a storage path, I don't know where to look for it.");
+    let stat_config = repo_config.stats.as_ref().and_then(|s| s.get(stat));
 
     println!("Running {stat} on {repo} stored at {repo_path}");
     let pattern = "TODO";
@@ -50,7 +52,15 @@ fn run_stat(repo: &str, stat: &str) {
 
             _ => panic!("Unknown stat {stat}"),
         };
+    let mut plot_df = res.clone();
+    let stat_description = match stat {
+        "tokei" => "LOC by Language",
+        "grep" => "Number of TODOs",
+        _ => "Stat results", //todo actually go into the statconfig
+    };
+    plot(repo, stat, &mut plot_df, &stat_description, &Utc::now()).expect("Error plotting");
     write_commit_stats_to_csv(repo, stat, &mut res).unwrap();
+
     // let _path_measurer = Box::new(FilePathMeasurer {
     //     callback: Box::new(PathBlobCollector::new(pattern)),
     // });

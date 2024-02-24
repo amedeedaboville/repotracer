@@ -175,7 +175,7 @@ where
         println!("{:?}", commit_stats.iter().take(5).collect::<Vec<_>>());
 
         let base_schema = Schema::from_iter(vec![
-            Field::new("commit", DataType::String),
+            Field::new("commit_hash", DataType::String),
             Field::new(
                 "commit_time",
                 DataType::Datetime(TimeUnit::Milliseconds, None),
@@ -194,7 +194,7 @@ where
             .iter()
             .map(|cs| AnyValue::Datetime(cs.time.seconds * 1000, TimeUnit::Milliseconds, &None))
             .collect::<Vec<_>>();
-        func_df.insert_column(0, Series::new("commit", commit_shas))?;
+        func_df.insert_column(0, Series::new("commit_hash", commit_shas))?;
         func_df.insert_column(1, Series::new("commit_time", commit_times))?;
         Ok(func_df)
     }

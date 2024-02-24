@@ -31,6 +31,9 @@ impl FileMeasurement<CodeStats> for TokeiCollector {
         contents: &str,
     ) -> Result<CodeStats, Box<dyn std::error::Error>> {
         let config = Config::default();
+        if path.starts_with(".") {
+            return Ok(CodeStats::new());
+        }
         let language = LanguageType::from_path(path, &config)
             .ok_or_else(|| Error::msg(format!("Failed to get language type for path: '{path}'")))?;
         Ok(language.parse_from_slice(contents, &config))
