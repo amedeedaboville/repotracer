@@ -47,14 +47,12 @@ impl FileMeasurement<NumMatches> for PathBlobCollector {
     fn summarize_tree_data(
         &self,
         data: TreeDataCollection<NumMatches>,
-    ) -> Result<Row, Box<dyn std::error::Error>> {
+    ) -> Result<(Schema, Row), Box<dyn std::error::Error>> {
         let total: u64 = data.into_iter().map(|(_, matches)| matches.0 as u64).sum();
         let val: AnyValue = total.into();
         let row = Row::new(vec![val]);
-        Ok(row)
-    }
-    fn polars_schema(&self) -> Schema {
         let field = Field::new("total", DataType::UInt64);
-        Schema::from_iter(vec![field])
+        let schema = Schema::from_iter(vec![field]);
+        Ok((schema, row))
     }
 }

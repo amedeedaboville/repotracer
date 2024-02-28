@@ -32,7 +32,7 @@ pub struct CommitStat<'a> {
     // #[serde(rename = "commit")]
     pub oid: ObjectId,
     pub time: gix::date::Time,
-    pub stats: Arc<Row<'a>>,
+    pub stats: Arc<(Schema, Row<'a>)>,
 }
 unsafe impl<'a> Send for CommitStat<'a> {}
 unsafe impl<'a> Sync for CommitStat<'a> {}
@@ -162,11 +162,11 @@ where
                 let (res, _processed) = self
                     .measure_tree(SmallVec::new(), tree_entry, &cache)
                     .unwrap();
-                let row = self.file_measurer.summarize_tree_data(res).unwrap();
+                let (schema, row) = self.file_measurer.summarize_tree_data(res).unwrap();
                 CommitStat {
                     oid: commit_oid,
                     time: commit.time().unwrap(),
-                    stats: Arc::new(row),
+                    stats: Arc::new((schema, row)),
                 }
             })
             .collect::<Vec<CommitStat>>();
@@ -174,18 +174,29 @@ where
         println!("processed: {commit_count} commits in {elapsed_secs} seconds");
         println!("{:?}", commit_stats.iter().take(5).collect::<Vec<_>>());
 
-        let base_schema = Schema::from_iter(vec![
-            Field::new("commit_hash", DataType::String),
-            Field::new(
-                "commit_time",
-                DataType::Datetime(TimeUnit::Milliseconds, None),
-            ),
-        ]);
-        let schema = self.file_measurer.polars_schema();
-        let mut func_df = DataFrame::from_rows_iter_and_schema(
-            commit_stats.iter().map(|cs| Arc::as_ref(&cs.stats)),
-            &schema,
-        )?;
+        let schema = commit_stats.get(0).unwrap().stats.0.clone();
+        let polars_rows: Vec<Row> = commit_stats
+            .iter()
+            .map(|cs: &CommitStat| {
+                let (stat_schema, stat_row) = &cs.stats.as_ref();
+                if *stat_schema != schema {
+                    panic!("Schema mismatch: {:?} != {:?}", stat_schema, schema);
+                    /*
+                    let new_row = schema.iter_fields().map(|f| {
+                        if stat_schema.fields().contains(f) {
+                            stat_row.get(f.name())
+                        }
+                        else {
+                            AnyValue::Null
+                        }
+                    })
+                    */
+                }
+                stat_row.clone()
+            })
+            .collect();
+        let mut func_df = DataFrame::from_rows_iter_and_schema(polars_rows.iter(), &schema)?;
+        println!("turned commit_stats into a DF");
         let commit_shas = commit_stats
             .iter()
             .map(|cs| cs.oid.to_string())

@@ -68,9 +68,7 @@ where
     fn summarize_tree_data(
         &self,
         child_data: TreeDataCollection<FileData>,
-    ) -> Result<Row, Box<dyn std::error::Error>>;
-
-    fn polars_schema(&self) -> Schema;
+    ) -> Result<(Schema, Row), Box<dyn std::error::Error>>;
 }
 pub trait PossiblyEmpty {
     fn is_empty(&self) -> bool;

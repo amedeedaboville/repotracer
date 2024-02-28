@@ -40,18 +40,16 @@ impl FileMeasurement<NumMatches> for RipgrepCollector {
     fn summarize_tree_data(
         &self,
         child_data: TreeDataCollection<NumMatches>,
-    ) -> Result<Row, Box<dyn std::error::Error>> {
+    ) -> Result<(Schema, Row), Box<dyn std::error::Error>> {
         let total = child_data
             .into_iter()
             .map(|(_, matches)| matches.0 as u64)
             .sum::<u64>()
             .into();
         let row = Row::new(vec![total]);
-        Ok(row)
-    }
-    fn polars_schema(&self) -> polars::prelude::Schema {
         let field = polars::prelude::Field::new("total", polars::prelude::DataType::UInt64);
-        Schema::from_iter(vec![field])
+        let schema = Schema::from_iter(vec![field]);
+        Ok((schema, row))
     }
 }
 

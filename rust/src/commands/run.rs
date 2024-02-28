@@ -1,5 +1,5 @@
 use chrono::{DateTime, NaiveDate, TimeZone, Utc};
-use tokei::{CodeStats, Report};
+use tokei::Languages;
 
 use crate::collectors::cached_walker::CachedWalker;
 use crate::collectors::list_in_range::Granularity;
@@ -7,7 +7,7 @@ use crate::config;
 use crate::plotter::plot;
 use crate::stats::common::NumMatches;
 use crate::stats::grep::RipgrepCollector;
-use crate::stats::tokei::TokeiCollector;
+use crate::stats::tokei::{TokeiCollector, TokeiStat};
 use crate::storage::write_commit_stats_to_csv;
 
 pub fn run_command(repo: Option<&String>, stat: Option<&String>) {
@@ -35,7 +35,7 @@ fn run_stat(repo: &str, stat: &str) {
         match stat {
             "tokei" => {
                 let file_measurer = Box::new(TokeiCollector::new());
-                let mut walker: CachedWalker<CodeStats> =
+                let mut walker: CachedWalker<TokeiStat> =
                     CachedWalker::new(repo_path.to_owned(), file_measurer);
                 walker
                     .walk_repo_and_collect_stats(Granularity::Daily, (None, None))
