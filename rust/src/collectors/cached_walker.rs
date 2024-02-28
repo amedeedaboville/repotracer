@@ -10,6 +10,7 @@ use super::repo_cache_data::{
 };
 use crate::collectors::list_in_range::list_commits_with_granularity;
 use crate::collectors::repo_cache_data::EntryIdx;
+use crate::polars_utils::rows_to_df;
 use crate::stats::common::{FileMeasurement, PossiblyEmpty, TreeDataCollection};
 use crate::util::{pb_default, pb_style};
 use ahash::{AHashMap, HashSet, HashSetExt};
@@ -173,29 +174,9 @@ where
         let elapsed_secs = tree_processing_start.elapsed().as_secs_f64();
         println!("processed: {commit_count} commits in {elapsed_secs} seconds");
         println!("{:?}", commit_stats.iter().take(5).collect::<Vec<_>>());
-
-        let schema = commit_stats.get(0).unwrap().stats.0.clone();
-        let polars_rows: Vec<Row> = commit_stats
-            .iter()
-            .map(|cs: &CommitStat| {
-                let (stat_schema, stat_row) = &cs.stats.as_ref();
-                if *stat_schema != schema {
-                    panic!("Schema mismatch: {:?} != {:?}", stat_schema, schema);
-                    /*
-                    let new_row = schema.iter_fields().map(|f| {
-                        if stat_schema.fields().contains(f) {
-                            stat_row.get(f.name())
-                        }
-                        else {
-                            AnyValue::Null
-                        }
-                    })
-                    */
-                }
-                stat_row.clone()
-            })
-            .collect();
-        let mut func_df = DataFrame::from_rows_iter_and_schema(polars_rows.iter(), &schema)?;
+        let schemas = commit_stats.iter().map(|cs| cs.stats.0.clone());
+        let rows = commit_stats.iter().map(|cs| &cs.stats.1);
+        let mut func_df = rows_to_df(schemas, rows)?;
         println!("turned commit_stats into a DF");
         let commit_shas = commit_stats
             .iter()

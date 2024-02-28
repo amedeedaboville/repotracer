@@ -3,6 +3,7 @@ use std::fs;
 use crate::{commands::run, config::get_stats_dir};
 use chrono::DateTime;
 use plotters::prelude::*;
+use plotters::style::{Palette, Palette99, ShapeStyle};
 use polars::{datatypes::StaticArray, prelude::*};
 
 pub fn plot(
@@ -63,6 +64,9 @@ pub fn plot(
     chart.configure_mesh().draw()?;
 
     let x_data = time_series.into_no_null_iter().collect::<Vec<_>>();
+    let palette_size = Palette99::COLORS.len(); // Get the size of the palette
+    let mut color_index = 0; // Initialize a color index
+
     for series in df.get_columns() {
         let name = series.name();
         println!("CHARTING {name}, {}", series.dtype());
@@ -86,10 +90,15 @@ pub fn plot(
         let data = x_data.iter().zip(values.iter()).map(|(&x, &y)| (x, y));
 
         println!("generating lineseries");
+
+        let color = Palette99::pick(color_index % palette_size);
+        color_index += 1; // Move to the next color for the next series
+
+        let style = ShapeStyle::from(color).filled();
         chart
-            .draw_series(LineSeries::new(data, &RED))?
+            .draw_series(LineSeries::new(data, style))?
             .label(format!("{}", name))
-            .legend(|(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], &RED));
+            .legend(move |(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], style.clone()));
 
         println!("DRAWING");
         chart
