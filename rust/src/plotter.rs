@@ -58,8 +58,7 @@ pub fn plot(
         fs::create_dir_all(&repo_stats_dir)?;
     }
     let image_path = repo_stats_dir.join(format!("{stat_name}.png"));
-    // let last_date = df.column("commit_time").unwrap().tail(Some(1));
-    let commit_hashes = df.drop_in_place("commit_hash").unwrap();
+    let _commit_hashes = df.drop_in_place("commit_hash").unwrap();
     let commit_times = df.drop_in_place("commit_time").unwrap();
     let time_series = commit_times.datetime().unwrap();
     let start_time = time_series.min().unwrap();
@@ -84,17 +83,16 @@ pub fn plot(
         .get(0)?
         .try_extract()?;
 
-    println!("{min_value}-{max_value}");
+    let title = stat_description;
+    let subtitle = format!(
+        "{repo_name}:{stat_name} by repotracer at {}",
+        run_at.format("%Y-%m-%d %H:%M:%S")
+    );
+    let text_gray = BLACK.mix(0.4);
     let root = BitMapBackend::new(&image_path, (1500, 1200)).into_drawing_area();
     root.fill(&WHITE)?;
     let mut chart = ChartBuilder::on(&root)
-        .caption(
-            format!(
-                "{repo_name}:{stat_name} by repotracer at {}",
-                run_at.to_rfc3339()
-            ),
-            ("sans-serif", (4).percent_height()),
-        )
+        .caption(title, ("sans-serif", (4).percent_height()))
         .margin(5.percent())
         .margin_bottom(3.percent())
         .set_label_area_size(LabelAreaPosition::Left, (5).percent())
@@ -106,7 +104,7 @@ pub fn plot(
         .max_light_lines(0)
         .label_style(("sans-serif", 3.percent_height()))
         .x_desc("Date")
-        .axis_desc_style(TextStyle::from(("sans-serif", 25).into_font()).color(&BLACK.mix(0.4)))
+        .axis_desc_style(TextStyle::from(("sans-serif", 25).into_font()).color(&text_gray))
         .y_label_formatter(&|y| format!("{:.0}", y))
         .x_label_formatter(&|x| {
             let seconds = *x / 1000;
@@ -117,6 +115,8 @@ pub fn plot(
         })
         .draw()?;
 
+    let description_style = TextStyle::from(("sans-serif", 25).into_font()).color(&text_gray);
+    root.draw_text(&subtitle, &description_style, (50, 50))?;
     let x_data = time_series.into_no_null_iter().collect::<Vec<_>>();
     let palette_size = SeabornDeepPalette::COLORS.len(); // Get the size of the palette
 
@@ -140,7 +140,7 @@ pub fn plot(
         let color = SeabornDeepPalette::pick(idx % palette_size).mix(0.9);
 
         chart
-            .draw_series(LineSeries::new(data, color.stroke_width(5)))?
+            .draw_series(LineSeries::new(data, color.stroke_width(4)))?
             .label(series.name())
             .legend(move |(x, y)| Rectangle::new([(x, y - 5), (x + 10, y + 5)], color.filled()));
     }
