@@ -15,7 +15,7 @@ use super::common::{PossiblyEmpty, TreeDataCollection};
 
 /// Imitates a tokei "Language" but simpler, bc I don't understand it.
 /// Also derives Clone
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct TokeiStat {
     pub language: LanguageType,
     /// The total number of blank lines.

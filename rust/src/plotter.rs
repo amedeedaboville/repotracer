@@ -2,7 +2,7 @@ use std::fs;
 
 use crate::config::get_stats_dir;
 use plotters::prelude::*;
-use plotters::style::{Color, Palette, RGBColor};
+use plotters::style::{Color, Palette};
 use polars::prelude::*;
 
 struct SeabornDeepPalette;
@@ -89,7 +89,7 @@ pub fn plot(
         run_at.format("%Y-%m-%d %H:%M:%S")
     );
     let text_gray = BLACK.mix(0.4);
-    let root = BitMapBackend::new(&image_path, (1500, 1200)).into_drawing_area();
+    let root = SVGBackend::new(&image_path, (1200, 1000)).into_drawing_area();
     root.fill(&WHITE)?;
     let mut chart = ChartBuilder::on(&root)
         .caption(title, ("sans-serif", (4).percent_height()))

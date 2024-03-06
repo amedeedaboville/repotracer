@@ -116,6 +116,7 @@ where
         &mut self,
         granularity: Granularity,
         range: (Option<DateTime<Utc>>, Option<DateTime<Utc>>),
+        iterative: bool,
     ) -> Result<DataFrame, Box<dyn std::error::Error>> {
         let RepoCacheData {
             oid_set,
@@ -166,7 +167,14 @@ where
                     .find_object(commit_oid)
                     .expect("Could not find commit in the repo")
                     .into_commit();
-                let res = self.measure_tree_iterative(&tree_entry, &cache).unwrap();
+                let res = if iterative {
+                    self.measure_tree_iterative(&tree_entry, &cache)
+                        // .measure_tree(SmallVec::new(), &tree_entry, &cache)
+                        .unwrap()
+                } else {
+                    self.measure_tree(SmallVec::new(), &tree_entry, &cache)
+                        .unwrap()
+                };
                 let (schema, row) = self.file_measurer.summarize_tree_data(res).unwrap();
                 CommitStat {
                     oid: commit_oid,
@@ -287,7 +295,6 @@ where
     ) -> Result<TreeDataCollection<FileData>, Box<dyn std::error::Error>> {
         let RepoCacheData {
             flat_tree,
-            filename_set,
             tree_entry_set: entry_set,
             ..
         } = &self.repo_caches;
@@ -298,40 +305,11 @@ where
             if cache.contains_key(&(tree.oid_idx, None)) {
                 continue;
             }
-            if !do_aggregation {
-                stack.push_back((path.clone(), tree, true));
-                for &child_entry_idx in tree.children.iter().rev() {
-                    let Some(entry) = entry_set.get_index(child_entry_idx as usize) else {
-                        panic!(
-                            "Did not find {} in entry_set, even though it has {} items",
-                            child_entry_idx,
-                            entry_set.len()
-                        );
-                    };
-                    if entry.kind == TreeChildKind::Blob {
-                        continue;
-                    }
-                    let Some(child) = flat_tree.get(&entry.oid_idx) else {
-                        panic!("Did not find {} in flat repo", entry.oid_idx)
-                    };
-                    match entry.kind {
-                        TreeChildKind::Blob => {
-                            if !cache.contains_key(&(child_entry_idx, Some(entry.filename_idx))) {
-                                let mut child_path = path.clone();
-                                child_path.push(entry.filename_idx);
-                                stack.push_back((child_path, child.unwrap_tree(), false));
-                            }
-                        }
-                        TreeChildKind::Tree => {
-                            if !cache.contains_key(&(child_entry_idx, None)) {
-                                let mut child_path = path.clone();
-                                child_path.push(entry.filename_idx);
-                                stack.push_back((child_path, child.unwrap_tree(), false));
-                            }
-                        }
-                    }
+            if do_aggregation {
+                let cache_key_if_folder = &(tree.oid_idx, None);
+                if cache.contains_key(cache_key_if_folder) {
+                    continue;
                 }
-            } else {
                 let tree_agg = tree
                     .children
                     .iter()
@@ -345,44 +323,35 @@ where
                             TreeChildKind::Blob => {
                                 cache.get(&(*oid_idx, Some(*filename_idx)))?.clone()
                             }
-                            // .unwrap_or_else(|| {
-                            //     println!(
-                            //         "Measure tree for child entry {oid_idx} ({:?}) failed: {:?} ({})",
-                            //             self.repo_caches
-                            //                 .oid_set
-                            //                 .get_index(*oid_idx)
-                            //                 .unwrap(),
-                            //             filename_idx,
-                            //             filename_set.get_index(*filename_idx as usize).unwrap()
-                            //     )
-                            // })
                             TreeChildKind::Tree => cache.get(&(*oid_idx, None))?.clone(),
-                            /*
-                                .unwrap_or_else(|| {
-                                panic!(
-                                    "Measure tree for tree entry {oid_idx} ({:?}) failed: {:?} ({})",
-                                        self.repo_caches
-                                            .oid_set
-                                            .get_index(*oid_idx)
-                                            .unwrap(),
-                                        filename_idx,
-                                        filename_set.get_index(*filename_idx as usize).unwrap()
-                                )
-                            })
-                                .clone(),
-                                */
                         };
-                        let child_filename =
-                            filename_set.get_index(*filename_idx as usize).unwrap();
-                        Some((child_filename, child_result))
+                        Some(child_result)
                     })
-                    .flat_map(|(path, data_collection)| {
-                        data_collection
-                            .into_iter()
-                            .map(move |(k, v)| (format!("{}/{}", path, k), v))
-                    })
+                    .flat_map(|data| data.into_iter())
                     .collect::<TreeDataCollection<FileData>>();
                 cache.insert((tree.oid_idx, None), tree_agg);
+            } else {
+                stack.push_back((path.clone(), tree, true));
+                for &child_entry_idx in tree.children.iter().rev() {
+                    let Some(entry) = entry_set.get_index(child_entry_idx as usize) else {
+                        panic!(
+                            "Did not find {} in entry_set, even though it has {} items",
+                            child_entry_idx,
+                            entry_set.len()
+                        );
+                    };
+                    if entry.kind == TreeChildKind::Blob {
+                        continue;
+                    }
+                    if !cache.contains_key(&(child_entry_idx, None)) {
+                        let mut child_path = path.clone();
+                        child_path.push(entry.filename_idx);
+                        let Some(child) = flat_tree.get(&entry.oid_idx) else {
+                            panic!("Did not find {} in flat repo", entry.oid_idx)
+                        };
+                        stack.push_back((child_path, child.unwrap_tree(), false));
+                    }
+                }
             }
         }
 
@@ -396,7 +365,7 @@ where
         path: SmallVec<[FilenameIdx; 20]>,
         tree: &TreeEntry,
         cache: &DashMap<(MyOid, Option<FilenameIdx>), TreeDataCollection<FileData>>,
-    ) -> Result<(TreeDataCollection<FileData>, usize), Box<dyn std::error::Error>> {
+    ) -> Result<TreeDataCollection<FileData>, Box<dyn std::error::Error>> {
         let RepoCacheData {
             repo_safe: repo,
             flat_tree,
@@ -405,9 +374,8 @@ where
             ..
         } = &self.repo_caches;
         if cache.contains_key(&(tree.oid_idx, None)) {
-            return Ok((cache.get(&(tree.oid_idx, None)).unwrap().clone(), 0));
+            return Ok((cache.get(&(tree.oid_idx, None)).unwrap().clone()));
         }
-        let mut acc = 0;
         let child_results = tree
             .children
             .iter()
@@ -460,10 +428,9 @@ where
                         let child = flat_tree
                             .get(oid_idx)
                             .expect("Did not find oid_idx in flat repo");
-                        let (child_result, processed) = self
+                        let child_result = self
                             .measure_tree(new_path, child.unwrap_tree(), cache)
                             .expect("Measure tree for oid_idx failed");
-                        acc += processed;
                         match child_result.is_empty() {
                             true => None,
                             false => Some((entry_path, child_result)),
@@ -474,8 +441,91 @@ where
             .map(|(path, data)| data.into_iter().map(|(k, v)| (k, v)))
             .flatten()
             .collect::<TreeDataCollection<FileData>>();
-        // let res: TreeData = TreeData::reduce(repo, child_results)?;
         cache.insert((tree.oid_idx, None), child_results.clone());
-        Ok((child_results, acc))
+        Ok(child_results)
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::stats::tokei::{TokeiCollector, TokeiStat};
+
+    use super::*;
+
+    // Mock or create necessary dependencies
+    // For example, a simplified RepoCacheData and FileMeasurement implementation
+    // or using a mocking library to create mock objects.
+
+    fn diff_dataframes(
+        df1: &DataFrame,
+        df2: &DataFrame,
+    ) -> Result<DataFrame, Box<dyn std::error::Error>> {
+        // Assuming df1 and df2 have the same schema and an "id" column to join on
+
+        // Outer join on the "id" column
+        let df_joined = df1.join(
+            df2,
+            ["commit_hash"],
+            ["commit_hash"],
+            JoinArgs {
+                how: JoinType::Inner,
+                join_nulls: false,
+                slice: None,
+                validation: JoinValidation::OneToOne,
+                suffix: None,
+            },
+        )?;
+
+        // Construct a mask to identify rows that differ
+        let mask_series = Series::full_null("mask", df_joined.height(), &DataType::Boolean);
+        let mut mask = mask_series.bool()?.to_owned();
+
+        for name in df1.get_column_names() {
+            if name == "id" {
+                continue; // Skip the id column
+            }
+
+            // Construct column names for df1 and df2
+            let col_name_1 = format!("{}", name);
+            let col_name_2 = format!("{}", name);
+
+            // Update the mask for any differences found in the current column
+            let col_diff = df_joined
+                .column(&col_name_1)?
+                .equal_missing(df_joined.column(&col_name_2)?)?;
+            mask = &mask | &col_diff;
+        }
+
+        // Invert the mask to filter out identical rows
+        let mask = !mask;
+
+        // Apply the mask to filter the DataFrame, keeping only differing rows
+        Ok(df_joined.filter(&mask)?)
+    }
+
+    #[test]
+    fn test_measure_tree_equivalence() {
+        // Setup test environment
+        let repo_path = String::from("/Users/amedee/repos/github.com/phenomnomnominal/betterer");
+        let file_measurer = Box::new(TokeiCollector::new());
+        let mut walker: CachedWalker<TokeiStat> =
+            CachedWalker::new(repo_path.to_owned(), file_measurer);
+        let recursive_res = walker
+            .walk_repo_and_collect_stats(Granularity::Infinite, (None, None), true)
+            .unwrap();
+        let file_measurer = Box::new(TokeiCollector::new());
+        walker = CachedWalker::new(repo_path.to_owned(), file_measurer);
+        let iterative_res = walker
+            .walk_repo_and_collect_stats(Granularity::Infinite, (None, None), false)
+            .unwrap();
+        // Compare their outputs
+        let diff = diff_dataframes(&iterative_res, &recursive_res).unwrap();
+        println!("{:?}", diff);
+        assert_eq!(
+            iterative_res, recursive_res,
+            "The outputs of measure_tree_iterative and measure_tree should be equivalent"
+        );
+    }
+
+    // Additional test cases here
 }
