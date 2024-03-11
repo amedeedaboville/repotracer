@@ -2,7 +2,7 @@ use gix::objs::tree::{EntryKind, EntryMode};
 use gix::objs::Kind;
 use indexmap::IndexSet;
 use indicatif::{ParallelProgressIterator, ProgressIterator};
-use rayon::iter::{ParallelBridge, ParallelIterator};
+use rayon::iter::{IntoParallelRefIterator, ParallelBridge, ParallelIterator};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
@@ -12,6 +12,7 @@ use std::fs::File;
 use std::hash::Hash;
 use std::io::BufWriter;
 use std::io::{self, BufReader};
+use std::sync::RwLock;
 use thread_local::ThreadLocal;
 
 use ahash::AHashMap;
@@ -272,8 +273,11 @@ pub fn build_caches_with_paths(
     let mut filepath_set: FilepathSet = IndexSet::new();
     let mut path_entry_set: PathEntrySet = IndexSet::new();
     let mut flat_tree: FlatGitRepo = AHashMap::new();
-
     let mut stack: VecDeque<(SmallVec<[FilenameIdx; 20]>, ObjectId)> = VecDeque::new();
+
+    let locked_filename_set = RwLock::new(filename_set);
+    let locked_filepath_set = RwLock::new(filepath_set);
+    let locked_path_entry_set = RwLock::new(path_entry_set);
 
     let start_time = Instant::now();
     println!("Adding commits to visit to stack.");
@@ -308,35 +312,57 @@ pub fn build_caches_with_paths(
         if flat_tree.contains_key(&obj_oid_idx) {
             continue;
         }
-        let mut children_entries = Vec::with_capacity(obj.entries.len());
-        for entry in obj.entries {
-            let kind = match entry.mode.into() {
-                EntryKind::Blob => Kind::Blob,
-                EntryKind::Tree => Kind::Tree,
-                _ => continue,
-            };
-            let entry_oid: ObjectId = entry.oid.into();
-            let oid_idx = oid_set.get_index_of(&(entry_oid, kind)).unwrap() as OidIdx;
-            let (filename_idx, _) = filename_set.insert_full(entry.filename.to_string());
-            let mut full_path = path.clone();
-            full_path.push(filename_idx as FilenameIdx);
-            let (filepath_idx, _) = filepath_set.insert_full(full_path.clone());
-            let kind =
-                match entry.mode.into() {
+        let entries_and_to_push: Vec<(EntryIdx, Option<(AliasedPath, ObjectId)>)> = obj
+            .entries
+            .par_iter()
+            .filter_map(|entry| {
+                let kind = match entry.mode.into() {
+                    EntryKind::Blob => Kind::Blob,
+                    EntryKind::Tree => Kind::Tree,
+                    _ => return None,
+                };
+                let entry_oid: ObjectId = entry.oid.into();
+                let oid_idx = oid_set.get_index_of(&(entry_oid, kind)).unwrap() as OidIdx;
+                let (filename_idx, _) = {
+                    let mut filename_set = locked_filename_set.write().unwrap();
+                    filename_set.insert_full(entry.filename.to_string())
+                };
+                let mut full_path = path.clone();
+                full_path.push(filename_idx as FilenameIdx);
+                let (filepath_idx, _) = {
+                    let mut filepath_set = locked_filepath_set.write().unwrap();
+                    filepath_set.insert_full(full_path.clone())
+                };
+                let kind = match entry.mode.into() {
                     EntryKind::Blob => TreeChildKind::Blob,
                     EntryKind::Tree => TreeChildKind::Tree,
-                    _ => continue,
+                    _ => return None,
                 };
-            let (entry_idx, _) =
-                path_entry_set.insert_full(AliasedEntry {
-                    oid_idx: oid_idx as OidIdx,
-                    filepath_idx: filepath_idx as FilepathIdx,
-                    kind,
-                });
-            if entry.mode.is_tree() && !flat_tree.contains_key(&oid_idx) {
-                stack.push_back((full_path, entry_oid))
+                let (entry_idx, _) = {
+                    let mut path_entry_set = locked_path_entry_set.write().unwrap();
+                    path_entry_set.insert_full(AliasedEntry {
+                        oid_idx: oid_idx as OidIdx,
+                        filepath_idx: filepath_idx as FilepathIdx,
+                        kind,
+                    })
+                };
+                let to_push =
+                    if entry.mode.is_tree() && !flat_tree.contains_key(&oid_idx) {
+                        Some((full_path, entry_oid))
+                    } else {
+                        None
+                    };
+                Some((entry_idx as EntryIdx, to_push))
+            })
+            .collect();
+        let children_entries = entries_and_to_push
+            .iter()
+            .map(|(entry_idx, _)| *entry_idx)
+            .collect::<Vec<EntryIdx>>();
+        for (_, to_push) in entries_and_to_push {
+            if let Some((path, oid)) = to_push {
+                stack.push_back((path, oid));
             }
-            children_entries.push(entry_idx as EntryIdx)
         }
         flat_tree.insert(
             obj_oid_idx,
@@ -351,7 +377,12 @@ pub fn build_caches_with_paths(
         "Built flat tree in {} seconds.",
         start_time.elapsed().as_secs_f32()
     );
-    Ok((filename_set, filepath_set, path_entry_set, flat_tree))
+    Ok((
+        locked_filename_set.into_inner().unwrap(),
+        locked_filepath_set.into_inner().unwrap(),
+        locked_path_entry_set.into_inner().unwrap(),
+        flat_tree,
+    ))
 }
 pub fn build_flat_tree(
     repo: &ThreadSafeRepository,
