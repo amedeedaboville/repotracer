@@ -7,7 +7,7 @@ use std::error::Error;
 
 use super::list_in_range::Granularity;
 use super::repo_cache_data::{
-    FilenameIdx, MyEntry, MyOid, RepoCacheData, TreeChildKind, TreeEntry,
+    FilenameIdx, MyEntry, OidIdx, RepoCacheData, TreeChildKind, TreeEntry,
 };
 use crate::collectors::list_in_range::list_commits_with_granularity;
 use crate::collectors::repo_cache_data::EntryIdx;
@@ -50,7 +50,7 @@ fn count_commits(repo: &Repository) -> Result<usize, Box<dyn std::error::Error>>
         .count())
 }
 
-type ResultCache<F> = DashMap<(MyOid, Option<FilenameIdx>), F>;
+type ResultCache<F> = DashMap<(OidIdx, Option<FilenameIdx>), F>;
 pub struct CachedWalker<F> {
     repo_caches: RepoCacheData,
     file_measurer: Box<dyn FileMeasurement<F>>,
@@ -71,7 +71,7 @@ where
     fn gather_objects_to_process(
         &self,
         commits_to_process: &Vec<Commit>,
-    ) -> Result<Vec<MyOid>, Box<dyn std::error::Error>> {
+    ) -> Result<Vec<OidIdx>, Box<dyn std::error::Error>> {
         let RepoCacheData {
             oid_set,
             tree_entry_set,
@@ -87,7 +87,7 @@ where
             let commit_tree_objectid = commit.tree()?.id;
             let commit_tree_oid_idx = oid_set
                 .get_index_of(&(commit_tree_objectid, Kind::Tree))
-                .unwrap() as MyOid;
+                .unwrap() as OidIdx;
             let commit_tree_item = flat_tree.get(&commit_tree_oid_idx).unwrap().unwrap_tree();
             let mut entries_to_process = commit_tree_item.children.clone();
             while let Some(entry_idx) = entries_to_process.pop() {
@@ -126,7 +126,7 @@ where
             ..
         } = &self.repo_caches;
         let inner_repo = safe_repo.clone().to_thread_local();
-        let mut cache: DashMap<(MyOid, Option<FilenameIdx>), TreeDataCollection<FileData>> =
+        let mut cache: DashMap<(OidIdx, Option<FilenameIdx>), TreeDataCollection<FileData>> =
             DashMap::with_capacity(flat_tree.len());
         println!("Getting commits to process");
         let commits_to_process =
@@ -160,21 +160,24 @@ where
             .rev() //todo not sure this does anything
             .progress_with_style(pb_style())
             .map(|(commit_oid, tree_oid)| {
-                let tree_oid_idx = oid_set.get_index_of(&(tree_oid, Kind::Tree)).unwrap() as MyOid;
+                let tree_oid_idx = oid_set.get_index_of(&(tree_oid, Kind::Tree)).unwrap() as OidIdx;
                 let tree_entry = flat_tree.get(&tree_oid_idx).unwrap().unwrap_tree();
                 let repo = tl.get_or(|| safe_repo.clone().to_thread_local());
                 let commit = repo
                     .find_object(commit_oid)
                     .expect("Could not find commit in the repo")
                     .into_commit();
-                let res = if iterative {
-                    self.measure_tree_iterative(&tree_entry, &cache)
-                        // .measure_tree(SmallVec::new(), &tree_entry, &cache)
-                        .unwrap()
-                } else {
-                    self.measure_tree(SmallVec::new(), &tree_entry, &cache)
-                        .unwrap()
-                };
+                let res =
+                    if iterative {
+                        self.measure_tree_iterative(&tree_entry, &cache).unwrap()
+                    } else {
+                        self.measure_tree(SmallVec::new(), &tree_entry, &cache)
+                            .unwrap()
+                    };
+                // if true {
+                //     println!("Processed commit {}", commit_oid);
+                //     println!("{:?}", res);
+                // }
                 let (schema, row) = self.file_measurer.summarize_tree_data(res).unwrap();
                 CommitStat {
                     oid: commit_oid,
@@ -233,7 +236,7 @@ where
             })),
             None => {
                 Box::new(oid_set.iter_blobs().flat_map(|(oid, _kind)| {
-                    let oid_idx = oid_set.get_index_of(&(*oid, Kind::Blob)).unwrap() as MyOid;
+                    let oid_idx = oid_set.get_index_of(&(*oid, Kind::Blob)).unwrap() as OidIdx;
                     let parent_trees = filename_cache.get(&oid_idx);
                     match parent_trees {
                         None => vec![].into_iter(), // this is where we used to log
@@ -254,7 +257,7 @@ where
             .progress_with(progress)
             .fold(
                 AHashMap::new,
-                |mut acc: AHashMap<(MyOid, Option<FilenameIdx>), TreeDataCollection<FileData>>,
+                |mut acc: AHashMap<(OidIdx, Option<FilenameIdx>), TreeDataCollection<FileData>>,
                  (oid_idx, filename_idx)| {
                     let repo: &Repository = tl.get_or(|| shared_repo.clone().to_thread_local());
                     let (oid, _kind) = oid_set.get_index(oid_idx).unwrap();
@@ -272,7 +275,7 @@ where
             )
             .reduce(
                 AHashMap::new,
-                |mut acc: AHashMap<(MyOid, Option<FilenameIdx>), TreeDataCollection<FileData>>,
+                |mut acc: AHashMap<(OidIdx, Option<FilenameIdx>), TreeDataCollection<FileData>>,
                  cur| {
                     acc.extend(cur);
                     acc
@@ -291,7 +294,7 @@ where
     fn measure_tree_iterative(
         &self,
         root: &TreeEntry,
-        cache: &DashMap<(MyOid, Option<FilenameIdx>), TreeDataCollection<FileData>>,
+        cache: &DashMap<(OidIdx, Option<FilenameIdx>), TreeDataCollection<FileData>>,
     ) -> Result<TreeDataCollection<FileData>, Box<dyn std::error::Error>> {
         let RepoCacheData {
             flat_tree,
@@ -364,7 +367,7 @@ where
         &self,
         path: SmallVec<[FilenameIdx; 20]>,
         tree: &TreeEntry,
-        cache: &DashMap<(MyOid, Option<FilenameIdx>), TreeDataCollection<FileData>>,
+        cache: &DashMap<(OidIdx, Option<FilenameIdx>), TreeDataCollection<FileData>>,
     ) -> Result<TreeDataCollection<FileData>, Box<dyn std::error::Error>> {
         let RepoCacheData {
             repo_safe: repo,
