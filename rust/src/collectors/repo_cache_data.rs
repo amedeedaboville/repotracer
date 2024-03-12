@@ -1,8 +1,17 @@
-use gix::objs::tree::{EntryKind, EntryMode};
+use crossbeam::queue::SegQueue;
+use gix::bstr::ByteSlice;
+use gix::index::Entry;
+use gix::objs::tree::{EntryKind, EntryMode, EntryRef};
 use gix::objs::Kind;
 use indexmap::IndexSet;
 use indicatif::{ParallelProgressIterator, ProgressIterator};
-use rayon::iter::{IntoParallelRefIterator, ParallelBridge, ParallelIterator};
+use rayon::current_num_threads;
+use rayon::iter::{
+    IntoParallelIterator, IntoParallelRefIterator, ParallelBridge, ParallelIterator,
+};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::thread;
+
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
@@ -12,10 +21,10 @@ use std::fs::File;
 use std::hash::Hash;
 use std::io::BufWriter;
 use std::io::{self, BufReader};
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 use thread_local::ThreadLocal;
 
-use ahash::AHashMap;
+use ahash::{AHashMap, AHashSet};
 use gix::{Commit, ObjectId, Repository, ThreadSafeRepository};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::time::Instant;
@@ -121,6 +130,32 @@ pub struct RepoCacheData {
     pub path_entry_set: PathEntrySet,
 }
 
+pub struct FlatRepoWithSets {
+    pub filename_set: FilenameSet,
+    pub filepath_set: FilepathSet,
+    pub path_entry_set: PathEntrySet,
+    pub flat_tree: FlatGitRepo,
+}
+impl FlatRepoWithSets {
+    pub fn new() -> Self {
+        let filename_set = IndexSet::new();
+        let filepath_set = IndexSet::new();
+        let path_entry_set = IndexSet::new();
+        let flat_tree = AHashMap::new();
+        FlatRepoWithSets {
+            filename_set,
+            filepath_set,
+            path_entry_set,
+            flat_tree,
+        }
+    }
+    pub fn extend(&mut self, other: FlatRepoWithSets) {
+        self.filename_set.extend(other.filename_set);
+        self.filepath_set.extend(other.filepath_set);
+        self.path_entry_set.extend(other.path_entry_set);
+        self.flat_tree.extend(other.flat_tree);
+    }
+}
 impl RepoCacheData {
     pub fn new(repo_path: &str) -> Self {
         // let start_time = Instant::now();
@@ -265,19 +300,19 @@ pub fn build_entries_set(
     Ok(entries)
 }
 
+// Define a struct for your work items
+struct WorkItem {
+    oid_idx: OidIdx,
+    full_path: SmallVec<[String; 20]>,
+    entries: Vec<(OidIdx, String, TreeChildKind)>,
+}
+
 pub fn build_caches_with_paths(
     repo: &Repository,
     oid_set: &OidSetWithInfo,
 ) -> Result<(FilenameSet, FilepathSet, PathEntrySet, FlatGitRepo), Box<dyn std::error::Error>> {
-    let mut filename_set: FilenameSet = IndexSet::new();
-    let mut filepath_set: FilepathSet = IndexSet::new();
-    let mut path_entry_set: PathEntrySet = IndexSet::new();
     let mut flat_tree: FlatGitRepo = AHashMap::new();
-    let mut stack: VecDeque<(SmallVec<[FilenameIdx; 20]>, ObjectId)> = VecDeque::new();
-
-    let locked_filename_set = RwLock::new(filename_set);
-    let locked_filepath_set = RwLock::new(filepath_set);
-    let locked_path_entry_set = RwLock::new(path_entry_set);
+    let mut stack: VecDeque<(SmallVec<[String; 20]>, ObjectId)> = VecDeque::new();
 
     let start_time = Instant::now();
     println!("Adding commits to visit to stack.");
@@ -290,7 +325,7 @@ pub fn build_caches_with_paths(
         let info = info_result?;
         let commit = info.object().unwrap();
         let tree = commit.tree().unwrap();
-        stack.push_back((SmallVec::from_slice(&[]), tree.id().into()));
+        stack.push_back((SmallVec::new(), tree.id().into()));
     }
     println!(
         "Added commits {} seconds.",
@@ -299,6 +334,53 @@ pub fn build_caches_with_paths(
 
     let start_time = Instant::now();
     println!("Have {} trees in the stack. Starting the DFS", stack.len());
+    let (tx, rx): (Sender<WorkItem>, Receiver<WorkItem>) = mpsc::channel();
+
+    // Single consumer thread
+    let consumer = thread::spawn(move || {
+        let mut filename_set: FilenameSet = IndexSet::new();
+        let mut filepath_set: FilepathSet = IndexSet::new();
+        let mut path_entry_set: PathEntrySet = IndexSet::new();
+        let mut flat_tree: FlatGitRepo = AHashMap::new();
+
+        for work_item in rx {
+            if flat_tree.contains_key(&work_item.oid_idx) {
+                continue;
+            }
+            let work_item_aliased_path: AliasedPath = work_item
+                .full_path
+                .iter()
+                .map(|s| filename_set.insert_full(s.clone()).0 as FilenameIdx)
+                .collect();
+            let children_entries = work_item
+                .entries
+                .iter()
+                .map(|(oid_idx, filename, kind)| {
+                    let filename_idx =
+                        filename_set.insert_full(filename.to_string()).0 as FilenameIdx;
+                    let mut entry_path = work_item_aliased_path.clone();
+                    entry_path.push(filename_idx);
+                    let (filepath_idx, _) = filepath_set.insert_full(entry_path);
+                    let (entry_idx, _) = path_entry_set.insert_full(AliasedEntry {
+                        oid_idx: *oid_idx,
+                        filepath_idx: filepath_idx as FilepathIdx,
+                        kind: kind.clone(),
+                    });
+                    entry_idx as EntryIdx
+                })
+                .collect();
+            flat_tree.insert(
+                work_item.oid_idx,
+                TreeChild::Tree(TreeEntry {
+                    oid_idx: work_item.oid_idx,
+                    children: children_entries,
+                }),
+            );
+        }
+        (filename_set, filepath_set, path_entry_set, flat_tree)
+    });
+
+    let mut processed: AHashSet<(SmallVec<[String; 20]>, ObjectId)> = AHashSet::new();
     let progress = ProgressBar::new(oid_set.num_trees as u64);
     progress.set_style(pb_style());
     while let Some((path, tree_oid)) = stack.pop_back() {
@@ -309,80 +391,62 @@ pub fn build_caches_with_paths(
             .into_tree();
         let obj = tree.decode().unwrap();
         let obj_oid_idx = oid_set.get_index_of(&(tree_oid, Kind::Tree)).unwrap() as OidIdx;
-        if flat_tree.contains_key(&obj_oid_idx) {
+        if processed.contains(&(path.clone(), tree_oid)) {
             continue;
         }
-        let entries_and_to_push: Vec<(EntryIdx, Option<(AliasedPath, ObjectId)>)> = obj
+        for entry in obj.entries.iter() {
+            if !entry.mode.is_tree() {
+                continue;
+            }
+            let mut full_path = path.clone();
+            full_path.push(entry.filename.to_string());
+            let entry_oid: ObjectId = entry.oid.into();
+            if !processed.contains(&(full_path.clone(), entry_oid)) {
+                stack.push_back((full_path, entry_oid));
+            }
+        }
+        let entry_info = obj
             .entries
-            .par_iter()
+            .iter()
             .filter_map(|entry| {
+                let entry_oid: ObjectId = entry.oid.into();
                 let kind = match entry.mode.into() {
                     EntryKind::Blob => Kind::Blob,
                     EntryKind::Tree => Kind::Tree,
                     _ => return None,
                 };
-                let entry_oid: ObjectId = entry.oid.into();
                 let oid_idx = oid_set.get_index_of(&(entry_oid, kind)).unwrap() as OidIdx;
-                let (filename_idx, _) = {
-                    let mut filename_set = locked_filename_set.write().unwrap();
-                    filename_set.insert_full(entry.filename.to_string())
-                };
-                let mut full_path = path.clone();
-                full_path.push(filename_idx as FilenameIdx);
-                let (filepath_idx, _) = {
-                    let mut filepath_set = locked_filepath_set.write().unwrap();
-                    filepath_set.insert_full(full_path.clone())
-                };
                 let kind = match entry.mode.into() {
                     EntryKind::Blob => TreeChildKind::Blob,
                     EntryKind::Tree => TreeChildKind::Tree,
                     _ => return None,
                 };
-                let (entry_idx, _) = {
-                    let mut path_entry_set = locked_path_entry_set.write().unwrap();
-                    path_entry_set.insert_full(AliasedEntry {
-                        oid_idx: oid_idx as OidIdx,
-                        filepath_idx: filepath_idx as FilepathIdx,
-                        kind,
-                    })
-                };
-                let to_push =
-                    if entry.mode.is_tree() && !flat_tree.contains_key(&oid_idx) {
-                        Some((full_path, entry_oid))
-                    } else {
-                        None
-                    };
-                Some((entry_idx as EntryIdx, to_push))
+                let filename = entry.filename;
+                Some((oid_idx, filename.to_string(), kind))
             })
             .collect();
-        let children_entries = entries_and_to_push
-            .iter()
-            .map(|(entry_idx, _)| *entry_idx)
-            .collect::<Vec<EntryIdx>>();
-        for (_, to_push) in entries_and_to_push {
-            if let Some((path, oid)) = to_push {
-                stack.push_back((path, oid));
-            }
-        }
-        flat_tree.insert(
-            obj_oid_idx,
-            TreeChild::Tree(TreeEntry {
+        let work_item =
+            WorkItem {
+                full_path: path.clone(),
                 oid_idx: obj_oid_idx,
-                children: children_entries,
-            }),
-        );
+                entries: entry_info,
+            };
+        tx.send(work_item).expect("Failed to send work item");
+        processed.insert((path, tree_oid));
     }
-    println!("Done with the DFS");
+    drop(tx);
+
+    println!(
+        "Done unravelling tree in {} seconds",
+        start_time.elapsed().as_secs_f32()
+    );
+    let result = consumer.join().expect("Consumer thread panicked");
+
     println!(
         "Built flat tree in {} seconds.",
         start_time.elapsed().as_secs_f32()
     );
-    Ok((
-        locked_filename_set.into_inner().unwrap(),
-        locked_filepath_set.into_inner().unwrap(),
-        locked_path_entry_set.into_inner().unwrap(),
-        flat_tree,
-    ))
+    Ok(result)
 }
 pub fn build_flat_tree(
     repo: &ThreadSafeRepository,
