@@ -345,6 +345,7 @@ pub fn build_caches_with_paths(
 
         for work_item in rx {
             if flat_tree.contains_key(&work_item.oid_idx) {
+                println!("Skipping work item bc it already exists in the repo");
                 continue;
             }
             let work_item_aliased_path: AliasedPath = work_item
@@ -352,19 +353,18 @@ pub fn build_caches_with_paths(
                 .iter()
                 .map(|s| filename_set.insert_full(s.clone()).0 as FilenameIdx)
                 .collect();
-            let children_entries = work_item
+            let children = work_item
                 .entries
-                .iter()
+                .into_iter()
                 .map(|(oid_idx, filename, kind)| {
-                    let filename_idx =
-                        filename_set.insert_full(filename.to_string()).0 as FilenameIdx;
+                    let filename_idx = filename_set.insert_full(filename).0 as FilenameIdx;
                     let mut entry_path = work_item_aliased_path.clone();
                     entry_path.push(filename_idx);
-                    let (filepath_idx, _) = filepath_set.insert_full(entry_path);
+                    let filepath_idx = filepath_set.insert_full(entry_path).0 as FilepathIdx;
                     let (entry_idx, _) = path_entry_set.insert_full(AliasedEntry {
-                        oid_idx: *oid_idx,
-                        filepath_idx: filepath_idx as FilepathIdx,
-                        kind: kind.clone(),
+                        oid_idx,
+                        filepath_idx,
+                        kind,
                     });
                     entry_idx as EntryIdx
                 })
@@ -373,7 +373,7 @@ pub fn build_caches_with_paths(
                 work_item.oid_idx,
                 TreeChild::Tree(TreeEntry {
                     oid_idx: work_item.oid_idx,
-                    children: children_entries,
+                    children,
                 }),
             );
         }
@@ -384,6 +384,9 @@ pub fn build_caches_with_paths(
     let progress = ProgressBar::new(oid_set.num_trees as u64);
     progress.set_style(pb_style());
     while let Some((path, tree_oid)) = stack.pop_back() {
+        if processed.contains(&(path.clone(), tree_oid)) {
+            continue;
+        }
         progress.inc(1);
         let tree = repo
             .find_object(tree_oid)
@@ -391,9 +394,6 @@ pub fn build_caches_with_paths(
             .into_tree();
         let obj = tree.decode().unwrap();
         let obj_oid_idx = oid_set.get_index_of(&(tree_oid, Kind::Tree)).unwrap() as OidIdx;
-        if processed.contains(&(path.clone(), tree_oid)) {
-            continue;
-        }
         for entry in obj.entries.iter() {
             if !entry.mode.is_tree() {
                 continue;
