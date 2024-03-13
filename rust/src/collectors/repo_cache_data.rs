@@ -1,4 +1,6 @@
+use crossbeam::channel::{bounded, unbounded, Receiver, Sender};
 use crossbeam::queue::SegQueue;
+use dashmap::DashSet;
 use gix::bstr::ByteSlice;
 use gix::index::Entry;
 use gix::objs::tree::{EntryKind, EntryMode, EntryRef};
@@ -9,7 +11,7 @@ use rayon::current_num_threads;
 use rayon::iter::{
     IntoParallelIterator, IntoParallelRefIterator, ParallelBridge, ParallelIterator,
 };
-use std::sync::mpsc::{self, Receiver, Sender};
+// use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
 use serde::de::DeserializeOwned;
@@ -25,7 +27,7 @@ use std::sync::{Arc, RwLock};
 use thread_local::ThreadLocal;
 
 use ahash::{AHashMap, AHashSet};
-use gix::{Commit, ObjectId, Repository, ThreadSafeRepository};
+use gix::{commit, Commit, ObjectId, Repository, ThreadSafeRepository};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::time::Instant;
 
@@ -303,7 +305,7 @@ pub fn build_entries_set(
 // Define a struct for your work items
 struct WorkItem {
     oid_idx: OidIdx,
-    full_path: SmallVec<[String; 20]>,
+    parent_path_idx: Option<FilepathIdx>,
     entries: Vec<(OidIdx, String, TreeChildKind)>,
 }
 
@@ -311,8 +313,7 @@ pub fn build_caches_with_paths(
     repo: &Repository,
     oid_set: &OidSetWithInfo,
 ) -> Result<(FilenameSet, FilepathSet, PathEntrySet, FlatGitRepo), Box<dyn std::error::Error>> {
-    let mut flat_tree: FlatGitRepo = AHashMap::new();
-    let mut stack: VecDeque<(SmallVec<[String; 20]>, ObjectId)> = VecDeque::new();
+    let queue: Arc<SegQueue<(Option<FilepathIdx>, OidIdx)>> = Arc::new(SegQueue::new());
 
     let start_time = Instant::now();
     println!("Adding commits to visit to stack.");
@@ -321,54 +322,67 @@ pub fn build_caches_with_paths(
         .first_parent_only()
         .use_commit_graph(true)
         .all()?;
-    for info_result in revwalk {
-        let info = info_result?;
-        let commit = info.object().unwrap();
+    let commit_ids: Vec<ObjectId> = revwalk
+        .into_iter()
+        .filter_map(|info_result| info_result.ok().map(|info| info.id))
+        .collect();
+    let tl = ThreadLocal::new();
+    let safe_repo = repo.clone().into_sync();
+    commit_ids.into_iter().par_bridge().for_each(|id| {
+        let repo = tl.get_or(|| safe_repo.clone().to_thread_local());
+        let commit = repo.find_object(id).unwrap().into_commit();
         let tree = commit.tree().unwrap();
-        stack.push_back((SmallVec::new(), tree.id().into()));
-    }
+        let tree_oid_idx = oid_set
+            .get_index_of(&(tree.id().into(), Kind::Tree))
+            .unwrap() as OidIdx;
+        queue.push((None, tree_oid_idx));
+    });
     println!(
-        "Added commits {} seconds.",
+        "Added {} commits to queue in {} seconds.",
+        queue.len(),
         start_time.elapsed().as_secs_f32()
     );
+    let progress = ProgressBar::new(queue.len() as u64);
+    progress.set_style(pb_style());
 
     let start_time = Instant::now();
-    println!("Have {} trees in the stack. Starting the DFS", stack.len());
-    let (tx, rx): (Sender<WorkItem>, Receiver<WorkItem>) = mpsc::channel();
+    let (tx, rx): (Sender<WorkItem>, Receiver<WorkItem>) = bounded(100_000);
+    let rx_clone = rx.clone();
 
-    // Single consumer thread
+    let num_trees = oid_set.num_trees;
+    let queue_clone = queue.clone(); // Clone the Arc for shared ownership
     let consumer = thread::spawn(move || {
         let mut filename_set: FilenameSet = IndexSet::new();
         let mut filepath_set: FilepathSet = IndexSet::new();
-        let mut path_entry_set: PathEntrySet = IndexSet::new();
-        let mut flat_tree: FlatGitRepo = AHashMap::new();
+        let mut path_entry_set: PathEntrySet = IndexSet::with_capacity(num_trees);
+        let mut flat_tree: FlatGitRepo = AHashMap::with_capacity(num_trees);
 
         for work_item in rx {
             if flat_tree.contains_key(&work_item.oid_idx) {
-                println!("Skipping work item bc it already exists in the repo");
                 continue;
             }
-            let work_item_aliased_path: AliasedPath = work_item
-                .full_path
-                .iter()
-                .map(|s| filename_set.insert_full(s.clone()).0 as FilenameIdx)
-                .collect();
-            let children = work_item
-                .entries
-                .into_iter()
-                .map(|(oid_idx, filename, kind)| {
+            let mut children: Vec<EntryIdx> = Vec::new();
+            if !work_item.entries.is_empty() {
+                let parent_aliased_path = match work_item.parent_path_idx {
+                    Some(idx) => filepath_set.get_index(idx as usize).unwrap().clone(),
+                    None => SmallVec::new(),
+                };
+                for (oid_idx, filename, kind) in work_item.entries.into_iter() {
                     let filename_idx = filename_set.insert_full(filename).0 as FilenameIdx;
-                    let mut entry_path = work_item_aliased_path.clone();
-                    entry_path.push(filename_idx);
-                    let filepath_idx = filepath_set.insert_full(entry_path).0 as FilepathIdx;
+                    let mut full_path = parent_aliased_path.clone();
+                    full_path.push(filename_idx);
+                    let filepath_idx = filepath_set.insert_full(full_path).0 as FilepathIdx;
+                    if kind == TreeChildKind::Tree {
+                        queue_clone.push((Some(filepath_idx), oid_idx));
+                    }
                     let (entry_idx, _) = path_entry_set.insert_full(AliasedEntry {
                         oid_idx,
                         filepath_idx,
                         kind,
                     });
-                    entry_idx as EntryIdx
-                })
-                .collect();
+                    children.push(entry_idx as EntryIdx);
+                }
+            }
             flat_tree.insert(
                 work_item.oid_idx,
                 TreeChild::Tree(TreeEntry {
@@ -380,68 +394,73 @@ pub fn build_caches_with_paths(
         (filename_set, filepath_set, path_entry_set, flat_tree)
     });
 
-    let mut processed: AHashSet<(SmallVec<[String; 20]>, ObjectId)> = AHashSet::new();
-    let progress = ProgressBar::new(oid_set.num_trees as u64);
-    progress.set_style(pb_style());
-    while let Some((path, tree_oid)) = stack.pop_back() {
-        if processed.contains(&(path.clone(), tree_oid)) {
-            continue;
-        }
-        progress.inc(1);
-        let tree = repo
-            .find_object(tree_oid)
-            .expect("Could not find commit in the repo")
-            .into_tree();
-        let obj = tree.decode().unwrap();
-        let obj_oid_idx = oid_set.get_index_of(&(tree_oid, Kind::Tree)).unwrap() as OidIdx;
-        for entry in obj.entries.iter() {
-            if !entry.mode.is_tree() {
-                continue;
-            }
-            let mut full_path = path.clone();
-            full_path.push(entry.filename.to_string());
-            let entry_oid: ObjectId = entry.oid.into();
-            if !processed.contains(&(full_path.clone(), entry_oid)) {
-                stack.push_back((full_path, entry_oid));
-            }
-        }
-        let entry_info = obj
-            .entries
-            .iter()
-            .filter_map(|entry| {
-                let entry_oid: ObjectId = entry.oid.into();
-                let kind = match entry.mode.into() {
-                    EntryKind::Blob => Kind::Blob,
-                    EntryKind::Tree => Kind::Tree,
-                    _ => return None,
+    let processed: DashSet<(Option<FilepathIdx>, OidIdx)> = DashSet::new();
+    //It turns out making this concurrent doesn't help, and actually hurts
+    //Sometimes num_workers = 2 helps slightly but not often enough.
+    //The bottleneck is the consumer thread. Leaving this concurrency
+    //in case in the future we fix the bottleneck.
+    let num_workers = 1;
+    let tl = ThreadLocal::new();
+    let safe_repo = repo.clone().into_sync();
+    (0..num_workers).into_par_iter().for_each(|_| {
+        let repo = tl.get_or(|| safe_repo.clone().to_thread_local());
+        let mut should_continue = true;
+        let mut temp_i = 0;
+        while should_continue {
+            while let Some((path, obj_oid_idx)) = queue.pop() {
+                if path.is_some() && processed.contains(&(path.clone(), obj_oid_idx)) {
+                    continue;
+                }
+                if (progress.position() % 10_000) == 0 {
+                    progress.set_length((progress.position() as usize + queue.len()) as u64);
+                }
+                let tree_oid = oid_set.get_index(obj_oid_idx).unwrap().0;
+                let tree = repo
+                    .find_object(tree_oid)
+                    .expect("Could not find commit in the repo")
+                    .into_tree();
+                let obj = tree.decode().unwrap();
+                // let obj_oid_idx = oid_set.get_index_of(&(tree_oid, Kind::Tree)).unwrap() as OidIdx;
+                let entry_info = obj
+                    .entries
+                    .iter()
+                    .filter_map(|entry| {
+                        let entry_oid: ObjectId = entry.oid.into();
+                        let kind = match entry.mode.into() {
+                            EntryKind::Blob => Kind::Blob,
+                            EntryKind::Tree => Kind::Tree,
+                            _ => return None,
+                        };
+                        let oid_idx = oid_set.get_index_of(&(entry_oid, kind)).unwrap() as OidIdx;
+                        let kind = match entry.mode.into() {
+                            EntryKind::Blob => TreeChildKind::Blob,
+                            EntryKind::Tree => TreeChildKind::Tree,
+                            _ => return None,
+                        };
+                        let filename = entry.filename;
+                        Some((oid_idx, filename.to_string(), kind))
+                    })
+                    .collect();
+                let work_item = WorkItem {
+                    parent_path_idx: path,
+                    oid_idx: obj_oid_idx,
+                    entries: entry_info,
                 };
-                let oid_idx = oid_set.get_index_of(&(entry_oid, kind)).unwrap() as OidIdx;
-                let kind = match entry.mode.into() {
-                    EntryKind::Blob => TreeChildKind::Blob,
-                    EntryKind::Tree => TreeChildKind::Tree,
-                    _ => return None,
-                };
-                let filename = entry.filename;
-                Some((oid_idx, filename.to_string(), kind))
-            })
-            .collect();
-        let work_item =
-            WorkItem {
-                full_path: path.clone(),
-                oid_idx: obj_oid_idx,
-                entries: entry_info,
-            };
-        tx.send(work_item).expect("Failed to send work item");
-        processed.insert((path, tree_oid));
-    }
+                tx.send(work_item).expect("Failed to send work item");
+                processed.insert((path, obj_oid_idx));
+            }
+            should_continue = !rx_clone.is_empty();
+        }
+    });
     drop(tx);
 
     println!(
         "Done unravelling tree in {} seconds",
         start_time.elapsed().as_secs_f32()
     );
+    println!("");
     let result = consumer.join().expect("Consumer thread panicked");
-
+    println!("Built flat tree.");
     println!(
         "Built flat tree in {} seconds.",
         start_time.elapsed().as_secs_f32()

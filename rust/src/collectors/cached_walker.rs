@@ -7,7 +7,7 @@ use std::error::Error;
 
 use super::list_in_range::Granularity;
 use super::repo_cache_data::{
-    FilenameIdx, MyEntry, OidIdx, RepoCacheData, TreeChildKind, TreeEntry,
+    AliasedPath, FilenameIdx, FilepathIdx, MyEntry, OidIdx, RepoCacheData, TreeChildKind, TreeEntry,
 };
 use crate::collectors::list_in_range::list_commits_with_granularity;
 use crate::collectors::repo_cache_data::EntryIdx;
@@ -71,15 +71,17 @@ where
     fn gather_objects_to_process(
         &self,
         commits_to_process: &Vec<Commit>,
-    ) -> Result<Vec<OidIdx>, Box<dyn std::error::Error>> {
+    ) -> Result<Vec<(AliasedPath, OidIdx)>, Box<dyn std::error::Error>> {
         let RepoCacheData {
             oid_set,
             tree_entry_set,
             flat_tree,
             ..
         } = &self.repo_caches;
-        let mut res: HashSet<EntryIdx> = HashSet::with_capacity(oid_set.num_blobs / 3);
-        let processed: HashSet<EntryIdx> = HashSet::new();
+        let mut res: HashSet<(AliasedPath, EntryIdx)> =
+            HashSet::with_capacity(oid_set.num_blobs / 3);
+        let processed: HashSet<(Option<AliasedPath>, EntryIdx)> = HashSet::new();
+        let mut entries_to_process = Vec::new();
         for commit in commits_to_process
             .iter()
             .progress_with(pb_default(commits_to_process.len()))
@@ -89,26 +91,39 @@ where
                 .get_index_of(&(commit_tree_objectid, Kind::Tree))
                 .unwrap() as OidIdx;
             let commit_tree_item = flat_tree.get(&commit_tree_oid_idx).unwrap().unwrap_tree();
-            let mut entries_to_process = commit_tree_item.children.clone();
-            while let Some(entry_idx) = entries_to_process.pop() {
-                if processed.contains(&entry_idx) {
+            entries_to_process.extend(commit_tree_item.children.iter().map(|entry| (None, entry)));
+            while let Some((maybe_path, &entry_idx)) = entries_to_process.pop() {
+                if processed.contains(&(maybe_path.clone(), entry_idx)) {
                     continue;
                 }
-                let MyEntry { oid_idx, kind, .. } =
-                    tree_entry_set.get_index(entry_idx as usize).unwrap();
+                // if maybe_path.is_some() && we have some path_in_repo function
+                // then we can check it here to early return from the subtree
+                let MyEntry {
+                    oid_idx,
+                    kind,
+                    filename_idx,
+                } = tree_entry_set.get_index(entry_idx as usize).unwrap();
+                let mut full_path = maybe_path.clone().unwrap_or_else(SmallVec::new);
+                full_path.push(*filename_idx);
                 match kind {
                     TreeChildKind::Blob => {
-                        res.insert(entry_idx);
+                        //We can also just check here if the file matches the blob
+                        res.insert((full_path, entry_idx));
                     }
                     TreeChildKind::Tree => {
                         let child_tree = flat_tree.get(oid_idx).unwrap().unwrap_tree();
-                        entries_to_process.extend(child_tree.children.clone());
+                        entries_to_process.extend(
+                            child_tree
+                                .children
+                                .iter()
+                                .map(|child_entry_idx| (Some(full_path.clone()), child_entry_idx)),
+                        );
                     }
                 }
             }
         }
-        let mut res_vec = res.into_iter().collect::<Vec<EntryIdx>>();
-        res_vec.sort_by_key(|idx| tree_entry_set.get_index(*idx as usize).unwrap().oid_idx);
+        let mut res_vec = res.into_iter().collect::<Vec<(AliasedPath, EntryIdx)>>();
+        res_vec.sort_by_key(|(path, idx)| tree_entry_set.get_index(*idx as usize).unwrap().oid_idx);
         Ok(res_vec)
     }
 
@@ -208,7 +223,7 @@ where
     fn batch_process_objects(
         &self,
         cache: &mut ResultCache<TreeDataCollection<FileData>>,
-        entries_to_process: Option<Vec<EntryIdx>>,
+        entries_to_process: Option<Vec<(AliasedPath, EntryIdx)>>,
     ) {
         let start_time = Instant::now();
         println!("Processing blobs");
@@ -225,30 +240,31 @@ where
         } else {
             oid_set.num_blobs
         } as u64;
-        let iter: Box<dyn Iterator<Item = (u32, u32)> + Send> = match entries_to_process {
-            Some(entries) => Box::new(entries.into_iter().map(move |idx| {
-                let MyEntry {
-                    oid_idx,
-                    filename_idx,
-                    ..
-                } = tree_entry_set.get_index(idx as usize).unwrap();
-                (*oid_idx, *filename_idx)
-            })),
-            None => {
-                Box::new(oid_set.iter_blobs().flat_map(|(oid, _kind)| {
-                    let oid_idx = oid_set.get_index_of(&(*oid, Kind::Blob)).unwrap() as OidIdx;
-                    let parent_trees = filename_cache.get(&oid_idx);
-                    match parent_trees {
-                        None => vec![].into_iter(), // this is where we used to log
-                        Some(parent_trees) => parent_trees
-                            .iter()
-                            .map(move |filename_idx| (oid_idx, *filename_idx))
-                            .collect::<Vec<(u32, u32)>>()
-                            .into_iter(), // Convert to Vec and then to an iterator
-                    }
-                }))
-            }
-        };
+        let iter: Box<dyn Iterator<Item = (u32, u32)> + Send> =
+            match entries_to_process {
+                Some(entries) => Box::new(entries.into_iter().map(move |(path, entry_idx)| {
+                    let MyEntry {
+                        oid_idx,
+                        filename_idx,
+                        ..
+                    } = tree_entry_set.get_index(entry_idx as usize).unwrap();
+                    (*oid_idx, *filename_idx)
+                })),
+                None => {
+                    Box::new(oid_set.iter_blobs().flat_map(|(oid, _kind)| {
+                        let oid_idx = oid_set.get_index_of(&(*oid, Kind::Blob)).unwrap() as OidIdx;
+                        let parent_trees = filename_cache.get(&oid_idx);
+                        match parent_trees {
+                            None => vec![].into_iter(), // this is where we used to log
+                            Some(parent_trees) => parent_trees
+                                .iter()
+                                .map(move |filename_idx| (oid_idx, *filename_idx))
+                                .collect::<Vec<(u32, u32)>>()
+                                .into_iter(), // Convert to Vec and then to an iterator
+                        }
+                    }))
+                }
+            };
         let progress = ProgressBar::new(total);
         progress.set_style(pb_style());
         let tl = ThreadLocal::new();
