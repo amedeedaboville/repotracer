@@ -1,5 +1,4 @@
-use chrono::{DateTime, NaiveDate, TimeZone, Utc};
-use tokei::Languages;
+use chrono::Utc;
 
 use crate::collectors::cached_walker::CachedWalker;
 use crate::collectors::list_in_range::Granularity;

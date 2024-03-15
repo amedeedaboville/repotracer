@@ -212,12 +212,16 @@ where
             .iter()
             .map(|cs| cs.oid.to_string())
             .collect::<Vec<_>>();
+        println!("have commit shas vec with {} items", commit_shas.len());
         let commit_times = commit_stats
             .iter()
             .map(|cs| AnyValue::Datetime(cs.time.seconds * 1000, TimeUnit::Milliseconds, &None))
             .collect::<Vec<_>>();
+        println!("have commit times vec with {} items", commit_times.len());
         func_df.insert_column(0, Series::new("commit_hash", commit_shas))?;
+        println!("inserted colum of commit hash");
         func_df.insert_column(1, Series::new("commit_time", commit_times))?;
+        println!("inserted colum of commit time");
         Ok(func_df)
     }
     fn batch_process_objects(

@@ -62,7 +62,7 @@ fn builtin_stat_map() -> HashMap<String, Stat> {
 
 pub struct Stat {
     pub measurement_kind: MeasurementKind,
-    pub blob_measurer: Box<dyn BlobMeasurer<F> + Send + Sync>,
+    pub file_measurer: Box<dyn FileMeasurement<F>>,
     pub reducer: Box<dyn Reducer<F> + Send + Sync>,
 }
 impl Stat {
@@ -76,12 +76,10 @@ impl Stat {
         };
         match stat_kind {
             BuiltinStat::Tokei => {
-                let blob_measurer = Box::new(FileContentsMeasurer {
-                    callback: Box::new(TokeiCollector::new()),
-                });
+                let file_measurer = Box::new(TokeiCollector::new());
                 Stat {
                     measurement_kind: MeasurementKind::FileContents,
-                    blob_measurer,
+                    file_measurer,
                     reducer,
                 }
             }
