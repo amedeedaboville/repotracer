@@ -1,15 +1,15 @@
-use crossbeam::channel::{bounded, unbounded, Receiver, Sender};
+use crossbeam::channel::{bounded, Receiver, Sender};
 use crossbeam::queue::SegQueue;
 use dashmap::DashSet;
 use gix::bstr::ByteSlice;
-use gix::index::Entry;
-use gix::objs::tree::{EntryKind, EntryMode, EntryRef};
+
+use gix::objs::tree::{EntryKind};
 use gix::objs::Kind;
 use indexmap::IndexSet;
 use indicatif::{ParallelProgressIterator, ProgressIterator};
-use rayon::current_num_threads;
+
 use rayon::iter::{
-    IntoParallelIterator, IntoParallelRefIterator, ParallelBridge, ParallelIterator,
+    IntoParallelIterator, ParallelBridge, ParallelIterator,
 };
 // use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
@@ -18,16 +18,16 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashSet};
 use std::fs::File;
 use std::hash::Hash;
 use std::io::BufWriter;
 use std::io::{self, BufReader};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc};
 use thread_local::ThreadLocal;
 
-use ahash::{AHashMap, AHashSet};
-use gix::{commit, Commit, ObjectId, Repository, ThreadSafeRepository};
+use ahash::{AHashMap};
+use gix::{ObjectId, Repository, ThreadSafeRepository};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::time::Instant;
 
@@ -136,6 +136,12 @@ pub struct FlatRepoWithSets {
     pub path_entry_set: PathEntrySet,
     pub flat_tree: FlatGitRepo,
 }
+impl Default for FlatRepoWithSets {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FlatRepoWithSets {
     pub fn new() -> Self {
         let filename_set = IndexSet::new();
@@ -435,7 +441,7 @@ pub fn build_caches_with_paths(
         "Done unravelling tree in {} seconds",
         start_time.elapsed().as_secs_f32()
     );
-    println!("");
+    println!();
     let result = consumer.join().expect("Consumer thread panicked");
     println!("Built flat tree.");
     println!(

@@ -147,8 +147,8 @@ pub fn plot(
     chart
         .configure_series_labels()
         .label_font(("sans-serif", 20)) // Adjust the font size here
-        .background_style(&WHITE)
-        .border_style(&BLACK)
+        .background_style(WHITE)
+        .border_style(BLACK)
         .draw()?;
     root.present()?;
     Ok(())

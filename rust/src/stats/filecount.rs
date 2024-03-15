@@ -48,7 +48,7 @@ impl FileMeasurement<NumMatches> for PathBlobCollector {
         &self,
         data: TreeDataCollection<NumMatches>,
     ) -> Result<(Schema, Row), Box<dyn std::error::Error>> {
-        let total: u64 = data.into_iter().map(|(_, matches)| matches.0 as u64).sum();
+        let total: u64 = data.into_values().map(|matches| matches.0 as u64).sum();
         let val: AnyValue = total.into();
         let row = Row::new(vec![val]);
         let field = Field::new("total", DataType::UInt64);

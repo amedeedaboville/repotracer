@@ -77,7 +77,7 @@ pub fn list_commits_with_granularity(
                 let hour_rounded = datetime.hour() / x as u32 * x as u32;
                 format!(
                     "{} {:02}",
-                    datetime.format("%Y-%m-%d").to_string(),
+                    datetime.format("%Y-%m-%d"),
                     hour_rounded
                 )
             }

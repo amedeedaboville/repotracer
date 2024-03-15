@@ -21,7 +21,7 @@ fn run_stat(repo: &str, stat: &str) {
         .storage_path
         .as_ref()
         .expect("Repo doesn't have a storage path, I don't know where to look for it.");
-    let stat_config = repo_config.stats.as_ref().and_then(|s| s.get(stat));
+    let _stat_config = repo_config.stats.as_ref().and_then(|s| s.get(stat));
 
     println!("Running {stat} on {repo} stored at {repo_path}");
     let pattern = "TODO";
@@ -56,7 +56,7 @@ fn run_stat(repo: &str, stat: &str) {
         "grep" => "Number of TODOs",
         _ => "Stat results", //todo actually go into the statconfig
     };
-    plot(repo, stat, &mut plot_df, &stat_description, &Utc::now()).expect("Error plotting");
+    plot(repo, stat, &mut plot_df, stat_description, &Utc::now()).expect("Error plotting");
     write_commit_stats_to_csv(repo, stat, &mut res).unwrap();
 
     // let _path_measurer = Box::new(FilePathMeasurer {

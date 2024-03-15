@@ -50,7 +50,7 @@ pub fn global_config() -> &'static GlobalConfig {
         if !path.exists() {
             let root_dir = get_root_dir();
             if !root_dir.exists() {
-                std::fs::create_dir_all(&root_dir).unwrap();
+                std::fs::create_dir_all(root_dir).unwrap();
             }
             let default_config = GlobalConfig::new();
             default_config.write_to_file(&path).unwrap();

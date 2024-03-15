@@ -1,9 +1,9 @@
-use gix::{command::shebang::Data, progress::tree::Item};
+
 use polars::{
     datatypes::AnyValue,
     error::PolarsError,
     frame::{
-        row::{infer_schema, Row},
+        row::{Row},
         DataFrame,
     },
     prelude::Schema,

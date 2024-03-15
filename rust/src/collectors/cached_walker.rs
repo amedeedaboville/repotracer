@@ -1,13 +1,13 @@
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
-use gix::index::Entry;
+
 use polars::frame::row::Row;
 use std::collections::{BTreeMap, VecDeque};
-use std::error::Error;
+
 
 use super::list_in_range::Granularity;
 use super::repo_cache_data::{
-    AliasedPath, FilenameIdx, FilepathIdx, MyEntry, OidIdx, RepoCacheData, TreeChildKind, TreeEntry,
+    AliasedPath, FilenameIdx, MyEntry, OidIdx, RepoCacheData, TreeChildKind, TreeEntry,
 };
 use crate::collectors::list_in_range::list_commits_with_granularity;
 use crate::collectors::repo_cache_data::EntryIdx;
@@ -23,7 +23,7 @@ use indicatif::{ParallelProgressIterator, ProgressIterator};
 use polars::prelude::*;
 use rayon::iter::ParallelIterator;
 use rayon::prelude::*;
-use serde::Serialize;
+
 use smallvec::SmallVec;
 use std::fmt::Debug;
 use std::time::Instant;
@@ -123,7 +123,7 @@ where
             }
         }
         let mut res_vec = res.into_iter().collect::<Vec<(AliasedPath, EntryIdx)>>();
-        res_vec.sort_by_key(|(path, idx)| tree_entry_set.get_index(*idx as usize).unwrap().oid_idx);
+        res_vec.sort_by_key(|(_path, idx)| tree_entry_set.get_index(*idx as usize).unwrap().oid_idx);
         Ok(res_vec)
     }
 
@@ -137,7 +137,7 @@ where
             oid_set,
             flat_tree,
             repo_safe: safe_repo,
-            tree_entry_set,
+            tree_entry_set: _,
             ..
         } = &self.repo_caches;
         let inner_repo = safe_repo.clone().to_thread_local();
@@ -184,9 +184,9 @@ where
                     .into_commit();
                 let res =
                     if iterative {
-                        self.measure_tree_iterative(&tree_entry, &cache).unwrap()
+                        self.measure_tree_iterative(tree_entry, &cache).unwrap()
                     } else {
-                        self.measure_tree(SmallVec::new(), &tree_entry, &cache)
+                        self.measure_tree(SmallVec::new(), tree_entry, &cache)
                             .unwrap()
                     };
                 // if true {
@@ -246,7 +246,7 @@ where
         } as u64;
         let iter: Box<dyn Iterator<Item = (u32, u32)> + Send> =
             match entries_to_process {
-                Some(entries) => Box::new(entries.into_iter().map(move |(path, entry_idx)| {
+                Some(entries) => Box::new(entries.into_iter().map(move |(_path, entry_idx)| {
                     let MyEntry {
                         oid_idx,
                         filename_idx,
@@ -390,14 +390,14 @@ where
         cache: &DashMap<(OidIdx, Option<FilenameIdx>), TreeDataCollection<FileData>>,
     ) -> Result<TreeDataCollection<FileData>, Box<dyn std::error::Error>> {
         let RepoCacheData {
-            repo_safe: repo,
+            repo_safe: _repo,
             flat_tree,
             filename_set,
             tree_entry_set: entry_set,
             ..
         } = &self.repo_caches;
         if cache.contains_key(&(tree.oid_idx, None)) {
-            return Ok((cache.get(&(tree.oid_idx, None)).unwrap().clone()));
+            return Ok(cache.get(&(tree.oid_idx, None)).unwrap().clone());
         }
         let child_results = tree
             .children
@@ -433,7 +433,7 @@ where
                             //     "Did not find result for {oid_idx}, {filename_idx} in blob cache\n"
                             // )
                         };
-                        return Some((entry_path, cache_res.clone()));
+                        Some((entry_path, cache_res.clone()))
                     }
                     TreeChildKind::Tree => {
                         let cache_key_if_folder = &(*oid_idx, None);
@@ -461,8 +461,7 @@ where
                     }
                 }
             })
-            .map(|(path, data)| data.into_iter().map(|(k, v)| (k, v)))
-            .flatten()
+            .flat_map(|(_path, data)| data.into_iter())
             .collect::<TreeDataCollection<FileData>>();
         cache.insert((tree.oid_idx, None), child_results.clone());
         Ok(child_results)
@@ -509,8 +508,8 @@ mod tests {
             }
 
             // Construct column names for df1 and df2
-            let col_name_1 = format!("{}", name);
-            let col_name_2 = format!("{}", name);
+            let col_name_1 = name.to_string();
+            let col_name_2 = name.to_string();
 
             // Update the mask for any differences found in the current column
             let col_diff = df_joined

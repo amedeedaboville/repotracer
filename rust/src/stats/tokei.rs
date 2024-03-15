@@ -3,13 +3,13 @@ use std::ops::{Add, AddAssign};
 use crate::stats::common::FileMeasurement;
 use ahash::{HashMap, HashMapExt};
 use anyhow::Error;
-use gix::{Repository, ThreadSafeRepository};
+use gix::{Repository};
 use polars::{
     datatypes::{AnyValue, DataType, Field},
     frame::row::Row,
     prelude::Schema,
 };
-use tokei::{CodeStats, Config, Language, LanguageType, Languages, Report};
+use tokei::{Config, LanguageType};
 
 use super::common::{PossiblyEmpty, TreeDataCollection};
 
@@ -77,7 +77,7 @@ impl FileMeasurement<TokeiStat> for TokeiCollector {
         //tokei ignores dotfiles
         //todo we should add other paths to care about
         //todo we should make measure_file return an Result<Option>
-        if path.starts_with(".") {
+        if path.starts_with('.') {
             return Ok(TokeiStat::default());
         }
         let language_type = LanguageType::from_path(path, &config)
@@ -101,21 +101,19 @@ impl FileMeasurement<TokeiStat> for TokeiCollector {
             if stat.is_empty() {
                 continue;
             }
-            if stats_by_language.contains_key(&stat.language.to_string()) {
+            if let std::collections::hash_map::Entry::Vacant(e) = stats_by_language.entry(stat.language.to_string()) {
+                e.insert(stat.clone());
+            } else {
                 let entry = stats_by_language
                     .get_mut(&stat.language.to_string())
                     .unwrap();
                 *entry += stat.clone();
-            } else {
-                stats_by_language.insert(stat.language.to_string(), stat.clone());
             }
         }
 
         //group the tree_datas by language_type, and then + them all together
         //ignoring the path
-        let mut languages: Vec<_> = stats_by_language
-            .iter()
-            .map(|(language, _stat)| language)
+        let mut languages: Vec<_> = stats_by_language.keys()
             .collect();
 
         languages.sort();

@@ -1,4 +1,4 @@
-use gix::{ObjectId, Repository, ThreadSafeRepository};
+use gix::{ObjectId, Repository};
 use polars::{frame::row::Row, prelude::Schema};
 use std::{collections::BTreeMap, fmt::Display};
 

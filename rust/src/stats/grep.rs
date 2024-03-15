@@ -41,9 +41,7 @@ impl FileMeasurement<NumMatches> for RipgrepCollector {
         &self,
         child_data: TreeDataCollection<NumMatches>,
     ) -> Result<(Schema, Row), Box<dyn std::error::Error>> {
-        let total = child_data
-            .into_iter()
-            .map(|(_, matches)| matches.0 as u64)
+        let total = child_data.into_values().map(|matches| matches.0 as u64)
             .sum::<u64>()
             .into();
         let row = Row::new(vec![total]);
