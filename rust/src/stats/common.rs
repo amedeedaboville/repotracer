@@ -1,8 +1,9 @@
 use gix::{ObjectId, Repository};
 use polars::{frame::row::Row, prelude::Schema};
+use rayon::iter::Either;
 use std::{collections::BTreeMap, fmt::Display};
 
-use crate::collectors::repo_cache_data::AliasedPath;
+use crate::collectors::repo_cache_data::{AliasedPath, FilenameIdx, FilepathIdx};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum MeasurementKind {
@@ -109,7 +110,7 @@ impl PossiblyEmpty for String {
         self.is_empty()
     }
 }
-pub type TreeDataCollection<FileData> = BTreeMap<AliasedPath, FileData>;
+pub type TreeDataCollection<FileData> = BTreeMap<Either<FilepathIdx, FilenameIdx>, FileData>;
 
 #[derive(Debug, Clone, Copy)]
 pub struct FileCount(pub usize);
