@@ -3,14 +3,12 @@ use crossbeam::queue::SegQueue;
 use dashmap::DashSet;
 use gix::bstr::ByteSlice;
 
-use gix::objs::tree::{EntryKind};
+use gix::objs::tree::EntryKind;
 use gix::objs::Kind;
 use indexmap::IndexSet;
 use indicatif::{ParallelProgressIterator, ProgressIterator};
 
-use rayon::iter::{
-    IntoParallelIterator, ParallelBridge, ParallelIterator,
-};
+use rayon::iter::{IntoParallelIterator, ParallelBridge, ParallelIterator};
 // use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
@@ -18,15 +16,15 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
-use std::collections::{HashSet};
+use std::collections::HashSet;
 use std::fs::File;
 use std::hash::Hash;
 use std::io::BufWriter;
 use std::io::{self, BufReader};
-use std::sync::{Arc};
+use std::sync::Arc;
 use thread_local::ThreadLocal;
 
-use ahash::{AHashMap};
+use ahash::AHashMap;
 use gix::{ObjectId, Repository, ThreadSafeRepository};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::time::Instant;
@@ -184,7 +182,6 @@ impl RepoCacheData {
     }
 }
 pub fn build_oid_set(repo: &Repository) -> Result<OidSetWithInfo, Box<dyn std::error::Error>> {
-    let start = Instant::now();
     let mut num_trees = 0;
     let mut num_blobs = 0;
     let mut oids = Vec::new();
@@ -205,10 +202,6 @@ pub fn build_oid_set(repo: &Repository) -> Result<OidSetWithInfo, Box<dyn std::e
         }
     }
     let oid_set = oids.into_iter().collect::<IndexSet<(ObjectId, Kind)>>();
-    println!(
-        "Built object set in {} seconds",
-        start.elapsed().as_secs_f64()
-    );
     Ok(OidSetWithInfo {
         set: oid_set,
         num_trees,
@@ -544,17 +537,30 @@ pub fn load_caches(
         oid_set.num_blobs
     );
 
-    // let filenames: FilenameSet = load_and_save_cache(shared_repo, "filenames", |shared_repo| {
-    //     build_filename_set(shared_repo, &oid_set)
-    // });
-    // let entries: EntrySet = load_and_save_cache(shared_repo, "entries", |shared_repo| {
-    //     build_entries_set(shared_repo, &oid_set, &filenames)
-    // });
-    // let oid_entries = load_and_save_cache(shared_repo, "flat_tree", |shared_repo| {
-    //     build_flat_tree(shared_repo, &oid_set, &entries, &filenames)
-    // });
-    let (filename_set, entry_set, flat_tree) = build_caches_with_paths(repo, &oid_set).unwrap();
-    println!("Built caches with paths.");
+    let start_time = Instant::now();
+    let repo_path = repo.path().to_str().unwrap();
+    let (filename_set, entry_set, flat_tree) =
+        match (
+            load_cache::<FilenameSet>(repo_path, "filenames"),
+            load_cache::<EntrySet>(repo_path, "entries"),
+            load_cache::<FlatGitRepo>(repo_path, "flat_tree"),
+        ) {
+            (Ok(filename_set), Ok(entry_set), Ok(flat_tree)) => {
+                (filename_set, entry_set, flat_tree)
+            }
+            _ => {
+                println!("Computing flat tree from scratch.");
+                let caches = build_caches_with_paths(repo, &oid_set).unwrap();
+                save_cache(repo_path, "filenames", &caches.0).unwrap();
+                save_cache(repo_path, "entries", &caches.1).unwrap();
+                save_cache(repo_path, "flat_tree", &caches.2).unwrap();
+                println!(
+                    "Built caches in {} seconds",
+                    start_time.elapsed().as_secs_f32(),
+                );
+                caches
+            }
+        };
     let filename_cache = build_filename_cache(&entry_set, &flat_tree).unwrap();
 
     (flat_tree, filename_cache, filename_set, oid_set, entry_set)
@@ -645,17 +651,11 @@ fn load_cache<Cache>(repo_path: &str, cache_name: &str) -> io::Result<Cache>
 where
     Cache: DeserializeOwned,
 {
-    let start_time = Instant::now();
     let cache_path = format!("{}/{}.bin", repo_path, cache_name);
-    // println!("Loading {cache_name} from {cache_path}");
     let cache_file = File::open(cache_path)?;
     let cache_reader = BufReader::new(cache_file);
     let cache: Cache = bincode::deserialize_from(cache_reader)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-    println!(
-        "Loaded {cache_name} in {} seconds",
-        start_time.elapsed().as_secs_f64()
-    );
     Ok(cache)
 }
 fn save_cache<Cache>(repo_path: &str, cache_name: &str, cache: &Cache) -> io::Result<()>

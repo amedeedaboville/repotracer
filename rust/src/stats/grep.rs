@@ -8,7 +8,7 @@ use grep::searcher::Searcher;
 use polars::frame::row::Row;
 use polars::prelude::Schema;
 
-use super::common::TreeDataCollection;
+use super::common::{MeasurementKind, TreeDataCollection};
 
 pub struct RipgrepCollector {
     pattern: String,
@@ -27,7 +27,11 @@ impl RipgrepCollector {
         Ok(matches)
     }
 }
-impl FileMeasurement<NumMatches> for RipgrepCollector {
+impl FileMeasurement for RipgrepCollector {
+    type Data = NumMatches;
+    fn kind(&self) -> MeasurementKind {
+        MeasurementKind::FilePathAndContents
+    }
     fn measure_file(
         &self,
         _repo: &Repository,
@@ -41,7 +45,9 @@ impl FileMeasurement<NumMatches> for RipgrepCollector {
         &self,
         child_data: TreeDataCollection<NumMatches>,
     ) -> Result<(Schema, Row), Box<dyn std::error::Error>> {
-        let total = child_data.into_values().map(|matches| matches.0 as u64)
+        let total = child_data
+            .into_values()
+            .map(|matches| matches.0 as u64)
             .sum::<u64>()
             .into();
         let row = Row::new(vec![total]);

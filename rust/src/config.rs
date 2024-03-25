@@ -8,7 +8,7 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 #[derive(Serialize, Deserialize, Debug)]
-pub struct StatConfig {
+pub struct UserStatConfig {
     pub name: Option<String>,
     pub description: String,
     #[serde(rename = "type")]
@@ -17,22 +17,23 @@ pub struct StatConfig {
     pub path_in_repo: Option<String>,
     pub start: Option<String>,
     pub end: Option<String>,
+    pub granularity: Option<Granularity>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-pub struct RepoConfig {
+pub struct UserRepoConfig {
     pub name: String,
     pub source: Option<String>,
     pub storage_path: Option<String>,
     pub default_branch: Option<String>,
-    pub stats: Option<HashMap<String, StatConfig>>,
+    pub stats: Option<HashMap<String, UserStatConfig>>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct GlobalConfig {
     pub repo_storage_location: Option<String>,
     pub stat_storage: Option<StatStorageConfig>,
-    pub repos: HashMap<String, RepoConfig>,
+    pub repos: HashMap<String, UserRepoConfig>,
 }
 #[derive(Serialize, Deserialize, Debug)]
 pub struct StatStorageConfig {
@@ -41,6 +42,8 @@ pub struct StatStorageConfig {
     pub storage_path: Option<String>,
 }
 use std::sync::OnceLock;
+
+use crate::collectors::list_in_range::Granularity;
 
 static GLOBAL_CONFIG: OnceLock<GlobalConfig> = OnceLock::new();
 
@@ -63,7 +66,7 @@ static ROOT_DIR: OnceLock<PathBuf> = OnceLock::new();
 fn get_root_dir() -> &'static PathBuf {
     ROOT_DIR.get_or_init(|| env::current_dir().unwrap().join(".repotracer"))
 }
-pub fn get_repo_config(repo: &str) -> &RepoConfig {
+pub fn get_repo_config(repo: &str) -> &UserRepoConfig {
     let global = global_config();
     global
         .repos
@@ -79,38 +82,6 @@ pub fn get_stats_dir() -> PathBuf {
         .unwrap_or_else(|| get_root_dir().join("stats"))
 }
 /*
-const DEFAULT_REPOS: HashMap<String, RepoConfig> =
-    vec![
-        (
-            "betterer",
-            RepoConfig {
-                name: "betterer".to_string(),
-                source: None,
-                storage_path: "~/clones/betterer".to_string(),
-                default_branch: Some("master"),
-            },
-        ),
-        (
-            "linux",
-            RepoConfig {
-                name: "linux".to_string(),
-                source: None,
-                storage_path: "~/repos/github.com/torvalds/linux".to_string(),
-                default_branch: Some("master"),
-            },
-        ),
-        (
-            "react",
-            RepoConfig {
-                name: "react".to_string(),
-                source: None,
-                storage_path: "~/repos/github.com/facebook/react".to_string(),
-                default_branch: Some("master"),
-            },
-        ),
-    ]
-    .into_iter()
-    .collect();
 
 const DEFAULT_CONFIG: &str = r#"{
     "repo_storage_location": null,

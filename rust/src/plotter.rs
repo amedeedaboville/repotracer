@@ -57,7 +57,7 @@ pub fn plot(
     if !repo_stats_dir.exists() {
         fs::create_dir_all(&repo_stats_dir)?;
     }
-    let image_path = repo_stats_dir.join(format!("{stat_name}.png"));
+    let image_path = repo_stats_dir.join(format!("{stat_name}.svg"));
     let _commit_hashes = df.drop_in_place("commit_hash").unwrap();
     let commit_times = df.drop_in_place("commit_time").unwrap();
     let time_series = commit_times.datetime().unwrap();

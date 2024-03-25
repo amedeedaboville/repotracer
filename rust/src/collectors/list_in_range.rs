@@ -1,11 +1,12 @@
 use chrono::{DateTime, Datelike, Duration, NaiveDateTime, Timelike, Utc};
 use gix::Commit;
-use gix::{Repository};
+use gix::Repository;
+use serde::{Deserialize, Serialize};
 
 use std::collections::BTreeMap;
 use std::option::Option;
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Granularity {
     Infinite,
     Daily,
@@ -75,11 +76,7 @@ pub fn list_commits_with_granularity(
             Granularity::Hourly => datetime.format("%Y-%m-%d %H").to_string(),
             Granularity::EveryXHours(x) => {
                 let hour_rounded = datetime.hour() / x as u32 * x as u32;
-                format!(
-                    "{} {:02}",
-                    datetime.format("%Y-%m-%d"),
-                    hour_rounded
-                )
+                format!("{} {:02}", datetime.format("%Y-%m-%d"), hour_rounded)
             }
             Granularity::Weekly => {
                 let num_days = datetime.weekday().num_days_from_sunday();

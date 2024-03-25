@@ -3,7 +3,7 @@ use std::ops::{Add, AddAssign};
 use crate::stats::common::FileMeasurement;
 use ahash::{HashMap, HashMapExt};
 use anyhow::Error;
-use gix::{Repository};
+use gix::Repository;
 use polars::{
     datatypes::{AnyValue, DataType, Field},
     frame::row::Row,
@@ -11,7 +11,7 @@ use polars::{
 };
 use tokei::{Config, LanguageType};
 
-use super::common::{PossiblyEmpty, TreeDataCollection};
+use super::common::{FileData, MeasurementKind, PossiblyEmpty, TreeDataCollection};
 
 /// Imitates a tokei "Language" but simpler, bc I don't understand it.
 /// Also derives Clone
@@ -25,6 +25,7 @@ pub struct TokeiStat {
     /// The total number of comments(both single, and multi-line)
     pub comments: usize,
 }
+impl FileData for TokeiStat {}
 impl Default for TokeiStat {
     fn default() -> Self {
         Self {
@@ -66,7 +67,11 @@ impl TokeiCollector {
         TokeiCollector {}
     }
 }
-impl FileMeasurement<TokeiStat> for TokeiCollector {
+impl FileMeasurement for TokeiCollector {
+    type Data = TokeiStat;
+    fn kind(&self) -> MeasurementKind {
+        MeasurementKind::FilePathAndContents
+    }
     fn measure_file(
         &self,
         _repo: &Repository,
@@ -77,7 +82,7 @@ impl FileMeasurement<TokeiStat> for TokeiCollector {
         //tokei ignores dotfiles
         //todo we should add other paths to care about
         //todo we should make measure_file return an Result<Option>
-        if path.starts_with('.') {
+        if path.starts_with('.') || path.contains("/.") {
             return Ok(TokeiStat::default());
         }
         let language_type = LanguageType::from_path(path, &config)
@@ -101,7 +106,9 @@ impl FileMeasurement<TokeiStat> for TokeiCollector {
             if stat.is_empty() {
                 continue;
             }
-            if let std::collections::hash_map::Entry::Vacant(e) = stats_by_language.entry(stat.language.to_string()) {
+            if let std::collections::hash_map::Entry::Vacant(e) =
+                stats_by_language.entry(stat.language.to_string())
+            {
                 e.insert(stat.clone());
             } else {
                 let entry = stats_by_language
@@ -113,8 +120,7 @@ impl FileMeasurement<TokeiStat> for TokeiCollector {
 
         //group the tree_datas by language_type, and then + them all together
         //ignoring the path
-        let mut languages: Vec<_> = stats_by_language.keys()
-            .collect();
+        let mut languages: Vec<_> = stats_by_language.keys().collect();
 
         languages.sort();
         let schema_languages = languages

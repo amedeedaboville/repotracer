@@ -8,7 +8,7 @@ use polars::{
 use gix::Repository;
 use globset::{Glob, GlobMatcher};
 
-use super::common::TreeDataCollection;
+use super::common::{MeasurementKind, TreeDataCollection};
 
 pub struct PathBlobCollector {
     glob: GlobMatcher,
@@ -27,7 +27,11 @@ impl PathBlobCollector {
     }
 }
 
-impl FileMeasurement<NumMatches> for PathBlobCollector {
+impl FileMeasurement for PathBlobCollector {
+    type Data = NumMatches;
+    fn kind(&self) -> MeasurementKind {
+        MeasurementKind::FilePathOnly
+    }
     fn measure_file(
         &self,
         _repo: &Repository,
@@ -37,12 +41,7 @@ impl FileMeasurement<NumMatches> for PathBlobCollector {
         if path.ends_with(std::path::MAIN_SEPARATOR) {
             return Ok(NumMatches(0));
         }
-        Ok(NumMatches(if self.glob.is_match(path) {
-            // println!("{path} matches");
-            1
-        } else {
-            0
-        }))
+        Ok(NumMatches(if self.glob.is_match(path) { 1 } else { 0 }))
     }
     fn summarize_tree_data(
         &self,

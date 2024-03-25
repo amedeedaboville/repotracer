@@ -4,6 +4,7 @@ pub mod commands {
 }
 pub mod stats {
     pub mod common;
+    pub mod custom_script;
     pub mod filecount;
     pub mod grep;
     pub mod tokei;
@@ -18,5 +19,6 @@ pub mod collectors {
 pub mod config;
 pub mod plotter;
 pub mod polars_utils;
+pub mod stat;
 pub mod storage;
 pub mod util;

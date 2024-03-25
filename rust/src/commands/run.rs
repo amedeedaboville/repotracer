@@ -1,3 +1,5 @@
+use std::io::{self, Write};
+
 use chrono::Utc;
 
 use crate::collectors::cached_walker::CachedWalker;
@@ -5,6 +7,7 @@ use crate::collectors::list_in_range::Granularity;
 use crate::config;
 use crate::plotter::plot;
 use crate::stats::common::NumMatches;
+use crate::stats::filecount::PathBlobCollector;
 use crate::stats::grep::RipgrepCollector;
 use crate::stats::tokei::{TokeiCollector, TokeiStat};
 use crate::storage::write_commit_stats_to_csv;
@@ -47,19 +50,31 @@ fn run_stat(repo: &str, stat: &str) {
                 .walk_repo_and_collect_stats(Granularity::Infinite, (None, None), true)
                 .unwrap()
         }
+        "filecount" => {
+            let file_measurer = Box::new(PathBlobCollector::new("*.c"));
+            let mut walker: CachedWalker<NumMatches> =
+                CachedWalker::new(repo_path.to_owned(), file_measurer);
+            let r = walker.walk_repo_and_collect_stats(Granularity::Hourly, (None, None), true);
+            io::stdout().flush().unwrap();
+
+            println!("unwrapping");
+            r.unwrap()
+        }
 
         _ => panic!("Unknown stat {stat}"),
     };
+
+    println!("cloning");
+    io::stdout().flush().unwrap();
     let mut plot_df = res.clone();
+    println!("writing to csv");
+    write_commit_stats_to_csv(repo, stat, &mut res).unwrap();
     let stat_description = match stat {
         "tokei" => "LOC by Language",
         "grep" => "Number of TODOs",
+        "filecount" => "Number of Files",
         _ => "Stat results", //todo actually go into the statconfig
     };
+    println!("plotting");
     plot(repo, stat, &mut plot_df, stat_description, &Utc::now()).expect("Error plotting");
-    write_commit_stats_to_csv(repo, stat, &mut res).unwrap();
-
-    // let _path_measurer = Box::new(FilePathMeasurer {
-    //     callback: Box::new(PathBlobCollector::new(pattern)),
-    // });
 }
