@@ -39,7 +39,7 @@ fn run_stat(repo: &str, stat: &str) {
             let mut walker: CachedWalker<TokeiStat> =
                 CachedWalker::new(repo_path.to_owned(), file_measurer);
             walker
-                .walk_repo_and_collect_stats(Granularity::Infinite, (None, None), true)
+                .walk_repo_and_collect_stats(Granularity::Daily, (None, None))
                 .unwrap()
         }
         "grep" => {
@@ -47,14 +47,14 @@ fn run_stat(repo: &str, stat: &str) {
             let mut walker: CachedWalker<NumMatches> =
                 CachedWalker::new(repo_path.to_owned(), file_measurer);
             walker
-                .walk_repo_and_collect_stats(Granularity::Infinite, (None, None), true)
+                .walk_repo_and_collect_stats(Granularity::Infinite, (None, None))
                 .unwrap()
         }
         "filecount" => {
             let file_measurer = Box::new(PathBlobCollector::new("*.c"));
             let mut walker: CachedWalker<NumMatches> =
                 CachedWalker::new(repo_path.to_owned(), file_measurer);
-            let r = walker.walk_repo_and_collect_stats(Granularity::Hourly, (None, None), true);
+            let r = walker.walk_repo_and_collect_stats(Granularity::Hourly, (None, None));
             io::stdout().flush().unwrap();
 
             println!("unwrapping");

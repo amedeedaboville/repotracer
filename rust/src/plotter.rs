@@ -89,7 +89,7 @@ pub fn plot(
         run_at.format("%Y-%m-%d %H:%M:%S")
     );
     let text_gray = BLACK.mix(0.4);
-    let root = SVGBackend::new(&image_path, (1200, 1000)).into_drawing_area();
+    let root = SVGBackend::new(&image_path, (1800, 1000)).into_drawing_area();
     root.fill(&WHITE)?;
     let mut chart = ChartBuilder::on(&root)
         .caption(title, ("sans-serif", (4).percent_height()))
@@ -136,11 +136,18 @@ pub fn plot(
             .into_no_null_iter()
             .collect();
 
-        let data = x_data.iter().zip(values.iter()).map(|(&x, &y)| (x, y));
+        // let data = x_data.iter().zip(values.iter()).map(|(&x, &y)| (x, y));
+        let mut data: Vec<_> = x_data
+            .iter()
+            .zip(values.iter())
+            .map(|(&x, &y)| (x, y))
+            .collect();
+        data.dedup_by(|a, b| a == b);
+
         let color = SeabornDeepPalette::pick(idx % palette_size).mix(0.9);
 
         chart
-            .draw_series(LineSeries::new(data, color.stroke_width(4)))?
+            .draw_series(LineSeries::new(data.into_iter(), color.stroke_width(4)))?
             .label(series.name())
             .legend(move |(x, y)| Rectangle::new([(x, y - 5), (x + 10, y + 5)], color.filled()));
     }

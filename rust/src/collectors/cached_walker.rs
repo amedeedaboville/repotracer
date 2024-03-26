@@ -41,7 +41,7 @@ pub struct CommitStat<'a> {
 unsafe impl<'a> Send for CommitStat<'a> {}
 unsafe impl<'a> Sync for CommitStat<'a> {}
 
-type ResultCache<F> = DashMap<(OidIdx, Option<FilenameIdx>), F>;
+type ResultCache<F> = DashMap<(OidIdx, FilepathIdx), F>;
 pub struct CachedWalker<F>
 where
     F: FileData + PossiblyEmpty,
@@ -134,18 +134,15 @@ where
         &mut self,
         granularity: Granularity,
         range: (Option<DateTime<Utc>>, Option<DateTime<Utc>>),
-        iterative: bool,
     ) -> Result<DataFrame, Box<dyn std::error::Error>> {
         let RepoCacheData {
             oid_set,
             flat_tree,
             repo_safe: safe_repo,
-            tree_entry_set: _,
             ..
         } = &self.repo_caches;
         let inner_repo = safe_repo.clone().to_thread_local();
-        let mut cache: DashMap<(OidIdx, Option<FilenameIdx>), TreeDataCollection<F>> =
-            DashMap::with_capacity(flat_tree.len());
+        let mut cache: ResultCache<TreeDataCollection<F>> = DashMap::with_capacity(flat_tree.len());
         let commits_to_process =
             list_commits_with_granularity(&inner_repo, granularity, range.0, range.1)?;
         let num_commits = commits_to_process.len();
@@ -153,12 +150,8 @@ where
             "Processing {num_commits} commits from {:?} to {:?}",
             range.0, range.1,
         );
-        // todo add a heuristic to determine whether it's worth it to gather all entries
-        // eg maybe more than 1/3rd of the total repo size we process all the entries
-        // if self.file_measurer.kind().can_batch() {
-        let entries_to_process = self.gather_objects_to_process(&commits_to_process).ok();
+        let entries_to_process = self.gather_objects_to_process(&commits_to_process)?;
         self.batch_process_objects(&mut cache, entries_to_process);
-        // }
         let tree_processing_start = Instant::now();
         println!("Collecting file results into trees for each commit:");
         let commit_count = num_commits;
@@ -185,12 +178,7 @@ where
                     .find_object(commit_oid)
                     .expect("Could not find commit in the repo")
                     .into_commit();
-                let res = if iterative {
-                    self.measure_tree_iterative(tree_entry, &cache).unwrap()
-                } else {
-                    self.measure_tree(SmallVec::new(), tree_entry, &cache)
-                        .unwrap()
-                };
+                let res = self.measure_tree_iterative(tree_entry, &cache).unwrap();
                 let (schema, row) = self.file_measurer.summarize_tree_data(res).unwrap();
                 CommitStat {
                     oid: commit_oid,
@@ -201,7 +189,17 @@ where
             .collect::<Vec<CommitStat>>();
         let elapsed_secs = tree_processing_start.elapsed().as_secs_f64();
         println!("processed: {commit_count} commits in {elapsed_secs} seconds");
-        println!("{:?}", commit_stats.iter().take(5).collect::<Vec<_>>());
+        for cs in commit_stats.iter() {
+            if cs
+                .oid
+                .to_string()
+                .contains("1823818fa0332d866038e80b07052c99e88e46c3")
+            {
+                println!("Results for commit {}:", cs.oid.to_string());
+                println!("{:?}", cs.stats.0);
+                println!("{:?}", cs.stats.1);
+            }
+        }
         let schemas = commit_stats.iter().map(|cs| cs.stats.0.clone());
         let rows = commit_stats.iter().map(|cs| &cs.stats.1);
         let mut func_df = rows_to_df(schemas, rows)?;
@@ -226,7 +224,7 @@ where
     fn batch_process_objects(
         &self,
         cache: &mut ResultCache<TreeDataCollection<F>>,
-        entries_to_process: Option<Vec<(AliasedPath, EntryIdx)>>,
+        entries_to_process: Vec<(AliasedPath, EntryIdx)>,
     ) {
         let start_time = Instant::now();
         println!("Processing blobs");
@@ -239,60 +237,38 @@ where
             tree_entry_set,
             ..
         } = &self.repo_caches;
-        let total = if let Some(entries) = &entries_to_process {
-            entries.len()
-        } else {
-            oid_set.num_blobs
-        } as u64;
-        let iter: Box<dyn Iterator<Item = (u32, u32)> + Send> =
-            match entries_to_process {
-                Some(entries) => Box::new(entries.into_iter().map(move |(_path, entry_idx)| {
-                    let MyEntry {
-                        oid_idx,
-                        filename_idx,
-                        ..
-                    } = tree_entry_set.get_index(entry_idx as usize).unwrap();
-                    (*oid_idx, *filename_idx)
-                })),
-                None => {
-                    Box::new(oid_set.iter_blobs().flat_map(|(oid, _kind)| {
-                        let oid_idx = oid_set.get_index_of(&(*oid, Kind::Blob)).unwrap() as OidIdx;
-                        let parent_trees = filename_cache.get(&oid_idx);
-                        match parent_trees {
-                            None => vec![].into_iter(), // this is where we used to log
-                            Some(parent_trees) => parent_trees
-                                .iter()
-                                .map(move |filename_idx| (oid_idx, *filename_idx))
-                                .collect::<Vec<(u32, u32)>>()
-                                .into_iter(), // Convert to Vec and then to an iterator
-                        }
-                    }))
-                }
-            };
-        let progress = ProgressBar::new(total);
-        progress.set_style(pb_style());
+        let progress = pb_default(entries_to_process.len());
         let tl = ThreadLocal::new();
-        *cache = iter
+        *cache = entries_to_process
+            .into_iter()
             .par_bridge()
             .progress_with(progress)
             .fold(
                 AHashMap::new,
-                |mut acc: AHashMap<(OidIdx, Option<FilenameIdx>), TreeDataCollection<F>>,
-                 (oid_idx, filename_idx)| {
+                |mut acc: AHashMap<(OidIdx, FilepathIdx), TreeDataCollection<F>>,
+                 (path, entry_idx)| {
                     let repo: &Repository = tl.get_or(|| shared_repo.clone().to_thread_local());
+                    let MyEntry {
+                        oid_idx,
+                        filename_idx,
+                        ..
+                    } = *tree_entry_set.get_index(entry_idx as usize).unwrap();
                     let (oid, _kind) = oid_set.get_index(oid_idx).unwrap();
                     let parent_filename = filename_set.get_index(filename_idx as usize).unwrap();
-                    match self.file_measurer.measure_entry(repo, parent_filename, oid) {
+                    let path_str = path
+                        .iter()
+                        .map(|idx| filename_set.get_index(*idx as usize).unwrap().as_str())
+                        .collect::<Vec<&str>>()
+                        .join("/");
+                    match self.file_measurer.measure_entry(repo, &path_str, oid) {
                         Ok(measurement) => {
                             let mut tree_collection: TreeDataCollection<F> = BTreeMap::new();
-                            // let mut path = SmallVec::new();
-                            // path.push(filename_idx);
-                            // let path_idx = filepath_set
-                            //     .get_index_of(&path)
-                            //     .expect(&format!("Did not find {:?} in filepath set", path))
-                            //     as FilepathIdx;
-                            tree_collection.insert(Either::Right(filename_idx), measurement);
-                            acc.insert((oid_idx, Some(filename_idx)), tree_collection);
+                            let path_idx = filepath_set
+                                .get_index_of(&path)
+                                .expect(&format!("Did not find {:?} in filepath set", path))
+                                as FilepathIdx;
+                            tree_collection.insert(Either::Left(path_idx), measurement);
+                            acc.insert((oid_idx, path_idx), tree_collection);
                         }
                         Err(_) => {}
                     };
@@ -301,7 +277,7 @@ where
             )
             .reduce(
                 AHashMap::new,
-                |mut acc: AHashMap<(OidIdx, Option<FilenameIdx>), TreeDataCollection<F>>, cur| {
+                |mut acc: AHashMap<(OidIdx, FilepathIdx), TreeDataCollection<F>>, cur| {
                     acc.extend(cur);
                     acc
                 },
@@ -319,7 +295,7 @@ where
     fn measure_tree_iterative(
         &self,
         root: &TreeEntry,
-        cache: &DashMap<(OidIdx, Option<FilenameIdx>), TreeDataCollection<F>>,
+        cache: &ResultCache<TreeDataCollection<F>>,
     ) -> Result<TreeDataCollection<F>, Box<dyn std::error::Error>> {
         let RepoCacheData {
             flat_tree,
@@ -328,18 +304,20 @@ where
             filepath_set,
             ..
         } = &self.repo_caches;
-        let mut stack: VecDeque<(SmallVec<[FilenameIdx; 20]>, &TreeEntry, bool)> = VecDeque::new();
-        stack.push_back((SmallVec::from_slice(&[]), root, false));
+        let empty_path_idx = filepath_set.get_index_of(&SmallVec::new()).unwrap() as FilepathIdx;
+        let mut stack: VecDeque<(FilepathIdx, &TreeEntry, bool)> = VecDeque::new();
+        stack.push_back((empty_path_idx, root, false));
 
-        while let Some((path, tree, do_aggregation)) = stack.pop_back() {
-            if cache.contains_key(&(tree.oid_idx, None)) {
+        while let Some((path_idx, tree, do_aggregation)) = stack.pop_back() {
+            if cache.contains_key(&(tree.oid_idx, path_idx)) {
                 continue;
             }
             if do_aggregation {
-                let cache_key_if_folder = &(tree.oid_idx, None);
-                if cache.contains_key(cache_key_if_folder) {
-                    continue;
-                }
+                // let cache_key_if_folder = &(tree.oid_idx, None);
+                // if cache.contains_key(cache_key_if_folder) {
+                //     continue;
+                // }
+                let parent_path = filepath_set.get_index(path_idx as usize).unwrap();
                 let tree_agg = tree
                     .children
                     .iter()
@@ -349,15 +327,12 @@ where
                             filename_idx,
                             kind,
                         } = entry_set.get_index(*child_idx as usize).unwrap();
-                        let mut child_path = path.clone();
+                        let mut child_path = parent_path.clone();
                         child_path.push(*filename_idx);
-                        // let child_path_idx = filepath_set.get_index_of(&child_path).unwrap();
-                        let child_result: TreeDataCollection<F> = match kind {
-                            TreeChildKind::Blob => {
-                                cache.get(&(*oid_idx, Some(*filename_idx)))?.clone()
-                            }
-                            TreeChildKind::Tree => cache.get(&(*oid_idx, None))?.clone(),
-                        };
+                        let child_path_idx =
+                            filepath_set.get_index_of(&child_path).unwrap() as FilepathIdx;
+                        let child_result: TreeDataCollection<F> =
+                            cache.get(&(*oid_idx, child_path_idx))?.clone();
                         Some((filename_idx, child_result))
                     })
                     // Prepend the current filename to each result
@@ -373,7 +348,7 @@ where
                                     key
                                 }
                                 Either::Right(leaf_filename_idx) => {
-                                    let mut new_path = path.clone();
+                                    let mut new_path = parent_path.clone();
                                     new_path.push(leaf_filename_idx);
                                     let new_path_idx = filepath_set.get_index_of(&new_path).expect(
                                         &format!(
@@ -397,9 +372,9 @@ where
                         })
                     })
                     .collect::<TreeDataCollection<F>>();
-                cache.insert((tree.oid_idx, None), tree_agg);
+                cache.insert((tree.oid_idx, path_idx), tree_agg);
             } else {
-                stack.push_back((path.clone(), tree, true));
+                stack.push_back((path_idx, tree, true));
                 for &child_entry_idx in tree.children.iter().rev() {
                     let Some(entry) = entry_set.get_index(child_entry_idx as usize) else {
                         panic!(
@@ -411,106 +386,109 @@ where
                     if entry.kind == TreeChildKind::Blob {
                         continue;
                     }
-                    if !cache.contains_key(&(child_entry_idx, None)) {
-                        let mut child_path = path.clone();
-                        child_path.push(entry.filename_idx);
+                    let parent_path = filepath_set.get_index(path_idx as usize).unwrap();
+                    let mut child_path = parent_path.clone();
+                    child_path.push(entry.filename_idx);
+                    let child_path_idx =
+                        filepath_set.get_index_of(&child_path).unwrap() as FilepathIdx;
+                    if !cache.contains_key(&(child_entry_idx, child_path_idx)) {
                         let Some(child) = flat_tree.get(&entry.oid_idx) else {
                             panic!("Did not find {} in flat repo", entry.oid_idx)
                         };
-                        stack.push_back((child_path, child.unwrap_tree(), false));
+                        stack.push_back((child_path_idx, child.unwrap_tree(), false));
                     }
                 }
             }
         }
 
         cache
-            .get(&(root.oid_idx, None))
+            .get(&(root.oid_idx, empty_path_idx))
             .map(|x| x.clone())
             .ok_or_else(|| "Failed to aggregate results".into())
     }
-    fn measure_tree(
-        &self,
-        path: SmallVec<[FilenameIdx; 20]>,
-        tree: &TreeEntry,
-        cache: &DashMap<(OidIdx, Option<FilenameIdx>), TreeDataCollection<F>>,
-    ) -> Result<TreeDataCollection<F>, Box<dyn std::error::Error>> {
-        let RepoCacheData {
-            repo_safe: _repo,
-            flat_tree,
-            filename_set,
-            tree_entry_set: entry_set,
-            ..
-        } = &self.repo_caches;
-        if cache.contains_key(&(tree.oid_idx, None)) {
-            return Ok(cache.get(&(tree.oid_idx, None)).unwrap().clone());
-        }
-        let child_results = tree
-            .children
-            .iter()
-            .filter_map(|entry_idx| {
-                let Some(entry) = entry_set.get_index(*entry_idx as usize) else {
-                    panic!(
-                        "Did not find {} in entry_set, even though it has {} items",
-                        *entry_idx,
-                        entry_set.len()
-                    );
-                };
-                let MyEntry {
-                    oid_idx,
-                    filename_idx,
-                    kind,
-                } = entry;
-                let mut new_path = path.clone();
-                new_path.push(*filename_idx);
-                let path_pieces = new_path
-                    .iter()
-                    .map(|idx| filename_set.get_index(*idx as usize).unwrap())
-                    .map(AsRef::as_ref)
-                    .collect::<Vec<&str>>();
-                let entry_path = path_pieces.join("/");
+    // fn measure_tree(
+    //     &self,
+    //     path: SmallVec<[FilenameIdx; 20]>,
+    //     tree: &TreeEntry,
+    //     cache: &ResultCache<TreeDataCollection<F>>,
+    // ) -> Result<TreeDataCollection<F>, Box<dyn std::error::Error>> {
+    //     let RepoCacheData {
+    //         repo_safe: _repo,
+    //         flat_tree,
+    //         filename_set,
+    //         tree_entry_set: entry_set,
+    //         ..
+    //     } = &self.repo_caches;
+    //     if cache.contains_key(&(tree.oid_idx, None)) {
+    //         return Ok(cache.get(&(tree.oid_idx, None)).unwrap().clone());
+    //     }
+    //     let child_results = tree
+    //         .children
+    //         .iter()
+    //         .filter_map(|entry_idx| {
+    //             let Some(entry) = entry_set.get_index(*entry_idx as usize) else {
+    //                 panic!(
+    //                     "Did not find {} in entry_set, even though it has {} items",
+    //                     *entry_idx,
+    //                     entry_set.len()
+    //                 );
+    //             };
+    //             let MyEntry {
+    //                 oid_idx,
+    //                 filename_idx,
+    //                 kind,
+    //             } = entry;
+    //             let mut new_path = path.clone();
+    //             new_path.push(*filename_idx);
+    //             let path_pieces = new_path
+    //                 .iter()
+    //                 .map(|idx| filename_set.get_index(*idx as usize).unwrap())
+    //                 .map(AsRef::as_ref)
+    //                 .collect::<Vec<&str>>();
+    //             let entry_path = path_pieces.join("/");
 
-                match kind {
-                    TreeChildKind::Blob => {
-                        let cache_key_if_blob = &(*oid_idx, Some(*filename_idx));
-                        let Some(cache_res) = cache.get(cache_key_if_blob) else {
-                            return None;
-                            // panic!(
-                            //     "Did not find result for {oid_idx}, {filename_idx} in blob cache\n"
-                            // )
-                        };
-                        Some((entry_path, cache_res.clone()))
-                    }
-                    TreeChildKind::Tree => {
-                        let cache_key_if_folder = &(*oid_idx, None);
-                        if cache.contains_key(cache_key_if_folder) {
-                            return Some((
-                                entry_path,
-                                cache
-                                    .get(cache_key_if_folder)
-                                    .expect(
-                                "Didn't find result in cache (folder key) even though it exists"
-                            )
-                                    .clone(),
-                            ));
-                        }
-                        let child = flat_tree
-                            .get(oid_idx)
-                            .expect("Did not find oid_idx in flat repo");
-                        let child_result = self
-                            .measure_tree(new_path, child.unwrap_tree(), cache)
-                            .expect("Measure tree for oid_idx failed");
-                        match child_result.is_empty() {
-                            true => None,
-                            false => Some((entry_path, child_result)),
-                        }
-                    }
-                }
-            })
-            .flat_map(|(_path, data)| data.into_iter())
-            .collect::<TreeDataCollection<F>>();
-        cache.insert((tree.oid_idx, None), child_results.clone());
-        Ok(child_results)
-    }
+    //             match kind {
+    //                 TreeChildKind::Blob => {
+    //                     let cache_key_if_blob = &(*oid_idx, Some(*filename_idx));
+    //                     let Some(cache_res) = cache.get(cache_key_if_blob) else {
+    //                         return None;
+    //                         // panic!(
+    //                         //     "Did not find result for {oid_idx}, {filename_idx} in blob cache\n"
+    //                         // )
+    //                     };
+    //                     Some((entry_path, cache_res.clone()))
+    //                 }
+    //                 TreeChildKind::Tree => {
+    //                     let cache_key_if_folder = &(*oid_idx, None);
+    //                     if cache.contains_key(cache_key_if_folder) {
+    //                         return Some((
+    //                             entry_path,
+    //                             cache
+    //                                 .get(cache_key_if_folder)
+    //                                 .expect(
+    //                             "Didn't find result in cache (folder key) even though it exists"
+    //                         )
+    //                                 .clone(),
+    //                         ));
+    //                     }
+    //                     let child = flat_tree
+    //                         .get(oid_idx)
+    //                         .expect("Did not find oid_idx in flat repo");
+    //                     let child_result = self
+    //                         .measure_tree(new_path, child.unwrap_tree(), cache)
+    //                         .expect("Measure tree for oid_idx failed");
+    //                     match child_result.is_empty() {
+    //                         true => None,
+    //                         false => Some((entry_path, child_result)),
+    //                     }
+    //                 }
+    //             }
+    //         })
+    //         .flat_map(|(_path, data)| data.into_iter())
+    //         .collect::<TreeDataCollection<F>>();
+    //     cache.insert((tree.oid_idx, None), child_results.clone());
+    //     Ok(child_results)
+    // }
 }
 
 #[cfg(test)]

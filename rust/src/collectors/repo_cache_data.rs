@@ -1,7 +1,6 @@
 use crossbeam::channel::{bounded, Receiver, Sender};
 use crossbeam::queue::SegQueue;
 use dashmap::DashSet;
-use gix::bstr::ByteSlice;
 
 use gix::objs::tree::EntryKind;
 use gix::objs::Kind;
@@ -9,7 +8,6 @@ use indexmap::IndexSet;
 use indicatif::{ParallelProgressIterator, ProgressIterator};
 
 use rayon::iter::{IntoParallelIterator, ParallelBridge, ParallelIterator};
-// use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
 use serde::de::DeserializeOwned;
@@ -346,6 +344,7 @@ pub fn build_caches_with_paths(
         let mut filepath_set: FilepathSet = IndexSet::new();
         let mut entry_set: EntrySet = IndexSet::with_capacity(num_trees);
         let mut flat_tree: FlatGitRepo = AHashMap::with_capacity(num_trees);
+        filepath_set.insert(SmallVec::new()); //Add an alias for 'empty path' for the root of a commit to have a path
         for work_item in rx {
             let parent_aliased_path = match work_item.parent_path_idx {
                 Some(idx) => filepath_set.get_index(idx as usize).unwrap().clone(),
