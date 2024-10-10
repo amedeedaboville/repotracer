@@ -1,4 +1,7 @@
-use std::ops::{Add, AddAssign};
+use std::{
+    ops::{Add, AddAssign},
+    str::FromStr,
+};
 
 use crate::stats::common::FileMeasurement;
 use ahash::{HashMap, HashMapExt};
@@ -55,16 +58,26 @@ impl AddAssign for TokeiStat {
     }
 }
 //todo a list of languages we care about
-pub struct TokeiCollector {}
+pub struct TokeiCollector {
+    languages: Option<Vec<LanguageType>>,
+    top_n: Option<usize>,
+}
 impl Default for TokeiCollector {
     fn default() -> Self {
-        Self::new()
+        Self::new(None, None)
     }
 }
 
 impl TokeiCollector {
-    pub fn new() -> Self {
-        TokeiCollector {}
+    pub fn new(languages: Option<Vec<String>>, top_n: Option<usize>) -> Self {
+        TokeiCollector {
+            languages: languages.map(|l| {
+                l.into_iter()
+                    .map(|l| LanguageType::from_str(&l).unwrap())
+                    .collect()
+            }),
+            top_n,
+        }
     }
 }
 impl FileMeasurement for TokeiCollector {
@@ -87,6 +100,11 @@ impl FileMeasurement for TokeiCollector {
         }
         let language_type = LanguageType::from_path(path, &config)
             .ok_or_else(|| Error::msg(format!("Failed to get language type for path: '{path}'")))?;
+        if let Some(languages) = &self.languages {
+            if !languages.contains(&language_type) {
+                return Ok(TokeiStat::default());
+            }
+        }
         let codestat = language_type.parse_from_slice(contents, &config);
         let stat = TokeiStat {
             language: language_type,

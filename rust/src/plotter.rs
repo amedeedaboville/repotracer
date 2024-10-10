@@ -2,6 +2,7 @@ use std::fs;
 
 use crate::config::get_stats_dir;
 use plotters::prelude::*;
+use plotters::style::text_anchor::{HPos, Pos, VPos};
 use plotters::style::{Color, Palette};
 use polars::prelude::*;
 
@@ -46,6 +47,8 @@ impl Palette for SeabornDeepPalette {
     }
 }
 
+const IMAGE_WIDTH: u32 = 1800;
+const IMAGE_HEIGHT: u32 = 1000;
 pub fn plot(
     repo_name: &str,
     stat_name: &str,
@@ -89,7 +92,7 @@ pub fn plot(
         run_at.format("%Y-%m-%d %H:%M:%S")
     );
     let text_gray = BLACK.mix(0.4);
-    let root = SVGBackend::new(&image_path, (1800, 1000)).into_drawing_area();
+    let root = SVGBackend::new(&image_path, (IMAGE_WIDTH, IMAGE_HEIGHT)).into_drawing_area();
     root.fill(&WHITE)?;
     let mut chart = ChartBuilder::on(&root)
         .caption(title, ("sans-serif", (4).percent_height()))
@@ -115,8 +118,14 @@ pub fn plot(
         })
         .draw()?;
 
-    let description_style = TextStyle::from(("sans-serif", 25).into_font()).color(&text_gray);
-    root.draw_text(&subtitle, &description_style, (50, 50))?;
+    let description_style = TextStyle::from(("sans-serif", 25).into_font())
+        .color(&text_gray)
+        .pos(Pos::new(HPos::Right, VPos::Top));
+    root.draw_text(
+        &subtitle,
+        &description_style,
+        ((IMAGE_WIDTH - 100) as i32, 50),
+    )?;
     let x_data = time_series.into_no_null_iter().collect::<Vec<_>>();
     let palette_size = SeabornDeepPalette::COLORS.len(); // Get the size of the palette
 

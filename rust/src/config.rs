@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use serde::de::Error;
 use std::collections::HashMap;
 use std::env;
 use std::fs::File;
@@ -20,6 +21,30 @@ pub struct UserStatConfig {
     pub granularity: Option<Granularity>,
 }
 
+impl UserStatConfig {
+    pub fn get_param_value(&self, name: &str) -> Option<&Value> {
+        self.params.as_object().and_then(|p| p.get(name))
+    }
+    pub fn get_param<T>(&self, name: &str) -> Option<T>
+    where
+        T: serde::de::DeserializeOwned,
+    {
+        self.params.as_object().and_then(|p| p.get(name)).map(|v| {
+            serde_json::from_value(v.clone())
+                .expect(format!("Failed to deserialize {name}").as_str())
+        })
+    }
+
+    pub fn get_param_array_string(&self, name: &str) -> Option<Vec<String>> {
+        self.get_param_value(name)
+            .and_then(|l| l.as_array())
+            .map(|l| {
+                l.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+    }
+}
 #[derive(Serialize, Deserialize, Debug)]
 pub struct UserRepoConfig {
     pub name: String,

@@ -14,10 +14,8 @@ pub struct RipgrepCollector {
     pattern: String,
 }
 impl RipgrepCollector {
-    pub fn new(pattern: &str) -> Self {
-        RipgrepCollector {
-            pattern: pattern.to_string(),
-        }
+    pub fn new(pattern: String) -> Self {
+        RipgrepCollector { pattern }
     }
     pub fn get_matches(
         &self,

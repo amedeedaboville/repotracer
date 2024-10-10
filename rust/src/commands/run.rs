@@ -1,15 +1,9 @@
-use std::io::{self, Write};
-
 use chrono::Utc;
 
-use crate::collectors::cached_walker::CachedWalker;
 use crate::collectors::list_in_range::Granularity;
 use crate::config;
 use crate::plotter::plot;
-use crate::stats::common::NumMatches;
-use crate::stats::filecount::PathBlobCollector;
-use crate::stats::grep::RipgrepCollector;
-use crate::stats::tokei::{TokeiCollector, TokeiStat};
+use crate::stat::build_measurement;
 use crate::storage::write_commit_stats_to_csv;
 
 pub fn run_command(repo: Option<&String>, stat: Option<&String>) {
@@ -18,63 +12,45 @@ pub fn run_command(repo: Option<&String>, stat: Option<&String>) {
         _ => println!("Need to specify a repo and a stat"),
     }
 }
-fn run_stat(repo: &str, stat: &str) {
-    let repo_config = config::get_repo_config(repo);
+fn run_stat(repo_name: &str, stat_name: &str) {
+    let repo_config = config::get_repo_config(repo_name);
     let repo_path = repo_config
         .storage_path
         .as_ref()
         .expect("Repo doesn't have a storage path, I don't know where to look for it.");
-    let _stat_config = repo_config.stats.as_ref().and_then(|s| s.get(stat));
+    let stat_config = repo_config
+        .stats
+        .as_ref()
+        .and_then(|s| s.get(stat_name))
+        .expect("Didn't find this stat in the config");
 
-    println!("Running {stat} on {repo} stored at {repo_path}");
-    let pattern = "TODO";
+    println!("Running {stat_name} on {repo_name} stored at {repo_path}");
 
-    // let start = NaiveDate::parse_from_str("2020-01-01", "%Y-%m-%d")
-    //     .expect("Failed to parse date")
-    //     .and_hms(0, 0, 0); // Assuming start of the day
-    // let start: DateTime<Utc> = Utc.from_utc_datetime(&start);
-    let mut res = match stat {
-        "tokei" => {
-            let file_measurer = Box::new(TokeiCollector::new());
-            let mut walker: CachedWalker<TokeiStat> =
-                CachedWalker::new(repo_path.to_owned(), file_measurer);
-            walker
-                .walk_repo_and_collect_stats(Granularity::Daily, (None, None))
-                .unwrap()
-        }
-        "grep" => {
-            let file_measurer = Box::new(RipgrepCollector::new(pattern));
-            let mut walker: CachedWalker<NumMatches> =
-                CachedWalker::new(repo_path.to_owned(), file_measurer);
-            walker
-                .walk_repo_and_collect_stats(Granularity::Infinite, (None, None))
-                .unwrap()
-        }
-        "filecount" => {
-            let file_measurer = Box::new(PathBlobCollector::new("*.c"));
-            let mut walker: CachedWalker<NumMatches> =
-                CachedWalker::new(repo_path.to_owned(), file_measurer);
-            let r = walker.walk_repo_and_collect_stats(Granularity::Hourly, (None, None));
-            io::stdout().flush().unwrap();
+    let mut meas = build_measurement(stat_config);
+    let mut res = meas
+        .run(
+            repo_path.to_string(),
+            Granularity::Daily,
+            (None, None),
+            stat_config.path_in_repo.clone(),
+        )
+        .unwrap();
 
-            println!("unwrapping");
-            r.unwrap()
-        }
-
-        _ => panic!("Unknown stat {stat}"),
-    };
-
-    println!("cloning");
-    io::stdout().flush().unwrap();
     let mut plot_df = res.clone();
-    println!("writing to csv");
-    write_commit_stats_to_csv(repo, stat, &mut res).unwrap();
-    let stat_description = match stat {
+    write_commit_stats_to_csv(repo_name, stat_name, &mut res).unwrap();
+    let stat_description = match stat_name {
         "tokei" => "LOC by Language",
         "grep" => "Number of TODOs",
         "filecount" => "Number of Files",
-        _ => "Stat results", //todo actually go into the statconfig
+        _ => stat_config.description.as_ref(),
     };
     println!("plotting");
-    plot(repo, stat, &mut plot_df, stat_description, &Utc::now()).expect("Error plotting");
+    plot(
+        repo_name,
+        stat_name,
+        &mut plot_df,
+        stat_description,
+        &Utc::now(),
+    )
+    .expect("Error plotting");
 }

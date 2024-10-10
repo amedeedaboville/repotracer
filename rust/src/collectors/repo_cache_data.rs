@@ -695,3 +695,11 @@ where
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
     Ok(())
 }
+
+pub fn aliased_path_to_string(filename_set: &FilenameSet, aliased_path: &[FilenameIdx]) -> String {
+    aliased_path
+        .iter()
+        .map(|idx| filename_set.get_index(*idx as usize).unwrap().as_ref())
+        .collect::<Vec<&str>>()
+        .join("/")
+}

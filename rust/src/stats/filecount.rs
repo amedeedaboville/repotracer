@@ -14,12 +14,12 @@ pub struct PathBlobCollector {
     glob: GlobMatcher,
 }
 impl PathBlobCollector {
-    pub fn new(pattern: &str) -> Self {
+    pub fn new(pattern: String) -> Self {
         // let glob = Glob::new(pattern).expect("Failed to create glob");
         // let mut globset = GlobSetBuilder::new();
         // globset.add(glob);
         // let globset = globset.build().expect("Failed to build glob set");
-        let glob = Glob::new(pattern)
+        let glob = Glob::new(&pattern)
             .expect("Failed to compile glob")
             .compile_matcher();
 

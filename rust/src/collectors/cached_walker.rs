@@ -1,26 +1,25 @@
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 
+use globset::{Glob, GlobMatcher};
 use polars::frame::row::Row;
 use std::collections::{BTreeMap, VecDeque};
 use std::io::{self, Write};
 
 use super::list_in_range::Granularity;
 use super::repo_cache_data::{
-    AliasedPath, FilenameIdx, FilepathIdx, MyEntry, OidIdx, RepoCacheData, TreeChildKind, TreeEntry,
+    aliased_path_to_string, AliasedPath, FilepathIdx, MyEntry, OidIdx, RepoCacheData,
+    TreeChildKind, TreeEntry,
 };
 use crate::collectors::list_in_range::list_commits_with_granularity;
 use crate::collectors::repo_cache_data::EntryIdx;
 use crate::polars_utils::rows_to_df;
-use crate::stats::common::{
-    FileData, FileMeasurement, MeasurementKind, PossiblyEmpty, TreeDataCollection,
-};
+use crate::stats::common::{FileData, FileMeasurement, PossiblyEmpty, TreeDataCollection};
 use crate::util::{pb_default, pb_style};
 use ahash::{AHashMap, HashSet, HashSetExt};
 use gix::objs::Kind;
 use gix::{Commit, ObjectId, Repository};
 
-use indicatif::ProgressBar;
 use indicatif::{ParallelProgressIterator, ProgressIterator};
 use polars::prelude::*;
 use rayon::iter::{Either, ParallelIterator};
@@ -47,7 +46,7 @@ where
     F: FileData + PossiblyEmpty,
 {
     repo_caches: RepoCacheData,
-    file_measurer: Box<dyn FileMeasurement<Data = F> + Sync>,
+    file_measurer: Arc<dyn FileMeasurement<Data = F> + Send>,
 }
 impl<F> CachedWalker<F>
 where
@@ -55,7 +54,7 @@ where
 {
     pub fn new(
         repo_path: String,
-        file_measurer: Box<dyn FileMeasurement<Data = F> + Sync>, // Changed type here
+        file_measurer: Arc<dyn FileMeasurement<Data = F> + Send>, // Changed type here
     ) -> Self {
         CachedWalker::<F> {
             repo_caches: RepoCacheData::new(&repo_path),
@@ -65,11 +64,13 @@ where
     fn gather_objects_to_process(
         &self,
         commits_to_process: &Vec<Commit>,
+        path_glob: Option<GlobMatcher>,
     ) -> Result<Vec<(AliasedPath, OidIdx)>, Box<dyn std::error::Error>> {
         let RepoCacheData {
             oid_set,
             tree_entry_set,
             flat_tree,
+            filename_set,
             ..
         } = &self.repo_caches;
         let mut res: HashSet<(AliasedPath, EntryIdx)> =
@@ -105,12 +106,11 @@ where
                 full_path.push(*filename_idx);
                 match kind {
                     TreeChildKind::Blob => {
-                        //We can also just check here if the file matches the blob
-                        // if is_filepath_only {
-                        //     self.file_measurer.measure_file(repo, full_path, oid)
-                        // } else {
-                        res.insert((full_path, entry_idx));
-                        // }
+                        if path_glob.as_ref().map_or(true, |glob| {
+                            glob.is_match(aliased_path_to_string(filename_set, &full_path))
+                        }) {
+                            res.insert((full_path, entry_idx));
+                        }
                     }
                     TreeChildKind::Tree => {
                         let child_tree = flat_tree.get(oid_idx).unwrap().unwrap_tree();
@@ -134,6 +134,7 @@ where
         &mut self,
         granularity: Granularity,
         range: (Option<DateTime<Utc>>, Option<DateTime<Utc>>),
+        path_in_repo: Option<String>,
     ) -> Result<DataFrame, Box<dyn std::error::Error>> {
         let RepoCacheData {
             oid_set,
@@ -147,10 +148,15 @@ where
             list_commits_with_granularity(&inner_repo, granularity, range.0, range.1)?;
         let num_commits = commits_to_process.len();
         println!(
-            "Processing {num_commits} commits from {:?} to {:?}",
+            "Navigating {num_commits} commits from {:?} to {:?}",
             range.0, range.1,
         );
-        let entries_to_process = self.gather_objects_to_process(&commits_to_process)?;
+        let path_glob = path_in_repo.map(|path| {
+            Glob::new(&path)
+                .expect("Failed to compile path_in_repo into glob")
+                .compile_matcher()
+        });
+        let entries_to_process = self.gather_objects_to_process(&commits_to_process, path_glob)?;
         self.batch_process_objects(&mut cache, entries_to_process);
         let tree_processing_start = Instant::now();
         println!("Collecting file results into trees for each commit:");
@@ -229,7 +235,6 @@ where
         let start_time = Instant::now();
         println!("Processing blobs");
         let RepoCacheData {
-            filename_cache,
             filename_set,
             filepath_set,
             oid_set,
@@ -239,51 +244,44 @@ where
         } = &self.repo_caches;
         let progress = pb_default(entries_to_process.len());
         let tl = ThreadLocal::new();
-        *cache = entries_to_process
-            .into_iter()
-            .par_bridge()
-            .progress_with(progress)
-            .fold(
-                AHashMap::new,
-                |mut acc: AHashMap<(OidIdx, FilepathIdx), TreeDataCollection<F>>,
-                 (path, entry_idx)| {
-                    let repo: &Repository = tl.get_or(|| shared_repo.clone().to_thread_local());
-                    let MyEntry {
-                        oid_idx,
-                        filename_idx,
-                        ..
-                    } = *tree_entry_set.get_index(entry_idx as usize).unwrap();
-                    let (oid, _kind) = oid_set.get_index(oid_idx).unwrap();
-                    let parent_filename = filename_set.get_index(filename_idx as usize).unwrap();
-                    let path_str = path
-                        .iter()
-                        .map(|idx| filename_set.get_index(*idx as usize).unwrap().as_str())
-                        .collect::<Vec<&str>>()
-                        .join("/");
-                    match self.file_measurer.measure_entry(repo, &path_str, oid) {
-                        Ok(measurement) => {
-                            let mut tree_collection: TreeDataCollection<F> = BTreeMap::new();
-                            let path_idx = filepath_set
-                                .get_index_of(&path)
-                                .expect(&format!("Did not find {:?} in filepath set", path))
-                                as FilepathIdx;
-                            tree_collection.insert(Either::Left(path_idx), measurement);
-                            acc.insert((oid_idx, path_idx), tree_collection);
-                        }
-                        Err(_) => {}
-                    };
-                    acc
-                },
-            )
-            .reduce(
-                AHashMap::new,
-                |mut acc: AHashMap<(OidIdx, FilepathIdx), TreeDataCollection<F>>, cur| {
-                    acc.extend(cur);
-                    acc
-                },
-            )
-            .into_iter()
-            .collect();
+        *cache =
+            entries_to_process
+                .into_iter()
+                .par_bridge()
+                .progress_with(progress)
+                .fold(
+                    AHashMap::new,
+                    |mut acc: AHashMap<(OidIdx, FilepathIdx), TreeDataCollection<F>>,
+                     (path, entry_idx)| {
+                        let path_str = aliased_path_to_string(filename_set, &path);
+                        let repo: &Repository = tl.get_or(|| shared_repo.clone().to_thread_local());
+                        let MyEntry { oid_idx, .. } =
+                            *tree_entry_set.get_index(entry_idx as usize).unwrap();
+                        let (oid, _kind) = oid_set.get_index(oid_idx).unwrap();
+                        match self.file_measurer.measure_entry(repo, &path_str, oid) {
+                            Ok(measurement) => {
+                                let mut tree_collection: TreeDataCollection<F> = BTreeMap::new();
+                                let path_idx = filepath_set
+                                    .get_index_of(&path)
+                                    .expect(&format!("Did not find {:?} in filepath set", path))
+                                    as FilepathIdx;
+                                tree_collection.insert(Either::Left(path_idx), measurement);
+                                acc.insert((oid_idx, path_idx), tree_collection);
+                            }
+                            Err(_) => {}
+                        };
+                        acc
+                    },
+                )
+                .reduce(
+                    AHashMap::new,
+                    |mut acc: AHashMap<(OidIdx, FilepathIdx), TreeDataCollection<F>>, cur| {
+                        acc.extend(cur);
+                        acc
+                    },
+                )
+                .into_iter()
+                .collect();
 
         println!(
             "Processed {} blobs (files) in {} seconds",
@@ -336,17 +334,10 @@ where
                         Some((filename_idx, child_result))
                     })
                     // Prepend the current filename to each result
-                    .flat_map(|(filename_idx, data)| {
-                        data.into_iter().map(|(mut key, value)| {
+                    .flat_map(|(_filename_idx, data)| {
+                        data.into_iter().map(|(key, value)| {
                             let new_path_idx = match key {
-                                Either::Left(path_idx) => {
-                                    // let current_path =
-                                    //     filepath_set.get_index(path_idx as usize).unwrap();
-                                    // let mut new_path = current_path.clone();
-                                    // new_path.push(*filename_idx);
-                                    // filepath_set.get_index_of(&new_path).unwrap() as FilepathIdx;
-                                    key
-                                }
+                                Either::Left(_path_idx) => key,
                                 Either::Right(leaf_filename_idx) => {
                                     let mut new_path = parent_path.clone();
                                     new_path.push(leaf_filename_idx);
@@ -354,14 +345,7 @@ where
                                         &format!(
                                             "Did not find new path in filepath set: {:?} ({})",
                                             new_path,
-                                            new_path
-                                                .iter()
-                                                .map(|idx| filename_set
-                                                    .get_index(*idx as usize)
-                                                    .unwrap()
-                                                    .to_owned())
-                                                .collect::<Vec<String>>()
-                                                .join("/")
+                                            aliased_path_to_string(filename_set, &new_path)
                                         ),
                                     )
                                         as FilepathIdx;
@@ -552,16 +536,16 @@ mod tests {
     fn test_measure_tree_equivalence() {
         // Setup test environment
         let repo_path = String::from("/Users/amedee/repos/github.com/phenomnomnominal/betterer");
-        let file_measurer = Box::new(TokeiCollector::new());
+        let file_measurer = Box::new(TokeiCollector::new(None, None));
         let mut walker: CachedWalker<TokeiStat> =
-            CachedWalker::new(repo_path.to_owned(), file_measurer);
+            CachedWalker::new(repo_path.to_owned(), file_measurer, None);
         let recursive_res = walker
-            .walk_repo_and_collect_stats(Granularity::Infinite, (None, None), true)
+            .walk_repo_and_collect_stats(Granularity::Infinite, (None, None))
             .unwrap();
-        let file_measurer = Box::new(TokeiCollector::new());
-        walker = CachedWalker::new(repo_path.to_owned(), file_measurer);
+        let file_measurer = Box::new(TokeiCollector::new(None, None));
+        walker = CachedWalker::new(repo_path.to_owned(), file_measurer, None);
         let iterative_res = walker
-            .walk_repo_and_collect_stats(Granularity::Infinite, (None, None), false)
+            .walk_repo_and_collect_stats(Granularity::Infinite, (None, None))
             .unwrap();
         // Compare their outputs
         let diff = diff_dataframes(&iterative_res, &recursive_res).unwrap();
