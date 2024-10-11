@@ -1,8 +1,9 @@
 use clap::{Arg, Command};
 use repotracer::commands::clone::clone_command;
+use repotracer::commands::config::{
+    config_add_repo_command, config_location_command, config_show_command,
+};
 use repotracer::commands::run::run_command;
-use repotracer::commands::show_config::show_config_command;
-
 
 fn main() {
     let matches = Command::new("Repotracer")
@@ -54,6 +55,39 @@ fn main() {
             Command::new("show-config")
                 .about("Show the location of the config file")
         )
+        .subcommand(
+            Command::new("config")
+                .about("Manage configuration")
+                .arg_required_else_help(true)
+                .subcommand(
+                    Command::new("location")
+                        .about("Print the location of the config file")
+                )
+                .subcommand(
+                    Command::new("show")
+                        .about("Print the contents of the config file")
+                )
+                .subcommand(
+                    Command::new("add-repo")
+                        .about("Add a repo to the config file")
+                        .arg(
+                            Arg::new("name")
+                                .short('n')
+                                .long("name")
+                                .value_name("REPO_NAME")
+                                .required(true)
+                                .help("The name of the repo to add")
+                        )
+                        .arg(
+                            Arg::new("path")
+                                .short('p')
+                                .long("path")
+                                .value_name("REPO_PATH")
+                                .required(true)
+                                .help("The filesystem path of the repo")
+                        )
+                )
+        )
         .get_matches();
     match matches.subcommand() {
         Some(("run", sub_m)) => {
@@ -69,9 +103,16 @@ fn main() {
                 .collect();
             clone_command(clone_urls);
         }
-        Some(("show-config", _)) => {
-            show_config_command();
-        }
+        Some(("config", sub_m)) => match sub_m.subcommand() {
+            Some(("location", _)) => config_location_command(),
+            Some(("show", _)) => config_show_command().unwrap(),
+            Some(("add-repo", add_repo_m)) => {
+                let name = add_repo_m.get_one::<String>("name").unwrap();
+                let path = add_repo_m.get_one::<String>("path").unwrap();
+                config_add_repo_command(name, path);
+            }
+            _ => unreachable!("Unknown config subcommand"),
+        },
         _ => unreachable!("Unknown command"),
     }
 }

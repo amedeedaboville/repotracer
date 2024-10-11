@@ -1,5 +1,6 @@
 pub mod commands {
     pub mod clone;
+    pub mod config;
     pub mod run;
     pub mod show_config;
 }
