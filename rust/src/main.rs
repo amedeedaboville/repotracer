@@ -1,12 +1,15 @@
 use clap::{Arg, Command};
 use repotracer::commands::clone::clone_command;
 use repotracer::commands::run::run_command;
+use repotracer::commands::show_config::show_config_command;
+
 
 fn main() {
     let matches = Command::new("Repotracer")
         .version("0.1")
         .author("Amédée d'Aboville")
         .about("collects stats about repos over time")
+        .arg_required_else_help(true)
         .subcommand(
             Command::new("run")
                 .about("Executes the given stat on the given repo")
@@ -37,7 +40,7 @@ fn main() {
         )
         .subcommand(
             Command::new("clone")
-                .about("Clones a list of repositories")
+                .about("Clone one (or more) git repo(s) and add them to the config")
                 .arg(
                     Arg::new("clone_urls")
                         .short('c')
@@ -46,6 +49,10 @@ fn main() {
                         .num_args(1..)
                         .help("Sets the git repository URLs to clone"),
                 ),
+        )
+        .subcommand(
+            Command::new("show-config")
+                .about("Show the location of the config file")
         )
         .get_matches();
     match matches.subcommand() {
@@ -61,6 +68,9 @@ fn main() {
                 .cloned()
                 .collect();
             clone_command(clone_urls);
+        }
+        Some(("show-config", _)) => {
+            show_config_command();
         }
         _ => unreachable!("Unknown command"),
     }

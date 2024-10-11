@@ -1,6 +1,7 @@
 pub mod commands {
     pub mod clone;
     pub mod run;
+    pub mod show_config;
 }
 pub mod stats {
     pub mod common;
