@@ -2,7 +2,6 @@ pub mod commands {
     pub mod clone;
     pub mod config;
     pub mod run;
-    pub mod show_config;
 }
 pub mod stats {
     pub mod common;
@@ -21,6 +20,7 @@ pub mod collectors {
 pub mod config;
 pub mod plotter;
 pub mod polars_utils;
+pub mod repo;
 pub mod stat;
 pub mod storage;
 pub mod util;

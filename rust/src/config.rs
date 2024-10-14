@@ -7,7 +7,7 @@ use std::fs::File;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct UserStatConfig {
     pub name: Option<String>,
     pub description: String,
@@ -44,7 +44,7 @@ impl UserStatConfig {
             })
     }
 }
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct UserRepoConfig {
     pub name: String,
     pub source: Option<String>,
@@ -53,13 +53,13 @@ pub struct UserRepoConfig {
     pub stats: Option<HashMap<String, UserStatConfig>>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct GlobalConfig {
     pub repo_storage_location: Option<String>,
     pub stat_storage: Option<StatStorageConfig>,
     pub repos: HashMap<String, UserRepoConfig>,
 }
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct StatStorageConfig {
     #[serde(rename = "type")]
     pub type_: String,
@@ -86,16 +86,13 @@ pub fn global_config() -> &'static GlobalConfig {
         GlobalConfig::read_from_file(&path).unwrap()
     })
 }
+
 static ROOT_DIR: OnceLock<PathBuf> = OnceLock::new();
 fn get_root_dir() -> &'static PathBuf {
     ROOT_DIR.get_or_init(|| env::current_dir().unwrap().join(".repotracer"))
 }
-pub fn get_repo_config(repo: &str) -> &UserRepoConfig {
-    let global = global_config();
-    global
-        .repos
-        .get(repo)
-        .expect("We don't have a config for this repo")
+pub fn get_repo_config(repo: &str) -> Option<&UserRepoConfig> {
+    global_config().repos.get(repo)
 }
 pub fn get_stats_dir() -> PathBuf {
     global_config()
@@ -136,10 +133,18 @@ impl GlobalConfig {
         file.write_all(contents.as_bytes())?;
         Ok(())
     }
-    // pub fn get_repo_config(repo_name: &str) -> Option<RepoConfig> {
-    //     let config = Self::read_from_file(get_config_path()).unwrap();
-    //     config.repos.get(repo).cloned()
-    // }
+}
+
+fn update_config(f: impl FnOnce(&mut GlobalConfig)) {
+    let mut config = global_config().clone();
+    f(&mut config);
+    config.write_to_file(get_config_path()).unwrap();
+}
+
+pub fn add_repo(repo: UserRepoConfig) {
+    update_config(|config| {
+        config.repos.insert(repo.name.clone(), repo);
+    });
 }
 
 pub fn get_config_path() -> PathBuf {

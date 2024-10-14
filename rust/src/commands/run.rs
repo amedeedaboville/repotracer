@@ -13,7 +13,7 @@ pub fn run_command(repo: Option<&String>, stat: Option<&String>) {
     }
 }
 fn run_stat(repo_name: &str, stat_name: &str) {
-    let repo_config = config::get_repo_config(repo_name);
+    let repo_config = config::get_repo_config(repo_name).expect("Expected repo to exist in config");
     let repo_path = repo_config
         .storage_path
         .as_ref()

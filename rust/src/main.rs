@@ -52,10 +52,6 @@ fn main() {
                 ),
         )
         .subcommand(
-            Command::new("show-config")
-                .about("Show the location of the config file")
-        )
-        .subcommand(
             Command::new("config")
                 .about("Manage configuration")
                 .arg_required_else_help(true)
