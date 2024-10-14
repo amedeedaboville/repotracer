@@ -9,11 +9,11 @@ use std::path::{Path, PathBuf};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct UserStatConfig {
-    pub name: Option<String>,
+    pub name: String,
     pub description: String,
     #[serde(rename = "type")]
     pub type_: String,
-    pub params: Value, // Using serde_json::Value to represent any JSON value
+    pub params: Option<Value>, // Using serde_json::Value to represent any JSON value
     pub path_in_repo: Option<String>,
     pub start: Option<String>,
     pub end: Option<String>,
@@ -22,15 +22,17 @@ pub struct UserStatConfig {
 
 impl UserStatConfig {
     pub fn get_param_value(&self, name: &str) -> Option<&Value> {
-        self.params.as_object().and_then(|p| p.get(name))
+        self.params.as_ref().and_then(|p| p.get(name))
     }
     pub fn get_param<T>(&self, name: &str) -> Option<T>
     where
         T: serde::de::DeserializeOwned,
     {
-        self.params.as_object().and_then(|p| p.get(name)).map(|v| {
-            serde_json::from_value(v.clone())
-                .expect(format!("Failed to deserialize {name}").as_str())
+        self.params.as_ref().and_then(|t| {
+            t.as_object().and_then(|p| p.get(name)).map(|v| {
+                serde_json::from_value(v.clone())
+                    .expect(format!("Failed to deserialize {name}").as_str())
+            })
         })
     }
 
@@ -146,7 +148,21 @@ pub fn add_repo(repo: UserRepoConfig) {
         config.repos.insert(repo.name.clone(), repo);
     });
 }
+pub fn add_stat(repo_name: &str, stat_name: &str, stat: UserStatConfig) {
+    update_config(|config| {
+        config.repos.get_mut(repo_name).and_then(|repo| {
+            repo.stats
+                .as_mut()
+                .or(Some(&mut HashMap::new()))
+                .map(|stats| stats.insert(stat_name.to_string(), stat));
+            Some(repo)
+        });
+    });
+}
 
+pub fn list_repos() -> Vec<String> {
+    global_config().repos.keys().cloned().collect()
+}
 pub fn get_config_path() -> PathBuf {
     get_root_dir().join("config.json")
 }

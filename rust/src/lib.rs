@@ -1,4 +1,5 @@
 pub mod commands {
+    pub mod add_stat;
     pub mod clone;
     pub mod config;
     pub mod run;

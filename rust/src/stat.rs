@@ -20,6 +20,8 @@ pub enum FileDataEnum {
     NumMatches(NumMatches),
     String(String),
 }
+pub static ALL_MEASUREMENTS: [&str; 4] = ["tokei", "regex_count", "file_count", "script"];
+
 pub enum Measurement {
     Tokei(Arc<dyn FileMeasurement<Data = TokeiStat> + Send + 'static>),
     Grep(Arc<dyn FileMeasurement<Data = NumMatches> + Send + 'static>),

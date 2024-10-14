@@ -1,4 +1,5 @@
 use clap::{Arg, Command};
+use repotracer::commands::add_stat::add_stat_command;
 use repotracer::commands::clone::clone_command;
 use repotracer::commands::config::{
     config_add_repo_command, config_location_command, config_show_command,
@@ -84,6 +85,24 @@ fn main() {
                         )
                 )
         )
+        .subcommand(
+            Command::new("add-stat")
+                .about("Add a new stat to a repository")
+                .arg(
+                    Arg::new("repo")
+                        .short('r')
+                        .long("repo")
+                        .value_name("REPO_NAME")
+                        .help("The name of the repository to add the stat to"),
+                )
+                .arg(
+                    Arg::new("stat")
+                        .short('s')
+                        .long("stat")
+                        .value_name("STAT_NAME")
+                        .help("The name of the stat to add"),
+                ),
+        )
         .get_matches();
     match matches.subcommand() {
         Some(("run", sub_m)) => {
@@ -98,6 +117,11 @@ fn main() {
                 .cloned()
                 .collect();
             clone_command(clone_urls);
+        }
+        Some(("add-stat", add_stat_m)) => {
+            let repo_name = add_stat_m.get_one::<String>("repo");
+            let stat_name = add_stat_m.get_one::<String>("stat");
+            add_stat_command(repo_name, stat_name);
         }
         Some(("config", sub_m)) => match sub_m.subcommand() {
             Some(("location", _)) => config_location_command(),

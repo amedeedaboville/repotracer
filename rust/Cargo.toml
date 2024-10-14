@@ -28,3 +28,4 @@ dashmap = "5.5.3"
 plotters = "0.3.5"
 polars = { version="0.37.0", features=["polars-io", "json", "csv", "rows", "temporal", "timezones", "dtype-full", "zip_with", "lazy"]}
 crossbeam = {version = "0.8.4", features=["crossbeam-channel"]}
+dialoguer = "0.11.0"
