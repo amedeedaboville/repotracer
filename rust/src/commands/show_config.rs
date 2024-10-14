@@ -1,4 +1,3 @@
-use clap::Args;
 use crate::config::get_config_path;
 
 pub fn show_config_command() {

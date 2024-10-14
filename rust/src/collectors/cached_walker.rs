@@ -323,7 +323,7 @@ where
                         let MyEntry {
                             oid_idx,
                             filename_idx,
-                            kind,
+                            kind: _,
                         } = entry_set.get_index(*child_idx as usize).unwrap();
                         let mut child_path = parent_path.clone();
                         child_path.push(*filename_idx);

@@ -3,7 +3,7 @@ use polars::{frame::row::Row, prelude::Schema};
 use rayon::iter::Either;
 use std::{collections::BTreeMap, fmt::Display};
 
-use crate::collectors::repo_cache_data::{AliasedPath, FilenameIdx, FilepathIdx};
+use crate::collectors::repo_cache_data::{FilenameIdx, FilepathIdx};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum MeasurementKind {

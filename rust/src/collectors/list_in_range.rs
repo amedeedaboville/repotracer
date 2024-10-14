@@ -45,7 +45,7 @@ pub fn list_commits_with_granularity(
         let _tree = commit.tree().unwrap();
         let commit_time = commit.time()?;
         let datetime = DateTime::<Utc>::from_naive_utc_and_offset(
-            NaiveDateTime::from_timestamp(commit_time.seconds, 0),
+            NaiveDateTime::from_timestamp_opt(commit_time.seconds, 0).unwrap(),
             Utc,
         );
 

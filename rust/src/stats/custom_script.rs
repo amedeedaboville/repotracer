@@ -1,5 +1,3 @@
-use std::process::Command;
-
 use gix::Repository;
 
 use super::common::{FileMeasurement, MeasurementKind};
@@ -21,15 +19,15 @@ impl FileMeasurement for CustomScriptCollector {
     }
     fn measure_file(
         &self,
-        repo: &Repository,
-        path: &str,
-        contents: &str,
+        _repo: &Repository,
+        _path: &str,
+        _contents: &str,
     ) -> Result<Self::Data, Box<dyn std::error::Error>> {
         unimplemented!()
     }
     fn summarize_tree_data(
         &self,
-        child_data: super::common::TreeDataCollection<Self::Data>,
+        _child_data: super::common::TreeDataCollection<Self::Data>,
     ) -> Result<(polars::prelude::Schema, polars::frame::row::Row), Box<dyn std::error::Error>>
     {
         //Todo we have to figure out how to parse the output of the script.

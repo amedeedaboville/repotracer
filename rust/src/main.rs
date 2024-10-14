@@ -109,7 +109,7 @@ fn main() {
             Some(("add-repo", add_repo_m)) => {
                 let name = add_repo_m.get_one::<String>("name").unwrap();
                 let path = add_repo_m.get_one::<String>("path").unwrap();
-                config_add_repo_command(name, path);
+                let _ = config_add_repo_command(name, path);
             }
             _ => unreachable!("Unknown config subcommand"),
         },

@@ -136,19 +136,23 @@ impl FileMeasurement for TokeiCollector {
             }
         }
 
-        //group the tree_datas by language_type, and then + them all together
-        //ignoring the path
-        let mut languages: Vec<_> = stats_by_language.keys().collect();
+        // Sort languages by LOC in descending order
+        let mut languages: Vec<_> = stats_by_language.into_iter().collect();
+        languages.sort_by(|a, b| b.1.code.cmp(&a.1.code));
 
-        languages.sort();
+        // Apply top_n filter if set
+        if let Some(top_n) = self.top_n {
+            languages.truncate(top_n);
+        }
+
         let schema_languages = languages
             .iter()
-            .map(|l| Field::new(&l.to_string(), DataType::UInt64));
+            .map(|(l, _)| Field::new(l, DataType::UInt64));
         let schema = Schema::from_iter(schema_languages);
 
         let totals: Vec<AnyValue> = languages
             .iter()
-            .map(|&l| (stats_by_language.get(l).unwrap().code as u64).into())
+            .map(|(_, stat)| (stat.code as u64).into())
             .collect();
 
         let row = Row::new(totals); //todo pull out the the language totals

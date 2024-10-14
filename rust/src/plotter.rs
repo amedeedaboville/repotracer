@@ -111,9 +111,9 @@ pub fn plot(
         .y_label_formatter(&|y| format!("{:.0}", y))
         .x_label_formatter(&|x| {
             let seconds = *x / 1000;
-            let naive = chrono::NaiveDateTime::from_timestamp(seconds, 0);
+            let naive = chrono::NaiveDateTime::from_timestamp_opt(seconds, 0).unwrap();
             let datetime: chrono::DateTime<chrono::Utc> =
-                chrono::DateTime::from_utc(naive, chrono::Utc);
+                chrono::DateTime::from_naive_utc_and_offset(naive, chrono::Utc);
             format!("{}", datetime.format("%Y-%m-%d"))
         })
         .draw()?;

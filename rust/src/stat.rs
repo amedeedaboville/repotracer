@@ -1,4 +1,4 @@
-use std::{io::Error, sync::Arc};
+use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use polars::frame::DataFrame;
