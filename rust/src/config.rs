@@ -49,10 +49,22 @@ impl UserStatConfig {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct UserRepoConfig {
     pub name: String,
-    pub source: Option<String>,
+    pub source: String,
     pub storage_path: Option<String>,
     pub default_branch: Option<String>,
     pub stats: Option<HashMap<String, UserStatConfig>>,
+}
+impl UserRepoConfig {
+    pub fn get_storage_path(&self) -> String {
+        self.storage_path.clone().unwrap_or_else(|| {
+            get_root_dir()
+                .join("repos")
+                .join(self.source.clone())
+                .join(self.name.clone())
+                .to_string_lossy()
+                .to_string()
+        })
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -85,7 +97,8 @@ pub fn global_config() -> &'static GlobalConfig {
             default_config.write_to_file(&path).unwrap();
             return default_config;
         }
-        GlobalConfig::read_from_file(&path).unwrap()
+        GlobalConfig::read_from_file(&path)
+            .expect(format!("Failed to read config file at {}", path.display()).as_str())
     })
 }
 
@@ -163,6 +176,21 @@ pub fn add_stat(repo_name: &str, stat_name: &str, stat: UserStatConfig) {
 pub fn list_repos() -> Vec<String> {
     global_config().repos.keys().cloned().collect()
 }
+
+pub fn list_stats(repo: &str) -> Option<Vec<String>> {
+    global_config()
+        .repos
+        .get(repo)
+        .and_then(|r| r.stats.as_ref().map(|s| s.keys().cloned().collect()))
+}
+
+pub fn get_stat_config(repo: &str, stat: &str) -> Option<&'static UserStatConfig> {
+    global_config()
+        .repos
+        .get(repo)
+        .and_then(|r| r.stats.as_ref().and_then(|s| s.get(stat)))
+}
+
 pub fn get_config_path() -> PathBuf {
     get_root_dir().join("config.json")
 }

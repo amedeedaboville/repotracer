@@ -79,7 +79,7 @@ pub fn clone_repo(clone_url: &str) -> Result<(), String> {
         let repo_config = config::UserRepoConfig {
             name: repo_name,
             storage_path: Some(repo_path),
-            source: Some(domain),
+            source: domain,
             default_branch: get_default_branch().ok(),
             stats: None,
         };

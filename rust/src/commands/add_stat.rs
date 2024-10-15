@@ -1,13 +1,13 @@
 use crate::config::{self, UserStatConfig};
 use crate::stat::ALL_MEASUREMENTS;
-use dialoguer::console::Style;
+use dialoguer::console::{style, Style};
 use dialoguer::theme::ColorfulTheme;
 use dialoguer::{Input, Select};
 
 pub fn add_stat_command(repo_name: Option<&String>, stat_name: Option<&String>) {
-    let mut config = config::global_config();
     let mut my_theme = ColorfulTheme::default();
     my_theme.active_item_style = Style::new().for_stderr().black().on_white();
+    my_theme.active_item_prefix = style("»".to_string()).for_stderr(); //.bold().green();
 
     let repo_name = match repo_name {
         Some(name) => name.to_string(),
@@ -93,11 +93,12 @@ pub fn add_stat_command(repo_name: Option<&String>, stat_name: Option<&String>) 
     }
 }
 
-fn prompt_build_stat(stat_type: &str) -> std::collections::HashMap<String, String> {
+/*
+fn _prompt_build_stat(stat_type: &str) -> std::collections::HashMap<String, String> {
     let mut params = std::collections::HashMap::new();
-
-    // Implement the logic for prompting and building stat parameters here
-    // You'll need to adapt the Python implementation to Rust
+    //Ask the user questions for each parameter in the stat
 
     params
 }
+
+*/

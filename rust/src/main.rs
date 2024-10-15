@@ -5,6 +5,7 @@ use repotracer::commands::config::{
     config_add_repo_command, config_location_command, config_show_command,
 };
 use repotracer::commands::run::run_command;
+use repotracer::commands::run_stat::run_stat_command;
 
 fn main() {
     let matches = Command::new("Repotracer")
@@ -103,6 +104,30 @@ fn main() {
                         .help("The name of the stat to add"),
                 ),
         )
+        .subcommand(
+            Command::new("run-stat")
+                .about("Run stats on repositories")
+                .arg(
+                    Arg::new("repo")
+                        .short('r')
+                        .long("repo")
+                        .value_name("REPO_NAME")
+                        .help("The name of the repository to run stats on"),
+                )
+                .arg(
+                    Arg::new("stat")
+                        .short('s')
+                        .long("stat")
+                        .value_name("STAT_NAME")
+                        .help("The name of the stat to run"),
+                )
+                .arg(
+                    Arg::new("since")
+                        .long("since")
+                        .value_name("DATE")
+                        .help("Run stats since this date"),
+                ),
+        )
         .get_matches();
     match matches.subcommand() {
         Some(("run", sub_m)) => {
@@ -133,6 +158,13 @@ fn main() {
             }
             _ => unreachable!("Unknown config subcommand"),
         },
+        Some(("run-stat", sub_m)) => {
+            run_stat_command(
+                sub_m.get_one::<String>("repo"),
+                sub_m.get_one::<String>("stat"),
+                sub_m.get_one::<String>("since"),
+            );
+        }
         _ => unreachable!("Unknown command"),
     }
 }

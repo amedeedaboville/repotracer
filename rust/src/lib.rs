@@ -3,6 +3,7 @@ pub mod commands {
     pub mod clone;
     pub mod config;
     pub mod run;
+    pub mod run_stat;
 }
 pub mod stats {
     pub mod common;
