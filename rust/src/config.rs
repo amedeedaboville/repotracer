@@ -163,13 +163,14 @@ pub fn add_repo(repo: UserRepoConfig) {
 }
 pub fn add_stat(repo_name: &str, stat_name: &str, stat: UserStatConfig) {
     update_config(|config| {
-        config.repos.get_mut(repo_name).and_then(|repo| {
-            repo.stats
-                .as_mut()
-                .or(Some(&mut HashMap::new()))
-                .map(|stats| stats.insert(stat_name.to_string(), stat));
-            Some(repo)
-        });
+        let repo = config.repos.get_mut(repo_name).expect("Repo not found");
+        if repo.stats.is_none() {
+            repo.stats = Some(HashMap::new());
+        }
+        repo.stats
+            .as_mut()
+            .unwrap()
+            .insert(stat_name.to_string(), stat);
     });
 }
 
