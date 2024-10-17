@@ -1,6 +1,9 @@
+use crate::collectors::cached_walker::CommitData;
 use crate::config::get_stats_dir;
-use polars::prelude::*;
+use csv::{Reader, Writer};
 use std::error::Error;
+use std::fs::File;
+use std::io::BufReader;
 use std::path::PathBuf;
 
 fn stat_storage_path(repo_name: &str, stat_name: &str) -> PathBuf {
@@ -15,20 +18,35 @@ fn stat_storage_path(repo_name: &str, stat_name: &str) -> PathBuf {
 pub fn write_commit_stats_to_csv(
     repo_name: &str,
     stat_name: &str,
-    df: &mut DataFrame,
+    df: &Vec<CommitData>,
 ) -> Result<(), Box<dyn Error>> {
     let path = stat_storage_path(repo_name, stat_name);
     println!("Writing {repo_name}:{stat_name} to {}", path.display());
-    let mut file = std::fs::File::create(&path).unwrap();
-    CsvWriter::new(&mut file)
-        .with_datetime_format(Some("%Y-%m-%d %H:%M:%S".into()))
-        .finish(df)
-        .unwrap();
-    // wtr.flush()?;
+
+    let file = File::create(&path)?;
+    let mut writer = Writer::from_writer(file);
+
+    for commit in df {
+        writer.serialize(commit)?;
+    }
+
+    writer.flush()?;
     Ok(())
 }
 
-pub fn load_df(repo_name: &str, stat_name: &str) -> Result<DataFrame, Box<dyn Error>> {
-    let file = std::fs::File::open(stat_storage_path(repo_name, stat_name)).unwrap();
-    Ok(CsvReader::new(file).finish()?)
+pub fn load_df(repo_name: &str, stat_name: &str) -> Result<Vec<CommitData>, Box<dyn Error>> {
+    let path = stat_storage_path(repo_name, stat_name);
+    println!("Loading {repo_name}:{stat_name} from {}", path.display());
+
+    let file = File::open(&path)?;
+    let reader = BufReader::new(file);
+    let mut csv_reader = Reader::from_reader(reader);
+
+    let mut commits = Vec::new();
+    for result in csv_reader.deserialize() {
+        let commit: CommitData = result?;
+        commits.push(commit);
+    }
+
+    Ok(commits)
 }

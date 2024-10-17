@@ -1,5 +1,5 @@
+use ahash::HashMap;
 use gix::{ObjectId, Repository};
-use polars::{frame::row::Row, prelude::Schema};
 use rayon::iter::Either;
 use std::{collections::BTreeMap, fmt::Display};
 
@@ -69,6 +69,7 @@ impl<M> MeasurementData<M> {
         }
     }
 }
+pub type SummaryData = HashMap<String, String>;
 pub trait FileData: Clone + Send + Sync + 'static {}
 impl FileData for String {}
 pub trait FileMeasurement: Sync {
@@ -100,7 +101,7 @@ pub trait FileMeasurement: Sync {
     fn summarize_tree_data(
         &self,
         child_data: TreeDataCollection<Self::Data>,
-    ) -> Result<(Schema, Row), Box<dyn std::error::Error>>;
+    ) -> Result<SummaryData, Box<dyn std::error::Error>>;
 }
 pub trait PossiblyEmpty {
     fn is_empty(&self) -> bool;

@@ -4,6 +4,7 @@ pub mod commands {
     pub mod config;
     pub mod run;
     pub mod run_stat;
+    pub mod serve;
 }
 pub mod stats {
     pub mod common;
@@ -21,7 +22,6 @@ pub mod collectors {
 
 pub mod config;
 pub mod plotter;
-pub mod polars_utils;
 pub mod repo;
 pub mod stat;
 pub mod storage;

@@ -1,14 +1,13 @@
 use crate::stats::common::{FileMeasurement, NumMatches};
+use ahash::{HashMap, HashMapExt};
 use anyhow::Error;
 use gix::Repository;
 use grep::matcher::Matcher;
 use grep::regex::RegexMatcher;
 use grep::searcher::sinks::UTF8;
 use grep::searcher::Searcher;
-use polars::frame::row::Row;
-use polars::prelude::Schema;
 
-use super::common::{MeasurementKind, TreeDataCollection};
+use super::common::{MeasurementKind, SummaryData, TreeDataCollection};
 
 pub struct RipgrepCollector {
     pattern: String,
@@ -42,16 +41,15 @@ impl FileMeasurement for RipgrepCollector {
     fn summarize_tree_data(
         &self,
         child_data: TreeDataCollection<NumMatches>,
-    ) -> Result<(Schema, Row), Box<dyn std::error::Error>> {
-        let total = child_data
+    ) -> Result<SummaryData, Box<dyn std::error::Error>> {
+        let total: u64 = child_data
             .into_values()
             .map(|matches| matches.0 as u64)
             .sum::<u64>()
             .into();
-        let row = Row::new(vec![total]);
-        let field = polars::prelude::Field::new("total", polars::prelude::DataType::UInt64);
-        let schema = Schema::from_iter(vec![field]);
-        Ok((schema, row))
+        let mut data = HashMap::new();
+        data.insert("total".to_string(), total.to_string());
+        Ok(data)
     }
 }
 

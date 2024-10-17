@@ -1,10 +1,12 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use polars::frame::DataFrame;
 
 use crate::{
-    collectors::{cached_walker::CachedWalker, list_in_range::Granularity},
+    collectors::{
+        cached_walker::{CachedWalker, CommitData},
+        list_in_range::Granularity,
+    },
     config::UserStatConfig,
     stats::{
         common::{FileMeasurement, NumMatches},
@@ -35,7 +37,13 @@ impl Measurement {
         granularity: Granularity,
         range: (Option<DateTime<Utc>>, Option<DateTime<Utc>>),
         path_in_repo: Option<String>,
-    ) -> Result<DataFrame, Box<dyn std::error::Error>> {
+    ) -> Result<Vec<CommitData>, Box<dyn std::error::Error>> {
+        //The walk_repo_and_collect_stats call is duplicated bc otherwise
+        //if we had let walker = match self { ... } we'd get "match arms have incompatible types"
+        //The walkers are different types, eg Walker<Tokei> vs Walker<NumMatches>.
+        //I don't really know which way I want to have the types go yet, so this is fine for now
+        //It's already kind of a mess, doing Walker<Box<dyn ...>> is even more of a mess, I just
+        //want to get coding new stats for now.
         match self {
             Measurement::Tokei(tokei) => {
                 let mut walker = CachedWalker::<TokeiStat>::new(repo_path, tokei.clone());

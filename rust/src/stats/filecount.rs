@@ -1,10 +1,5 @@
 use crate::stats::common::{FileMeasurement, NumMatches};
-use polars::{
-    datatypes::{AnyValue, DataType, Field},
-    frame::row::Row,
-    prelude::Schema,
-};
-
+use ahash::{HashMap, HashMapExt};
 use gix::Repository;
 use globset::{Glob, GlobMatcher};
 
@@ -46,12 +41,10 @@ impl FileMeasurement for PathBlobCollector {
     fn summarize_tree_data(
         &self,
         data: TreeDataCollection<NumMatches>,
-    ) -> Result<(Schema, Row), Box<dyn std::error::Error>> {
+    ) -> Result<HashMap<String, String>, Box<dyn std::error::Error>> {
         let total: u64 = data.into_values().map(|matches| matches.0 as u64).sum();
-        let val: AnyValue = total.into();
-        let row = Row::new(vec![val]);
-        let field = Field::new("total", DataType::UInt64);
-        let schema = Schema::from_iter(vec![field]);
-        Ok((schema, row))
+        let mut data = HashMap::new();
+        data.insert("total".to_string(), total.to_string());
+        Ok(data)
     }
 }

@@ -7,14 +7,9 @@ use crate::stats::common::FileMeasurement;
 use ahash::{HashMap, HashMapExt};
 use anyhow::Error;
 use gix::Repository;
-use polars::{
-    datatypes::{AnyValue, DataType, Field},
-    frame::row::Row,
-    prelude::Schema,
-};
 use tokei::{Config, LanguageType};
 
-use super::common::{FileData, MeasurementKind, PossiblyEmpty, TreeDataCollection};
+use super::common::{FileData, MeasurementKind, PossiblyEmpty, SummaryData, TreeDataCollection};
 
 /// Imitates a tokei "Language" but simpler, bc I don't understand it.
 /// Also derives Clone
@@ -118,7 +113,7 @@ impl FileMeasurement for TokeiCollector {
     fn summarize_tree_data(
         &self,
         tree_data: TreeDataCollection<TokeiStat>,
-    ) -> Result<(Schema, Row), Box<dyn std::error::Error>> {
+    ) -> Result<SummaryData, Box<dyn std::error::Error>> {
         let mut stats_by_language: HashMap<String, TokeiStat> = HashMap::new();
         for (_filename, stat) in tree_data.iter() {
             if stat.is_empty() {
@@ -145,18 +140,11 @@ impl FileMeasurement for TokeiCollector {
             languages.truncate(top_n);
         }
 
-        let schema_languages = languages
-            .iter()
-            .map(|(l, _)| Field::new(l, DataType::UInt64));
-        let schema = Schema::from_iter(schema_languages);
-
-        let totals: Vec<AnyValue> = languages
-            .iter()
-            .map(|(_, stat)| (stat.code as u64).into())
-            .collect();
-
-        let row = Row::new(totals); //todo pull out the the language totals
-        Ok((schema, row))
+        let mut data = HashMap::new();
+        languages.iter().for_each(|(l, s)| {
+            data.insert(l.to_string(), s.code.to_string());
+        });
+        Ok(data)
     }
 }
 

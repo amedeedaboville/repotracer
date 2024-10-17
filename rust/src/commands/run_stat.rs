@@ -8,6 +8,7 @@ use crate::collectors::list_in_range::Granularity;
 use crate::plotter::plot;
 use crate::stat::build_measurement;
 use crate::storage::write_commit_stats_to_csv;
+use crate::util::parse_loose_datetime;
 
 pub fn run_stat_command(
     repo_name: Option<&String>,
@@ -100,14 +101,7 @@ fn run_single(config: &GlobalConfig, repo_name: &str, stat_name: &str, since: Op
         .run(
             repo_config.get_storage_path(),
             Granularity::Daily,
-            (
-                since.map(|s| {
-                    chrono::DateTime::parse_from_rfc3339(s)
-                        .unwrap()
-                        .with_timezone(&Utc)
-                }),
-                None,
-            ),
+            (since.and_then(|s| parse_loose_datetime(s).ok()), None),
             stat_config.path_in_repo.clone(),
         )
         .unwrap();

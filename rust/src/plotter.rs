@@ -1,10 +1,13 @@
 use std::fs;
 
+use crate::collectors::cached_walker::CommitData;
 use crate::config::get_stats_dir;
+use ahash::HashMap;
+use chrono::{TimeZone, Utc};
+
 use plotters::prelude::*;
 use plotters::style::text_anchor::{HPos, Pos, VPos};
 use plotters::style::{Color, Palette};
-use polars::prelude::*;
 
 struct SeabornDeepPalette;
 impl Palette for SeabornDeepPalette {
@@ -52,7 +55,7 @@ const IMAGE_HEIGHT: u32 = 1000;
 pub fn plot(
     repo_name: &str,
     stat_name: &str,
-    df: &mut DataFrame,
+    df: &Vec<CommitData>,
     stat_description: &str,
     run_at: &chrono::DateTime<chrono::Utc>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -61,30 +64,28 @@ pub fn plot(
         fs::create_dir_all(&repo_stats_dir)?;
     }
     let image_path = repo_stats_dir.join(format!("{stat_name}.svg"));
-    let _commit_hashes = df.drop_in_place("commit_hash").unwrap();
-    let commit_times = df.drop_in_place("commit_time").unwrap();
-    let time_series = commit_times.datetime().unwrap();
-    let start_time = time_series.min().unwrap();
-    let end_time = time_series.max().unwrap();
+    let commit_times: Vec<_> = df
+        .iter()
+        .map(|c| Utc.timestamp_opt(c.time.seconds, 0).unwrap())
+        .collect();
+    let start_time = commit_times.iter().min().unwrap().to_owned();
+    let end_time = commit_times.iter().max().unwrap().to_owned();
 
-    let min_value: f64 = df
-        .clone()
-        .lazy()
-        .min()?
-        .collect()?
-        .min_horizontal()?
+    // Convert String values to f64 and find min/max
+    let parsed_data: Vec<HashMap<String, f64>> = df.iter().map(|c| parse_stats(&c.data)).collect();
+
+    let min_value: f64 = parsed_data
+        .iter()
+        .flat_map(|map| map.values())
+        .min_by(|a, b| a.partial_cmp(b).unwrap())
         .unwrap()
-        .get(0)?
-        .try_extract()?;
-    let max_value: f64 = df
-        .clone()
-        .lazy()
-        .max()?
-        .collect()?
-        .max_horizontal()?
+        .to_owned();
+    let max_value: f64 = parsed_data
+        .iter()
+        .flat_map(|map| map.values())
+        .max_by(|a, b| a.partial_cmp(b).unwrap())
         .unwrap()
-        .get(0)?
-        .try_extract()?;
+        .to_owned();
 
     let title = stat_description;
     let subtitle = format!(
@@ -109,13 +110,14 @@ pub fn plot(
         .x_desc("Date")
         .axis_desc_style(TextStyle::from(("sans-serif", 25).into_font()).color(&text_gray))
         .y_label_formatter(&|y| format!("{:.0}", y))
-        .x_label_formatter(&|x| {
-            let seconds = *x / 1000;
-            let naive = chrono::NaiveDateTime::from_timestamp_opt(seconds, 0).unwrap();
-            let datetime: chrono::DateTime<chrono::Utc> =
-                chrono::DateTime::from_naive_utc_and_offset(naive, chrono::Utc);
-            format!("{}", datetime.format("%Y-%m-%d"))
-        })
+        .x_label_formatter(&|x| x.format("%Y-%m-%d").to_string())
+        // .x_label_formatter(&|x| {
+        //     let seconds = *x / 1000;
+        //     let naive = chrono::NaiveDateTime::from_timestamp_opt(seconds, 0).unwrap();
+        //     let datetime: chrono::DateTime<chrono::Utc> =
+        //         chrono::DateTime::from_naive_utc_and_offset(naive, chrono::Utc);
+        //     format!("{}", datetime.format("%Y-%m-%d"))
+        // })
         .draw()?;
 
     let description_style = TextStyle::from(("sans-serif", 25).into_font())
@@ -126,40 +128,30 @@ pub fn plot(
         &description_style,
         ((IMAGE_WIDTH - 100) as i32, 50),
     )?;
-    let x_data = time_series.into_no_null_iter().collect::<Vec<_>>();
     let palette_size = SeabornDeepPalette::COLORS.len(); // Get the size of the palette
 
-    for (idx, series) in df.get_columns().iter().enumerate() {
-        if !series.dtype().is_numeric() {
-            println!(
-                "Skipping plotting series {} as its type {} is not numeric.",
-                series.name(),
-                series.dtype()
-            );
-        }
-        let values: Vec<f64> = series
-            .cast(&DataType::Float64)
-            .unwrap()
-            .f64()
-            .unwrap()
-            .into_no_null_iter()
+    for (idx, stat_key) in df[0].data.keys().enumerate() {
+        let values: Vec<f64> = parsed_data
+            .iter()
+            .map(|map| *map.get(stat_key).unwrap_or(&0.0))
             .collect();
 
-        // let data = x_data.iter().zip(values.iter()).map(|(&x, &y)| (x, y));
-        let mut data: Vec<_> = x_data
-            .iter()
-            .zip(values.iter())
-            .map(|(&x, &y)| (x, y))
-            .collect();
+        let mut data: Vec<_> =
+            commit_times
+                .iter()
+                .zip(values.iter())
+                .map(|(&x, &y)| (x, y))
+                .collect();
         data.dedup_by(|a, b| a == b);
 
         let color = SeabornDeepPalette::pick(idx % palette_size).mix(0.9);
 
         chart
             .draw_series(LineSeries::new(data.into_iter(), color.stroke_width(4)))?
-            .label(series.name())
+            .label(stat_key)
             .legend(move |(x, y)| Rectangle::new([(x, y - 5), (x + 10, y + 5)], color.filled()));
     }
+
     chart
         .configure_series_labels()
         .label_font(("sans-serif", 20)) // Adjust the font size here
@@ -168,4 +160,16 @@ pub fn plot(
         .draw()?;
     root.present()?;
     Ok(())
+}
+
+// Helper function to parse String values to f64
+fn parse_stats(data: &HashMap<String, String>) -> HashMap<String, f64> {
+    data.iter()
+        .filter_map(|(key, value)| {
+            value
+                .parse::<f64>()
+                .ok()
+                .map(|parsed_value| (key.clone(), parsed_value))
+        })
+        .collect()
 }

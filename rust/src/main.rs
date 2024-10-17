@@ -6,6 +6,7 @@ use repotracer::commands::config::{
 };
 use repotracer::commands::run::run_command;
 use repotracer::commands::run_stat::run_stat_command;
+use repotracer::commands::serve::serve_command;
 
 fn main() {
     let matches = Command::new("Repotracer")
@@ -128,7 +129,20 @@ fn main() {
                         .help("Run stats since this date"),
                 ),
         )
+        .subcommand(
+            Command::new("serve")
+                .about("Start a webserver to interact with Repotracer")
+                .arg(
+                    Arg::new("port")
+                        .short('p')
+                        .long("port")
+                        .value_name("PORT")
+                        .default_value("8080")
+                        .help("The port to run the server on"),
+                ),
+        )
         .get_matches();
+
     match matches.subcommand() {
         Some(("run", sub_m)) => {
             let repo_path = sub_m.get_one::<String>("repo");
@@ -164,6 +178,10 @@ fn main() {
                 sub_m.get_one::<String>("stat"),
                 sub_m.get_one::<String>("since"),
             );
+        }
+        Some(("serve", sub_m)) => {
+            let port = sub_m.get_one::<String>("port").unwrap();
+            serve_command(port);
         }
         _ => unreachable!("Unknown command"),
     }

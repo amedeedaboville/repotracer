@@ -1,10 +1,11 @@
 use chrono::{DateTime, Utc};
+use crossbeam::channel::Sender;
+
 use dashmap::DashMap;
 
 use globset::{Glob, GlobMatcher};
-use polars::frame::row::Row;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
-use std::io::{self, Write};
 
 use super::list_in_range::Granularity;
 use super::repo_cache_data::{
@@ -13,32 +14,31 @@ use super::repo_cache_data::{
 };
 use crate::collectors::list_in_range::list_commits_with_granularity;
 use crate::collectors::repo_cache_data::EntryIdx;
-use crate::polars_utils::rows_to_df;
 use crate::stats::common::{FileData, FileMeasurement, PossiblyEmpty, TreeDataCollection};
 use crate::util::{pb_default, pb_style};
-use ahash::{AHashMap, HashSet, HashSetExt};
+use ahash::{AHashMap, HashMap, HashSet, HashSetExt};
 use gix::objs::Kind;
 use gix::{Commit, ObjectId, Repository};
 
 use indicatif::{ParallelProgressIterator, ProgressIterator};
-use polars::prelude::*;
 use rayon::iter::{Either, ParallelIterator};
 use rayon::prelude::*;
 
 use smallvec::SmallVec;
 use std::fmt::Debug;
+use std::sync::Arc;
 use std::time::Instant;
 use thread_local::ThreadLocal;
 
-#[derive(Debug)]
-pub struct CommitStat<'a> {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommitData {
     // #[serde(rename = "commit")]
     pub oid: ObjectId,
     pub time: gix::date::Time,
-    pub stats: Arc<(Schema, Row<'a>)>,
+    pub data: HashMap<String, String>,
 }
-unsafe impl<'a> Send for CommitStat<'a> {}
-unsafe impl<'a> Sync for CommitStat<'a> {}
+// unsafe impl<'a> Send for CommitStat<'a> {}
+// unsafe impl<'a> Sync for CommitStat<'a> {}
 
 type ResultCache<F> = DashMap<(OidIdx, FilepathIdx), F>;
 pub struct CachedWalker<F>
@@ -135,7 +135,7 @@ where
         granularity: Granularity,
         range: (Option<DateTime<Utc>>, Option<DateTime<Utc>>),
         path_in_repo: Option<String>,
-    ) -> Result<DataFrame, Box<dyn std::error::Error>> {
+    ) -> Result<Vec<CommitData>, Box<dyn std::error::Error>> {
         let RepoCacheData {
             oid_set,
             flat_tree,
@@ -185,47 +185,59 @@ where
                     .expect("Could not find commit in the repo")
                     .into_commit();
                 let res = self.measure_tree_iterative(tree_entry, &cache).unwrap();
-                let (schema, row) = self.file_measurer.summarize_tree_data(res).unwrap();
-                CommitStat {
+                let data = self.file_measurer.summarize_tree_data(res).unwrap();
+                CommitData {
                     oid: commit_oid,
                     time: commit.time().unwrap(),
-                    stats: Arc::new((schema, row)),
+                    data,
                 }
             })
-            .collect::<Vec<CommitStat>>();
+            .collect::<Vec<CommitData>>();
         let elapsed_secs = tree_processing_start.elapsed().as_secs_f64();
         println!("processed: {commit_count} commits in {elapsed_secs} seconds");
-        for cs in commit_stats.iter() {
-            if cs
-                .oid
-                .to_string()
-                .contains("1823818fa0332d866038e80b07052c99e88e46c3")
-            {
-                println!("Results for commit {}:", cs.oid.to_string());
-                println!("{:?}", cs.stats.0);
-                println!("{:?}", cs.stats.1);
-            }
+        Ok(commit_stats)
+    }
+
+    pub fn run_measurement_streaming(
+        &mut self,
+        granularity: Granularity,
+        range: (Option<DateTime<Utc>>, Option<DateTime<Utc>>),
+        path_in_repo: Option<String>,
+        sender: Sender<String>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let RepoCacheData {
+            oid_set,
+            flat_tree,
+            repo_safe: safe_repo,
+            ..
+        } = &self.repo_caches;
+        let inner_repo = safe_repo.clone().to_thread_local();
+        let cache: ResultCache<TreeDataCollection<F>> = DashMap::with_capacity(flat_tree.len());
+        let commits_to_process =
+            list_commits_with_granularity(&inner_repo, granularity, range.0, range.1)?;
+        let num_commits = commits_to_process.len();
+        println!(
+            "Navigating {num_commits} commits from {:?} to {:?}",
+            range.0, range.1,
+        );
+        let path_glob = path_in_repo.map(|path| {
+            Glob::new(&path)
+                .expect("Failed to compile path_in_repo into glob")
+                .compile_matcher()
+        });
+        let tree_processing_start = Instant::now();
+        for commit in commits_to_process.iter() {
+            let tree_oid = commit.tree().unwrap().id;
+            let tree_oid_idx = oid_set.get_index_of(&(tree_oid, Kind::Tree)).unwrap() as OidIdx;
+            let tree_entry = flat_tree.get(&tree_oid_idx).unwrap().unwrap_tree();
+            let res = self.measure_tree_iterative(tree_entry, &cache).unwrap();
+            let data = self.file_measurer.summarize_tree_data(res).unwrap();
+            let msg = serde_json::to_string(&data).unwrap();
+            sender.send(msg).expect("Failed to send CommitStat");
         }
-        let schemas = commit_stats.iter().map(|cs| cs.stats.0.clone());
-        let rows = commit_stats.iter().map(|cs| &cs.stats.1);
-        let mut func_df = rows_to_df(schemas, rows)?;
-        println!("turned commit_stats into a DF");
-        let commit_shas = commit_stats
-            .iter()
-            .map(|cs| cs.oid.to_string())
-            .collect::<Vec<_>>();
-        println!("have commit shas vec with {} items", commit_shas.len());
-        let commit_times = commit_stats
-            .iter()
-            .map(|cs| AnyValue::Datetime(cs.time.seconds * 1000, TimeUnit::Milliseconds, &None))
-            .collect::<Vec<_>>();
-        println!("have commit times vec with {} items", commit_times.len());
-        func_df.insert_column(0, Series::new("commit_hash", commit_shas))?;
-        println!("inserted colum of commit hash");
-        func_df.insert_column(1, Series::new("commit_time", commit_times))?;
-        println!("inserted colum of commit time");
-        io::stdout().flush().unwrap();
-        Ok(func_df)
+        let elapsed_secs = tree_processing_start.elapsed().as_secs_f64();
+        println!("processed: {num_commits} commits in {elapsed_secs} seconds");
+        Ok(())
     }
     fn batch_process_objects(
         &self,
@@ -475,6 +487,7 @@ where
     // }
 }
 
+/*
 #[cfg(test)]
 mod tests {
     use crate::stats::tokei::{TokeiCollector, TokeiStat};
@@ -538,14 +551,14 @@ mod tests {
         let repo_path = String::from("/Users/amedee/repos/github.com/phenomnomnominal/betterer");
         let file_measurer = Box::new(TokeiCollector::new(None, None));
         let mut walker: CachedWalker<TokeiStat> =
-            CachedWalker::new(repo_path.to_owned(), file_measurer, None);
+            CachedWalker::new(repo_path.to_owned(), file_measurer);
         let recursive_res = walker
-            .walk_repo_and_collect_stats(Granularity::Infinite, (None, None))
+            .walk_repo_and_collect_stats(Granularity::Infinite, (None, None), None)
             .unwrap();
         let file_measurer = Box::new(TokeiCollector::new(None, None));
-        walker = CachedWalker::new(repo_path.to_owned(), file_measurer, None);
+        walker = CachedWalker::new(repo_path.to_owned(), file_measurer);
         let iterative_res = walker
-            .walk_repo_and_collect_stats(Granularity::Infinite, (None, None))
+            .walk_repo_and_collect_stats(Granularity::Infinite, (None, None), None)
             .unwrap();
         // Compare their outputs
         let diff = diff_dataframes(&iterative_res, &recursive_res).unwrap();
@@ -558,3 +571,5 @@ mod tests {
 
     // Additional test cases here
 }
+
+*/
