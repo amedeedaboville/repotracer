@@ -188,11 +188,15 @@ impl FlatRepoWithSets {
 }
 impl RepoCacheData {
     pub fn new(repo_path: &str) -> Self {
-        // let start_time = Instant::now();
+        let start_time = Instant::now();
         let repo_safe = ThreadSafeRepository::open(repo_path).unwrap();
         let repo = repo_safe.clone().to_thread_local();
         let (flat_tree, filename_cache, filename_set, filepath_set, oid_set, entry_set) =
             load_caches(&repo, &repo_safe);
+        println!(
+            "Loaded repo caches in {} seconds",
+            start_time.elapsed().as_secs_f64()
+        );
         RepoCacheData {
             repo_safe,
             oid_set,
@@ -202,10 +206,6 @@ impl RepoCacheData {
             filename_cache,
             tree_entry_set: entry_set,
         }
-        // println!(
-        //     "Loaded repo caches in {} seconds",
-        //     start_time.elapsed().as_secs_f64()
-        // );
     }
 }
 pub fn build_oid_set(repo: &Repository) -> Result<OidSetWithInfo, Box<dyn std::error::Error>> {
@@ -650,45 +650,41 @@ fn build_filename_cache(
     flat_repo: &FlatGitRepo,
 ) -> Result<FilenameCache, Box<dyn std::error::Error>> {
     let start = Instant::now();
-    let progress = ProgressBar::new(entry_set.len() as u64);
-    progress.set_style(pb_style());
-    let mut filename_cache =
-        entry_set
-            .iter()
-            .par_bridge()
-            .progress_with(progress)
-            .fold(AHashMap::new, |mut acc: FilenameCache, entry: &MyEntry| {
-                let MyEntry {
-                    oid_idx,
-                    filename_idx,
-                    kind,
-                } = entry;
-                if *kind != TreeChildKind::Blob {
-                    return acc;
-                }
-                if acc.contains_key(oid_idx) {
-                    let acc_entry = acc.get_mut(oid_idx).unwrap();
-                    acc_entry.insert(*filename_idx);
-                } else {
-                    acc.insert(*oid_idx, HashSet::from([*filename_idx]));
+    let mut filename_cache = entry_set
+        .iter()
+        .par_bridge()
+        .fold(AHashMap::new, |mut acc: FilenameCache, entry: &MyEntry| {
+            let MyEntry {
+                oid_idx,
+                filename_idx,
+                kind,
+            } = entry;
+            if *kind != TreeChildKind::Blob {
+                return acc;
+            }
+            if acc.contains_key(oid_idx) {
+                let acc_entry = acc.get_mut(oid_idx).unwrap();
+                acc_entry.insert(*filename_idx);
+            } else {
+                acc.insert(*oid_idx, HashSet::from([*filename_idx]));
+            }
+            acc
+        })
+        .reduce(
+            || AHashMap::with_capacity(flat_repo.len()),
+            |mut acc: FilenameCache, cur: FilenameCache| {
+                for (key, value) in cur {
+                    // The uncommented code is ~10x faster than this "idiomatic" version
+                    // acc.entry(key).or_insert_with(HashSet::new).extend(value);
+                    if let Some(existing) = acc.get_mut(&key) {
+                        existing.extend(value);
+                    } else {
+                        acc.insert(key, value);
+                    }
                 }
                 acc
-            })
-            .reduce(
-                || AHashMap::with_capacity(flat_repo.len()),
-                |mut acc: FilenameCache, cur: FilenameCache| {
-                    for (key, value) in cur {
-                        // The uncommented code is ~10x faster than this "idiomatic" version
-                        // acc.entry(key).or_insert_with(HashSet::new).extend(value);
-                        if let Some(existing) = acc.get_mut(&key) {
-                            existing.extend(value);
-                        } else {
-                            acc.insert(key, value);
-                        }
-                    }
-                    acc
-                },
-            );
+            },
+        );
     println!(
         "Built filename cache in {} seconds",
         start.elapsed().as_secs_f64()
@@ -706,7 +702,7 @@ where
 {
     let cache_path = format!("{}/{}.bin", repo_path, cache_name);
     let cache_file = File::open(cache_path)?;
-    let cache_reader = BufReader::new(cache_file);
+    let cache_reader = BufReader::with_capacity(1024 * 1024, cache_file);
     let cache: Cache = bincode::deserialize_from(cache_reader)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
     Ok(cache)
