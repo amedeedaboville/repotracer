@@ -31,6 +31,8 @@ use std::fmt::Debug;
 
 use crate::util::pb_style;
 
+use serde::{Deserializer, Serializer};
+
 pub type OidIdx = u32;
 pub type FlatGitRepo = AHashMap<OidIdx, TreeChild>;
 //Holds unique file/folder names in the repo. In other places, instead of
@@ -94,8 +96,33 @@ impl TreeChild {
     }
 }
 
+/// Serializes an `IndexSet<T>` as a `Vec<T>`.
+fn serialize_indexset_as_vec<T, S>(set: &IndexSet<T>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    T: Serialize,
+    S: Serializer,
+{
+    let vec: Vec<&T> = set.iter().collect();
+    vec.serialize(serializer)
+}
+
+/// Deserializes a `Vec<T>` back into an `IndexSet<T>`.
+fn deserialize_vec_to_indexset<'de, T, D>(deserializer: D) -> Result<IndexSet<T>, D::Error>
+where
+    T: Deserialize<'de> + Eq + Hash,
+    D: Deserializer<'de>,
+{
+    let vec = Vec::<T>::deserialize(deserializer)?;
+    let set: IndexSet<T> = vec.into_iter().collect();
+    Ok(set)
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct OidSetWithInfo {
+    #[serde(
+        serialize_with = "serialize_indexset_as_vec",
+        deserialize_with = "deserialize_vec_to_indexset"
+    )]
     set: OidSet,
     pub num_trees: usize,
     pub num_blobs: usize,
