@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 
 use crate::{
     collectors::{
-        cached_walker::{CachedWalker, CommitData},
+        cached_walker::{CachedWalker, CommitData, MeasurementRunOptions},
         list_in_range::Granularity,
     },
     config::UserStatConfig,
@@ -44,22 +44,28 @@ impl Measurement {
         //I don't really know which way I want to have the types go yet, so this is fine for now
         //It's already kind of a mess, doing Walker<Box<dyn ...>> is even more of a mess, I just
         //want to get coding new stats for now.
+        let options = MeasurementRunOptions {
+            granularity,
+            range,
+            path_in_repo,
+        };
+        let stream_sender = None;
         match self {
             Measurement::Tokei(tokei) => {
                 let mut walker = CachedWalker::<TokeiStat>::new(repo_path, tokei.clone());
-                walker.walk_repo_and_collect_stats(granularity, range, path_in_repo)
+                walker.walk_repo_and_collect_stats(options, stream_sender)
             }
             Measurement::Grep(grep) => {
                 let mut walker = CachedWalker::<NumMatches>::new(repo_path, grep.clone());
-                walker.walk_repo_and_collect_stats(granularity, range, path_in_repo)
+                walker.walk_repo_and_collect_stats(options, stream_sender)
             }
             Measurement::FileCount(filecount) => {
                 let mut walker = CachedWalker::<NumMatches>::new(repo_path, filecount.clone());
-                walker.walk_repo_and_collect_stats(granularity, range, path_in_repo)
+                walker.walk_repo_and_collect_stats(options, stream_sender)
             }
             Measurement::Script(script) => {
                 let mut walker = CachedWalker::<String>::new(repo_path, script.clone());
-                walker.walk_repo_and_collect_stats(granularity, range, path_in_repo)
+                walker.walk_repo_and_collect_stats(options, stream_sender)
             }
         }
     }

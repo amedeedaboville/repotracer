@@ -32,17 +32,21 @@ use thread_local::ThreadLocal;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommitData {
-    // #[serde(rename = "commit")]
+    #[serde(rename = "commit")]
     pub oid: ObjectId,
-    // #[serde(
-    //     serialize_with = "serialize_datetime",
-    //     deserialize_with = "deserialize_datetime"
-    // )]
     pub date: DateTime<Utc>,
     pub data: HashMap<String, String>,
 }
 
 type ResultCache<F> = DashMap<(OidIdx, FilepathIdx), F>;
+
+//todo figure out what to call this or whether to put it in the Stat options themselves
+//probably should go in the stat options
+pub struct MeasurementRunOptions {
+    pub granularity: Granularity,
+    pub range: (Option<DateTime<Utc>>, Option<DateTime<Utc>>),
+    pub path_in_repo: Option<String>,
+}
 pub struct CachedWalker<F>
 where
     F: FileData + PossiblyEmpty,
@@ -134,10 +138,14 @@ where
 
     pub fn walk_repo_and_collect_stats(
         &mut self,
-        granularity: Granularity,
-        range: (Option<DateTime<Utc>>, Option<DateTime<Utc>>),
-        path_in_repo: Option<String>,
+        options: MeasurementRunOptions,
+        stream_sender: Option<Sender<CommitData>>,
     ) -> Result<Vec<CommitData>, Box<dyn std::error::Error>> {
+        let MeasurementRunOptions {
+            granularity,
+            range,
+            path_in_repo,
+        } = options;
         let RepoCacheData {
             oid_set,
             flat_tree,
@@ -174,28 +182,33 @@ where
                 })
                 .collect::<Vec<_>>();
         let tl = ThreadLocal::new();
-        let commit_stats =
-            oids.into_par_iter()
-                .rev() //todo not sure this does anything
-                .progress_with_style(pb_style())
-                .map(|(commit_oid, tree_oid)| {
-                    let tree_oid_idx =
-                        oid_set.get_index_of(&(tree_oid, Kind::Tree)).unwrap() as OidIdx;
-                    let tree_entry = flat_tree.get(&tree_oid_idx).unwrap().unwrap_tree();
-                    let repo = tl.get_or(|| safe_repo.clone().to_thread_local());
-                    let commit = repo
-                        .find_object(commit_oid)
-                        .expect("Could not find commit in the repo")
-                        .into_commit();
-                    let res = self.measure_tree_iterative(tree_entry, &cache).unwrap();
-                    let data = self.file_measurer.summarize_tree_data(res).unwrap();
-                    CommitData {
-                        oid: commit_oid,
-                        date: gix_time_to_chrono(commit.time().unwrap()),
-                        data,
-                    }
-                })
-                .collect::<Vec<CommitData>>();
+        let stream_sender = stream_sender.clone();
+
+        let commit_stats = oids
+            .into_par_iter()
+            .rev() //todo not sure this does anything
+            .progress_with_style(pb_style())
+            .map(|(commit_oid, tree_oid)| {
+                let tree_oid_idx = oid_set.get_index_of(&(tree_oid, Kind::Tree)).unwrap() as OidIdx;
+                let tree_entry = flat_tree.get(&tree_oid_idx).unwrap().unwrap_tree();
+                let repo = tl.get_or(|| safe_repo.clone().to_thread_local());
+                let commit = repo
+                    .find_object(commit_oid)
+                    .expect("Could not find commit in the repo")
+                    .into_commit();
+                let res = self.measure_tree_iterative(tree_entry, &cache).unwrap();
+                let data = self.file_measurer.summarize_tree_data(res).unwrap();
+                let cd = CommitData {
+                    oid: commit_oid,
+                    date: gix_time_to_chrono(commit.time().unwrap()),
+                    data,
+                };
+                if let Some(sender) = &stream_sender {
+                    sender.send(cd.clone()).unwrap();
+                }
+                cd
+            })
+            .collect::<Vec<CommitData>>();
         let elapsed_secs = tree_processing_start.elapsed().as_secs_f64();
         println!("processed: {commit_count} commits in {elapsed_secs} seconds");
         Ok(commit_stats)

@@ -26,8 +26,24 @@ pub fn write_commit_stats_to_csv(
     let file = File::create(&path)?;
     let mut writer = Writer::from_writer(file);
 
+    // Write header
+    let mut header = vec!["commit", "date"];
+    if let Some(first_commit) = df.first() {
+        header.extend(first_commit.data.keys().map(|s| s.as_str()));
+    }
+    writer.write_record(&header)?;
+
+    // Write data
     for commit in df {
-        writer.serialize(commit)?;
+        let oid_str = commit.oid.to_string();
+        let date_str = commit.date.to_string();
+        let mut record = vec![&oid_str, &date_str];
+        let empty = String::new();
+        for key in header.iter().skip(2) {
+            let value = commit.data.get(*key).unwrap_or(&empty);
+            record.push(value);
+        }
+        writer.write_record(&record)?;
     }
 
     writer.flush()?;
@@ -42,6 +58,7 @@ pub fn load_df(repo_name: &str, stat_name: &str) -> Result<Vec<CommitData>, Box<
     let reader = BufReader::new(file);
     let mut csv_reader = Reader::from_reader(reader);
 
+    let headers: Vec<String> = csv_reader.headers()?.iter().map(String::from).collect();
     let mut commits = Vec::new();
     for result in csv_reader.deserialize() {
         let commit: CommitData = result?;

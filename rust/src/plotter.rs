@@ -67,6 +67,7 @@ pub fn plot(
     let commit_times: Vec<_> = df.iter().map(|c| c.date).collect();
     let start_time = commit_times.iter().min().unwrap().to_owned();
     let end_time = commit_times.iter().max().unwrap().to_owned();
+    println!("start_time: {}, end_time: {}", start_time, end_time);
 
     // Convert String values to f64 and find min/max
     let parsed_data: Vec<HashMap<String, f64>> = df.iter().map(|c| parse_stats(&c.data)).collect();
