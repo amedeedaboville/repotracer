@@ -686,7 +686,8 @@ fn build_filename_cache(
             },
         );
     println!(
-        "Built filename cache in {} seconds",
+        "Built filename cache ({} entries) in {} seconds",
+        filename_cache.len(),
         start.elapsed().as_secs_f64()
     );
     // idk if this helps or if the bincode library already does it when loading from file

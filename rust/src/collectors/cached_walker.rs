@@ -1,4 +1,4 @@
-use chrono::{serde::ts_seconds, DateTime, Utc};
+use chrono::{DateTime, Utc};
 use crossbeam::channel::{self, Sender};
 
 use dashmap::DashMap;
@@ -15,7 +15,7 @@ use super::repo_cache_data::{
 use crate::collectors::list_in_range::list_commits_with_granularity;
 use crate::collectors::repo_cache_data::EntryIdx;
 use crate::stats::common::{FileData, FileMeasurement, PossiblyEmpty, TreeDataCollection};
-use crate::util::{pb_default, pb_style};
+use crate::util::{gix_time_to_chrono, pb_default, pb_style};
 use ahash::{AHashMap, HashMap, HashSet, HashSetExt};
 use gix::objs::Kind;
 use gix::{Commit, ObjectId, Repository};
@@ -34,11 +34,13 @@ use thread_local::ThreadLocal;
 pub struct CommitData {
     // #[serde(rename = "commit")]
     pub oid: ObjectId,
-    pub time: gix::date::Time,
+    // #[serde(
+    //     serialize_with = "serialize_datetime",
+    //     deserialize_with = "deserialize_datetime"
+    // )]
+    pub date: DateTime<Utc>,
     pub data: HashMap<String, String>,
 }
-// unsafe impl<'a> Send for CommitStat<'a> {}
-// unsafe impl<'a> Sync for CommitStat<'a> {}
 
 type ResultCache<F> = DashMap<(OidIdx, FilepathIdx), F>;
 pub struct CachedWalker<F>
@@ -172,73 +174,47 @@ where
                 })
                 .collect::<Vec<_>>();
         let tl = ThreadLocal::new();
-        let commit_stats = oids
-            .into_par_iter()
-            .rev() //todo not sure this does anything
-            .progress_with_style(pb_style())
-            .map(|(commit_oid, tree_oid)| {
-                let tree_oid_idx = oid_set.get_index_of(&(tree_oid, Kind::Tree)).unwrap() as OidIdx;
-                let tree_entry = flat_tree.get(&tree_oid_idx).unwrap().unwrap_tree();
-                let repo = tl.get_or(|| safe_repo.clone().to_thread_local());
-                let commit = repo
-                    .find_object(commit_oid)
-                    .expect("Could not find commit in the repo")
-                    .into_commit();
-                let res = self.measure_tree_iterative(tree_entry, &cache).unwrap();
-                let data = self.file_measurer.summarize_tree_data(res).unwrap();
-                CommitData {
-                    oid: commit_oid,
-                    time: commit.time().unwrap(),
-                    data,
-                }
-            })
-            .collect::<Vec<CommitData>>();
+        let commit_stats =
+            oids.into_par_iter()
+                .rev() //todo not sure this does anything
+                .progress_with_style(pb_style())
+                .map(|(commit_oid, tree_oid)| {
+                    let tree_oid_idx =
+                        oid_set.get_index_of(&(tree_oid, Kind::Tree)).unwrap() as OidIdx;
+                    let tree_entry = flat_tree.get(&tree_oid_idx).unwrap().unwrap_tree();
+                    let repo = tl.get_or(|| safe_repo.clone().to_thread_local());
+                    let commit = repo
+                        .find_object(commit_oid)
+                        .expect("Could not find commit in the repo")
+                        .into_commit();
+                    let res = self.measure_tree_iterative(tree_entry, &cache).unwrap();
+                    let data = self.file_measurer.summarize_tree_data(res).unwrap();
+                    CommitData {
+                        oid: commit_oid,
+                        date: gix_time_to_chrono(commit.time().unwrap()),
+                        data,
+                    }
+                })
+                .collect::<Vec<CommitData>>();
         let elapsed_secs = tree_processing_start.elapsed().as_secs_f64();
         println!("processed: {commit_count} commits in {elapsed_secs} seconds");
         Ok(commit_stats)
     }
 
-    pub fn run_measurement_streaming(
-        &mut self,
-        granularity: Granularity,
-        range: (Option<DateTime<Utc>>, Option<DateTime<Utc>>),
-        path_in_repo: Option<String>,
-        sender: Sender<String>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let RepoCacheData {
-            oid_set,
-            flat_tree,
-            repo_safe: safe_repo,
-            ..
-        } = &self.repo_caches;
-        let inner_repo = safe_repo.clone().to_thread_local();
-        let cache: ResultCache<TreeDataCollection<F>> = DashMap::with_capacity(flat_tree.len());
-        let commits_to_process =
-            list_commits_with_granularity(&inner_repo, granularity, range.0, range.1)?;
-        let num_commits = commits_to_process.len();
-        println!(
-            "Navigating {num_commits} commits from {:?} to {:?}",
-            range.0, range.1,
-        );
-        let path_glob = path_in_repo.map(|path| {
-            Glob::new(&path)
-                .expect("Failed to compile path_in_repo into glob")
-                .compile_matcher()
-        });
-        let tree_processing_start = Instant::now();
-        for commit in commits_to_process.iter() {
-            let tree_oid = commit.tree().unwrap().id;
-            let tree_oid_idx = oid_set.get_index_of(&(tree_oid, Kind::Tree)).unwrap() as OidIdx;
-            let tree_entry = flat_tree.get(&tree_oid_idx).unwrap().unwrap_tree();
-            let res = self.measure_tree_iterative(tree_entry, &cache).unwrap();
-            let data = self.file_measurer.summarize_tree_data(res).unwrap();
-            let msg = serde_json::to_string(&data).unwrap();
-            sender.send(msg).expect("Failed to send CommitStat");
-        }
-        let elapsed_secs = tree_processing_start.elapsed().as_secs_f64();
-        println!("processed: {num_commits} commits in {elapsed_secs} seconds");
-        Ok(())
-    }
+    // pub fn run_streaming_then_collect(
+    //     &mut self,
+    //     granularity: Granularity,
+    //     range: (Option<DateTime<Utc>>, Option<DateTime<Utc>>),
+    //     path_in_repo: Option<String>,
+    // ) -> Result<Vec<CommitData>, Box<dyn std::error::Error>> {
+    //     let (sender, receiver) = channel::unbounded();
+    //     self.run_measurement_streaming(granularity, range, path_in_repo, sender)?;
+    //     let commit_stats = receiver
+    //         .into_iter()
+    //         .map(|msg| serde_json::from_str(&msg).unwrap())
+    //         .collect();
+    //     Ok(commit_stats)
+    // }
     fn batch_process_objects(
         &self,
         cache: &mut ResultCache<TreeDataCollection<F>>,

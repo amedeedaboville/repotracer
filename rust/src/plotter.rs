@@ -64,10 +64,7 @@ pub fn plot(
         fs::create_dir_all(&repo_stats_dir)?;
     }
     let image_path = repo_stats_dir.join(format!("{stat_name}.svg"));
-    let commit_times: Vec<_> = df
-        .iter()
-        .map(|c| Utc.timestamp_opt(c.time.seconds, 0).unwrap())
-        .collect();
+    let commit_times: Vec<_> = df.iter().map(|c| c.date).collect();
     let start_time = commit_times.iter().min().unwrap().to_owned();
     let end_time = commit_times.iter().max().unwrap().to_owned();
 

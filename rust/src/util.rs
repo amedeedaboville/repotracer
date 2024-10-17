@@ -1,4 +1,8 @@
-use chrono::{format::ParseErrorKind, DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
+use chrono::{
+    format::ParseErrorKind, DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, TimeZone,
+    Utc,
+};
+use gix::date::{time::Sign, Time};
 use indicatif::{ProgressBar, ProgressStyle};
 
 pub fn pb_style() -> ProgressStyle {
@@ -41,4 +45,17 @@ pub fn parse_loose_datetime(input: &str) -> Result<DateTime<Utc>, ParseErrorKind
     }
 
     Err(ParseErrorKind::NotEnough)
+}
+
+// ai generated, lol
+pub fn gix_time_to_chrono(gix_time: Time) -> DateTime<Utc> {
+    let naive = NaiveDateTime::from_timestamp_opt(gix_time.seconds, 0).expect("Invalid timestamp");
+
+    let offset_sign = match gix_time.sign {
+        Sign::Plus => 1,
+        Sign::Minus => -1,
+    };
+    let offset = FixedOffset::east_opt(offset_sign * gix_time.offset).expect("Invalid offset");
+    let datetime_with_offset = offset.from_utc_datetime(&naive);
+    datetime_with_offset.with_timezone(&Utc)
 }
