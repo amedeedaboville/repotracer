@@ -123,6 +123,14 @@ fn main() {
                         .help("The name of the stat to run"),
                 )
                 .arg(
+                    Arg::new("granularity")
+                        .short('g')
+                        .long("granularity")
+                        .value_name("GRANULARITY")
+                        .default_value("daily")
+                        .help("How granular the stats should be: eg daily/weekly/monthly, or every commit."),
+                )
+                .arg(
                     Arg::new("since")
                         .long("since")
                         .value_name("DATE")
@@ -177,6 +185,7 @@ fn main() {
                 sub_m.get_one::<String>("repo"),
                 sub_m.get_one::<String>("stat"),
                 sub_m.get_one::<String>("since"),
+                sub_m.get_one::<String>("granularity"),
             );
         }
         Some(("serve", sub_m)) => {

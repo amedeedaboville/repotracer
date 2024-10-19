@@ -15,6 +15,19 @@ pub enum Granularity {
     Weekly,
     Monthly,
 }
+impl Granularity {
+    pub fn from_string(s: &str) -> Option<Self> {
+        match s {
+            "infinite" | "all" => Some(Self::Infinite),
+            "day" | "daily" => Some(Self::Daily),
+            "hour" | "hourly" => Some(Self::Hourly),
+            // "every_x_hours" => Some(Self::EveryXHours(x)),
+            "week" | "weekly" => Some(Self::Weekly),
+            "month" | "monthly" => Some(Self::Monthly),
+            _ => None,
+        }
+    }
+}
 
 pub fn list_commits_with_granularity(
     repo: &Repository,

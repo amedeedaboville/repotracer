@@ -14,14 +14,16 @@ pub fn run_stat_command(
     repo_name: Option<&String>,
     stat_name: Option<&String>,
     since: Option<&String>,
+    granularity: Option<&String>,
 ) {
     let config = config::global_config();
     let pairs_to_run = get_pairs_to_run(&config, repo_name, stat_name);
 
     print_stats_to_run(&pairs_to_run);
 
+    let granularity = granularity.and_then(|g| Granularity::from_string(g));
     for (repo, stat) in pairs_to_run {
-        run_single(&config, &repo, &stat, since);
+        run_single(&config, &repo, &stat, since, granularity.clone());
     }
 }
 
@@ -80,7 +82,13 @@ fn print_stats_to_run(pairs_to_run: &[(String, String)]) {
     println!("{table}");
 }
 
-fn run_single(config: &GlobalConfig, repo_name: &str, stat_name: &str, since: Option<&String>) {
+fn run_single(
+    config: &GlobalConfig,
+    repo_name: &str,
+    stat_name: &str,
+    since: Option<&String>,
+    granularity: Option<Granularity>,
+) {
     let term = Term::stdout();
     term.write_line(&format!(
         "Running {} on {}",
@@ -100,7 +108,7 @@ fn run_single(config: &GlobalConfig, repo_name: &str, stat_name: &str, since: Op
     let mut res = meas
         .run(
             repo_config.get_storage_path(),
-            Granularity::Daily,
+            granularity.unwrap_or(Granularity::Daily),
             (since.and_then(|s| parse_loose_datetime(s).ok()), None),
             stat_config.path_in_repo.clone(),
         )
