@@ -85,6 +85,12 @@ pub fn plot(
         .unwrap()
         .to_owned();
 
+    println!(
+        "min_value: {}, max_value: {}, total number of points {}",
+        min_value,
+        max_value,
+        parsed_data.len()
+    );
     let title = stat_description;
     let subtitle = format!(
         "{repo_name}:{stat_name} by repotracer at {}",
@@ -93,13 +99,14 @@ pub fn plot(
     let text_gray = BLACK.mix(0.4);
     let root = SVGBackend::new(&image_path, (IMAGE_WIDTH, IMAGE_HEIGHT)).into_drawing_area();
     root.fill(&WHITE)?;
+
     let mut chart = ChartBuilder::on(&root)
         .caption(title, ("sans-serif", (4).percent_height()))
         .margin(5.percent())
         .margin_bottom(3.percent())
         .set_label_area_size(LabelAreaPosition::Left, (5).percent())
         .set_label_area_size(LabelAreaPosition::Bottom, (5).percent())
-        .build_cartesian_2d(start_time..end_time, min_value..max_value)?;
+        .build_cartesian_2d((start_time..end_time).monthly(), min_value..max_value)?;
 
     chart
         .configure_mesh()
