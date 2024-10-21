@@ -47,11 +47,10 @@ fn main() {
                 .about("Clone one (or more) git repo(s) and add them to the config")
                 .arg(
                     Arg::new("clone_urls")
-                        .short('c')
-                        .long("clone-urls")
                         .value_name("CLONE_URLS")
                         .num_args(1..)
-                        .help("Sets the git repository URLs to clone"),
+                        .required(true)
+                        .help("The git repository URLs to clone"),
                 ),
         )
         .subcommand(
@@ -110,17 +109,15 @@ fn main() {
                 .about("Run stats on repositories")
                 .arg(
                     Arg::new("repo")
-                        .short('r')
-                        .long("repo")
                         .value_name("REPO_NAME")
+                        .required(true)
                         .help("The name of the repository to run stats on"),
                 )
                 .arg(
-                    Arg::new("stat")
-                        .short('s')
-                        .long("stat")
-                        .value_name("STAT_NAME")
-                        .help("The name of the stat to run"),
+                    Arg::new("stats")
+                        .value_name("STAT_NAMES")
+                        .num_args(1..)
+                        .help("The name(s) of the stat(s) to run"),
                 )
                 .arg(
                     Arg::new("granularity")
@@ -158,7 +155,7 @@ fn main() {
             run_command(repo_path, stat_name);
         }
         Some(("clone", sub_m)) => {
-            let clone_urls = sub_m
+            let clone_urls: Vec<String> = sub_m
                 .get_many::<String>("clone_urls")
                 .unwrap_or_default()
                 .cloned()
@@ -181,9 +178,15 @@ fn main() {
             _ => unreachable!("Unknown config subcommand"),
         },
         Some(("run-stat", sub_m)) => {
+            let repo = sub_m.get_one::<String>("repo").unwrap();
+            let stats: Vec<String> = sub_m
+                .get_many::<String>("stats")
+                .unwrap_or_default()
+                .cloned()
+                .collect();
             run_stat_command(
-                sub_m.get_one::<String>("repo"),
-                sub_m.get_one::<String>("stat"),
+                Some(repo),
+                &stats,
                 sub_m.get_one::<String>("since"),
                 sub_m.get_one::<String>("granularity"),
             );

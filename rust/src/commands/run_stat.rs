@@ -12,12 +12,12 @@ use crate::util::parse_loose_datetime;
 
 pub fn run_stat_command(
     repo_name: Option<&String>,
-    stat_name: Option<&String>,
+    stat_names: &[String],
     since: Option<&String>,
     granularity: Option<&String>,
 ) {
     let config = config::global_config();
-    let pairs_to_run = get_pairs_to_run(&config, repo_name, stat_name);
+    let pairs_to_run = get_pairs_to_run(&config, repo_name, stat_names);
 
     print_stats_to_run(&pairs_to_run);
 
@@ -30,10 +30,10 @@ pub fn run_stat_command(
 fn get_pairs_to_run(
     config: &GlobalConfig,
     repo_name: Option<&String>,
-    stat_name: Option<&String>,
+    stat_names: &[String],
 ) -> Vec<(String, String)> {
-    match (repo_name, stat_name) {
-        (None, None) => config
+    match (repo_name, stat_names) {
+        (None, []) => config
             .repos
             .iter()
             .flat_map(|(r_name, r_config)| {
@@ -45,7 +45,7 @@ fn get_pairs_to_run(
                 })
             })
             .collect(),
-        (Some(repo), None) => config
+        (Some(repo), []) => config
             .repos
             .get(repo)
             .and_then(|r| r.stats.as_ref())
@@ -55,7 +55,10 @@ fn get_pairs_to_run(
                     .map(|stat| (repo.clone(), stat.clone()))
                     .collect()
             }),
-        (Some(repo), Some(stat)) => vec![(repo.clone(), stat.clone())],
+        (Some(repo), stat_names) => stat_names
+            .iter()
+            .map(|stat| (repo.clone(), stat.clone()))
+            .collect(),
         _ => {
             eprintln!("This combination of repo_name and stat_name is invalid.");
             vec![]
