@@ -6,6 +6,7 @@ use dashmap::DashMap;
 use globset::{Glob, GlobMatcher};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::list_in_range::Granularity;
 use super::repo_cache_data::{
@@ -18,7 +19,7 @@ use crate::stats::common::{FileData, FileMeasurement, PossiblyEmpty, TreeDataCol
 use crate::util::{gix_time_to_chrono, pb_default, pb_style};
 use ahash::{AHashMap, HashMap, HashSet, HashSetExt};
 use gix::objs::Kind;
-use gix::{Commit, ObjectId, Repository};
+use gix::{ObjectId, Repository};
 
 use indicatif::{ParallelProgressIterator, ProgressIterator};
 use rayon::iter::{Either, ParallelIterator};
@@ -69,7 +70,7 @@ where
     }
     fn gather_objects_to_process(
         &self,
-        commits_to_process: &Vec<Commit>,
+        commit_tree_ids: &Vec<(ObjectId, ObjectId)>,
         path_glob: Option<GlobMatcher>,
     ) -> Result<Vec<(AliasedPath, OidIdx)>, Box<dyn std::error::Error>> {
         let RepoCacheData {
@@ -83,13 +84,9 @@ where
             HashSet::with_capacity(oid_set.num_blobs / 3);
         let mut processed: HashSet<(Option<AliasedPath>, EntryIdx)> = HashSet::new();
         let mut entries_to_process = Vec::new();
-        let commit_tree_ids = commits_to_process
+        for (_commit_oid, commit_tree_objectid) in commit_tree_ids
             .iter()
-            .filter_map(|commit| commit.tree_id().map(|x| x.detach()).ok())
-            .collect::<Vec<_>>();
-        for commit_tree_objectid in commit_tree_ids
-            .iter()
-            .progress_with(pb_default(commits_to_process.len()))
+            .progress_with(pb_default(commit_tree_ids.len()))
         {
             let commit_tree_oid_idx = oid_set
                 .get_index_of(&(*commit_tree_objectid, Kind::Tree))
@@ -141,6 +138,7 @@ where
         options: MeasurementRunOptions,
         stream_sender: Option<Sender<CommitData>>,
     ) -> Result<Vec<CommitData>, Box<dyn std::error::Error>> {
+        let measurement_start = Instant::now();
         let MeasurementRunOptions {
             granularity,
             range,
@@ -166,13 +164,7 @@ where
                 .expect("Failed to compile path_in_repo into glob")
                 .compile_matcher()
         });
-        let entries_to_process = self.gather_objects_to_process(&commits_to_process, path_glob)?;
-        self.batch_process_objects(&mut cache, entries_to_process);
-        let tree_processing_start = Instant::now();
-        println!("Collecting file results into trees for each commit:");
-        let commit_count = num_commits;
-
-        let oids =
+        let commit_and_tree_oids =
             commits_to_process
                 .iter()
                 .map(|commit| {
@@ -181,10 +173,17 @@ where
                     (commit_oid, tree_oid)
                 })
                 .collect::<Vec<_>>();
+        let entries_to_process =
+            self.gather_objects_to_process(&commit_and_tree_oids, path_glob)?;
+        self.batch_process_objects(&mut cache, entries_to_process);
+        let tree_processing_start = Instant::now();
+        println!("Collecting file results into trees for each commit:");
+        let commit_count = num_commits;
+
         let tl = ThreadLocal::new();
         let stream_sender = stream_sender.clone();
 
-        let commit_stats = oids
+        let commit_stats = commit_and_tree_oids
             .into_par_iter()
             .rev() //todo not sure this does anything
             .progress_with_style(pb_style())
@@ -211,6 +210,10 @@ where
             .collect::<Vec<CommitData>>();
         let elapsed_secs = tree_processing_start.elapsed().as_secs_f64();
         println!("processed: {commit_count} commits in {elapsed_secs} seconds");
+        println!(
+            "Total time for measurement: {}",
+            measurement_start.elapsed().as_secs_f64()
+        );
         Ok(commit_stats)
     }
 
@@ -234,7 +237,7 @@ where
         entries_to_process: Vec<(AliasedPath, EntryIdx)>,
     ) {
         let start_time = Instant::now();
-        println!("Processing blobs");
+        println!("Processing {} blobs", entries_to_process.len());
         let RepoCacheData {
             filename_set,
             filepath_set,
