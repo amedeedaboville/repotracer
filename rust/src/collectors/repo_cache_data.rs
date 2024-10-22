@@ -1,4 +1,4 @@
-use chrono::format;
+
 use crossbeam::channel::{bounded, Receiver, Sender};
 use crossbeam::queue::SegQueue;
 use dashmap::DashSet;
@@ -191,7 +191,7 @@ impl RepoCacheData {
     pub fn new(repo_path: &str) -> Self {
         let start_time = Instant::now();
         let repo_safe = ThreadSafeRepository::open(repo_path)
-            .expect(&format!("Failed to open repo at {repo_path}"));
+            .unwrap_or_else(|_| panic!("Failed to open repo at {repo_path}"));
         let repo = repo_safe.clone().to_thread_local();
         let (flat_tree, filename_cache, filename_set, filepath_set, oid_set, entry_set) =
             load_caches(&repo, &repo_safe);
@@ -429,7 +429,7 @@ pub fn build_caches_with_paths(
                 if path.is_some() && processed.contains(&(path, obj_oid_idx)) {
                     continue;
                 }
-                processed.insert((path.clone(), obj_oid_idx));
+                processed.insert((path, obj_oid_idx));
                 if temp_i >= 100 {
                     progress.inc(temp_i);
                     temp_i = 0;

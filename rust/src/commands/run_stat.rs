@@ -17,13 +17,13 @@ pub fn run_stat_command(
     granularity: Option<&String>,
 ) {
     let config = config::global_config();
-    let pairs_to_run = get_pairs_to_run(&config, repo_name, stat_names);
+    let pairs_to_run = get_pairs_to_run(config, repo_name, stat_names);
 
     print_stats_to_run(&pairs_to_run);
 
     let granularity = granularity.and_then(|g| Granularity::from_string(g));
     for (repo, stat) in pairs_to_run {
-        run_single(&config, &repo, &stat, since, granularity.clone());
+        run_single(config, &repo, &stat, since, granularity.clone());
     }
 }
 

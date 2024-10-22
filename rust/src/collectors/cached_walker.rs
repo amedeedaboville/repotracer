@@ -1,12 +1,11 @@
 use chrono::{DateTime, Utc};
-use crossbeam::channel::{self, Sender};
+use crossbeam::channel::Sender;
 
 use dashmap::DashMap;
 
 use globset::{Glob, GlobMatcher};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::list_in_range::Granularity;
 use super::repo_cache_data::{
@@ -248,44 +247,43 @@ where
         } = &self.repo_caches;
         let progress = pb_default(entries_to_process.len());
         let tl = ThreadLocal::new();
-        *cache =
-            entries_to_process
-                .into_iter()
-                .par_bridge()
-                .progress_with(progress)
-                .fold(
-                    AHashMap::new,
-                    |mut acc: AHashMap<(OidIdx, FilepathIdx), TreeDataCollection<F>>,
-                     (path, entry_idx)| {
-                        let path_str = aliased_path_to_string(filename_set, &path);
-                        let repo: &Repository = tl.get_or(|| shared_repo.clone().to_thread_local());
-                        let MyEntry { oid_idx, .. } =
-                            *tree_entry_set.get_index(entry_idx as usize).unwrap();
-                        let (oid, _kind) = oid_set.get_index(oid_idx).unwrap();
-                        match self.file_measurer.measure_entry(repo, &path_str, oid) {
-                            Ok(measurement) => {
-                                let mut tree_collection: TreeDataCollection<F> = BTreeMap::new();
-                                let path_idx = filepath_set
-                                    .get_index_of(&path)
-                                    .expect(&format!("Did not find {:?} in filepath set", path))
-                                    as FilepathIdx;
-                                tree_collection.insert(Either::Left(path_idx), measurement);
-                                acc.insert((oid_idx, path_idx), tree_collection);
-                            }
-                            Err(_) => {}
-                        };
-                        acc
-                    },
-                )
-                .reduce(
-                    AHashMap::new,
-                    |mut acc: AHashMap<(OidIdx, FilepathIdx), TreeDataCollection<F>>, cur| {
-                        acc.extend(cur);
-                        acc
-                    },
-                )
-                .into_iter()
-                .collect();
+        *cache = entries_to_process
+            .into_iter()
+            .par_bridge()
+            .progress_with(progress)
+            .fold(
+                AHashMap::new,
+                |mut acc: AHashMap<(OidIdx, FilepathIdx), TreeDataCollection<F>>,
+                 (path, entry_idx)| {
+                    let path_str = aliased_path_to_string(filename_set, &path);
+                    let repo: &Repository = tl.get_or(|| shared_repo.clone().to_thread_local());
+                    let MyEntry { oid_idx, .. } =
+                        *tree_entry_set.get_index(entry_idx as usize).unwrap();
+                    let (oid, _kind) = oid_set.get_index(oid_idx).unwrap();
+                    match self.file_measurer.measure_entry(repo, &path_str, oid) {
+                        Ok(measurement) => {
+                            let mut tree_collection: TreeDataCollection<F> = BTreeMap::new();
+                            let path_idx =
+                                filepath_set.get_index_of(&path).unwrap_or_else(
+                                    || panic!("Did not find {:?} in filepath set", path)
+                                ) as FilepathIdx;
+                            tree_collection.insert(Either::Left(path_idx), measurement);
+                            acc.insert((oid_idx, path_idx), tree_collection);
+                        }
+                        Err(_) => {}
+                    };
+                    acc
+                },
+            )
+            .reduce(
+                AHashMap::new,
+                |mut acc: AHashMap<(OidIdx, FilepathIdx), TreeDataCollection<F>>, cur| {
+                    acc.extend(cur);
+                    acc
+                },
+            )
+            .into_iter()
+            .collect();
 
         println!(
             "Processed {} blobs (files) in {} seconds",
@@ -345,13 +343,15 @@ where
                                 Either::Right(leaf_filename_idx) => {
                                     let mut new_path = parent_path.clone();
                                     new_path.push(leaf_filename_idx);
-                                    let new_path_idx = filepath_set.get_index_of(&new_path).expect(
-                                        &format!(
-                                            "Did not find new path in filepath set: {:?} ({})",
-                                            new_path,
-                                            aliased_path_to_string(filename_set, &new_path)
-                                        ),
-                                    )
+                                    let new_path_idx = filepath_set
+                                        .get_index_of(&new_path)
+                                        .unwrap_or_else(|| {
+                                            panic!(
+                                                "Did not find new path in filepath set: {:?} ({})",
+                                                new_path,
+                                                aliased_path_to_string(filename_set, &new_path)
+                                            )
+                                        })
                                         as FilepathIdx;
                                     Either::Left(new_path_idx)
                                 }

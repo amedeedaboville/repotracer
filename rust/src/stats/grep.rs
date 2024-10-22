@@ -45,8 +45,7 @@ impl FileMeasurement for RipgrepCollector {
         let total: u64 = child_data
             .into_values()
             .map(|matches| matches.0 as u64)
-            .sum::<u64>()
-            .into();
+            .sum::<u64>();
         let mut data = HashMap::new();
         data.insert("total".to_string(), total.to_string());
         Ok(data)

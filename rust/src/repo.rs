@@ -6,7 +6,7 @@ use url::Url;
 // Equivalent of  basename $(git symbolic-ref --short refs/remotes/origin/HEAD)
 pub fn get_default_branch() -> Result<String, Box<dyn std::error::Error>> {
     let output = std::process::Command::new("git")
-        .args(&["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
+        .args(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
         .output()?;
 
     if !output.status.success() {
@@ -94,19 +94,19 @@ fn ensure_cloned(full_clone_url: &str, repo_path: &str) -> Result<(), String> {
         let _output = std::process::Command::new("git")
             .arg("pull")
             .arg("--rebase")
-            .arg(&repo_path)
+            .arg(repo_path)
             .output()
             .map_err(|_| "Failed to execute git pull".to_string())?;
 
         return Ok(()); // Skip cloning since the repo already exists
     } else {
-        fs::create_dir_all(&repo_path).map_err(|_| "Failed to create directories".to_string())?;
+        fs::create_dir_all(repo_path).map_err(|_| "Failed to create directories".to_string())?;
 
         let output = std::process::Command::new("git")
             .arg("clone")
             .arg("--no-checkout")
             .arg("--single-branch")
-            .arg(&full_clone_url)
+            .arg(full_clone_url)
             .arg(repo_path)
             .stdout(Stdio::inherit()) // This pipes the output to the current process's stdout
             .output()

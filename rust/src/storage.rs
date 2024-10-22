@@ -58,7 +58,7 @@ pub fn load_df(repo_name: &str, stat_name: &str) -> Result<Vec<CommitData>, Box<
     let reader = BufReader::new(file);
     let mut csv_reader = Reader::from_reader(reader);
 
-    let headers: Vec<String> = csv_reader.headers()?.iter().map(String::from).collect();
+    let _headers: Vec<String> = csv_reader.headers()?.iter().map(String::from).collect();
     let mut commits = Vec::new();
     for result in csv_reader.deserialize() {
         let commit: CommitData = result?;

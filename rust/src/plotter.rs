@@ -3,7 +3,7 @@ use std::fs;
 use crate::collectors::cached_walker::CommitData;
 use crate::config::get_stats_dir;
 use ahash::HashMap;
-use chrono::{TimeZone, Utc};
+
 
 use plotters::prelude::*;
 use plotters::style::text_anchor::{HPos, Pos, VPos};

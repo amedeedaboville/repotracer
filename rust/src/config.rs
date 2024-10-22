@@ -31,7 +31,7 @@ impl UserStatConfig {
         self.params.as_ref().and_then(|t| {
             t.as_object().and_then(|p| p.get(name)).map(|v| {
                 serde_json::from_value(v.clone())
-                    .expect(format!("Failed to deserialize {name}").as_str())
+                    .unwrap_or_else(|_| panic!("Failed to deserialize {name}"))
             })
         })
     }
@@ -98,7 +98,7 @@ pub fn global_config() -> &'static GlobalConfig {
             return default_config;
         }
         GlobalConfig::read_from_file(&path)
-            .expect(format!("Failed to read config file at {}", path.display()).as_str())
+            .unwrap_or_else(|_| panic!("Failed to read config file at {}", path.display()))
     })
 }
 
