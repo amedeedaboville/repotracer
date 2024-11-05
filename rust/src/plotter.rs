@@ -4,7 +4,6 @@ use crate::collectors::cached_walker::CommitData;
 use crate::config::get_stats_dir;
 use ahash::HashMap;
 
-
 use plotters::prelude::*;
 use plotters::style::text_anchor::{HPos, Pos, VPos};
 use plotters::style::{Color, Palette};
@@ -67,7 +66,10 @@ pub fn plot(
     let commit_times: Vec<_> = df.iter().map(|c| c.date).collect();
     let start_time = commit_times.iter().min().unwrap().to_owned();
     let end_time = commit_times.iter().max().unwrap().to_owned();
-    println!("start_time: {}, end_time: {}", start_time, end_time);
+    println!(
+        "total_ns: {}",
+        (end_time - start_time).num_nanoseconds().unwrap()
+    );
 
     // Convert String values to f64 and find min/max
     let parsed_data: Vec<HashMap<String, f64>> = df.iter().map(|c| parse_stats(&c.data)).collect();
@@ -86,9 +88,7 @@ pub fn plot(
         .to_owned();
 
     println!(
-        "min_value: {}, max_value: {}, total number of points {}",
-        min_value,
-        max_value,
+        "min_value: {min_value}, max_value: {max_value}, {start_time} to {end_time}, total number of points {}",
         parsed_data.len()
     );
     let title = stat_description;
@@ -110,7 +110,7 @@ pub fn plot(
 
     chart
         .configure_mesh()
-        .max_light_lines(0)
+        .max_light_lines(1)
         .label_style(("sans-serif", 3.percent_height()))
         .x_desc("Date")
         .axis_desc_style(TextStyle::from(("sans-serif", 25).into_font()).color(&text_gray))
@@ -135,7 +135,26 @@ pub fn plot(
     )?;
     let palette_size = SeabornDeepPalette::COLORS.len(); // Get the size of the palette
 
-    for (idx, stat_key) in df[0].data.keys().enumerate() {
+    // Create a vector of (stat_key, final_value) pairs
+    let mut stat_keys_with_values: Vec<(String, f64)> = df[0]
+        .data
+        .keys()
+        .map(|stat_key| {
+            let final_value = parsed_data
+                .last()
+                .and_then(|map| map.get(stat_key))
+                .copied()
+                .unwrap_or(0.0);
+            (stat_key.clone(), final_value)
+        })
+        .collect();
+
+    // Sort by final value in descending order
+    stat_keys_with_values
+        .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    // Draw series in sorted order
+    for (idx, (stat_key, _)) in stat_keys_with_values.iter().enumerate() {
         let values: Vec<f64> = parsed_data
             .iter()
             .map(|map| *map.get(stat_key).unwrap_or(&0.0))
