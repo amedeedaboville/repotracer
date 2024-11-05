@@ -38,7 +38,7 @@ pub struct CommitData {
     pub data: HashMap<String, String>,
 }
 
-type ResultCache<F> = DashMap<(OidIdx, FilepathIdx), F>;
+type ResultCache<F> = DashMap<(OidIdx, FilepathIdx), Option<F>>;
 
 //todo figure out what to call this or whether to put it in the Stat options themselves
 //probably should go in the stat options
@@ -253,7 +253,7 @@ where
             .progress_with(progress)
             .fold(
                 AHashMap::new,
-                |mut acc: AHashMap<(OidIdx, FilepathIdx), TreeDataCollection<F>>,
+                |mut acc: AHashMap<(OidIdx, FilepathIdx), Option<TreeDataCollection<F>>>,
                  (path, entry_idx)| {
                     let path_str = aliased_path_to_string(filename_set, &path);
                     let repo: &Repository = tl.get_or(|| shared_repo.clone().to_thread_local());
@@ -268,7 +268,7 @@ where
                                     || panic!("Did not find {:?} in filepath set", path)
                                 ) as FilepathIdx;
                             tree_collection.insert(Either::Left(path_idx), measurement);
-                            acc.insert((oid_idx, path_idx), tree_collection);
+                            acc.insert((oid_idx, path_idx), Some(tree_collection));
                         }
                         Err(_) => {}
                     };
@@ -277,7 +277,7 @@ where
             )
             .reduce(
                 AHashMap::new,
-                |mut acc: AHashMap<(OidIdx, FilepathIdx), TreeDataCollection<F>>, cur| {
+                |mut acc: AHashMap<(OidIdx, FilepathIdx), Option<TreeDataCollection<F>>>, cur| {
                     acc.extend(cur);
                     acc
                 },
@@ -305,93 +305,97 @@ where
             ..
         } = &self.repo_caches;
         let empty_path_idx = filepath_set.get_index_of(&SmallVec::new()).unwrap() as FilepathIdx;
-        let mut stack: VecDeque<(FilepathIdx, &TreeEntry, bool)> = VecDeque::new();
-        stack.push_back((empty_path_idx, root, false));
+        let mut stack: VecDeque<(FilepathIdx, &TreeEntry)> = VecDeque::new();
+        stack.push_back((empty_path_idx, root));
 
-        while let Some((path_idx, tree, do_aggregation)) = stack.pop_back() {
+        let mut agg_stack: VecDeque<(FilepathIdx, &TreeEntry)> = VecDeque::new();
+
+        while let Some((path_idx, tree)) = stack.pop_back() {
             if cache.contains_key(&(tree.oid_idx, path_idx)) {
                 continue;
             }
-            if do_aggregation {
-                // let cache_key_if_folder = &(tree.oid_idx, None);
-                // if cache.contains_key(cache_key_if_folder) {
-                //     continue;
-                // }
+            agg_stack.push_back((path_idx, tree));
+            for &child_entry_idx in tree.children.iter().rev() {
+                let Some(entry) = entry_set.get_index(child_entry_idx as usize) else {
+                    panic!(
+                        "Did not find {} in entry_set, even though it has {} items",
+                        child_entry_idx,
+                        entry_set.len()
+                    );
+                };
+                if entry.kind == TreeChildKind::Blob {
+                    continue;
+                }
                 let parent_path = filepath_set.get_index(path_idx as usize).unwrap();
-                let tree_agg = tree
-                    .children
-                    .iter()
-                    .filter_map(|child_idx| {
-                        let MyEntry {
-                            oid_idx,
-                            filename_idx,
-                            kind: _,
-                        } = entry_set.get_index(*child_idx as usize).unwrap();
-                        let mut child_path = parent_path.clone();
-                        child_path.push(*filename_idx);
-                        let child_path_idx =
-                            filepath_set.get_index_of(&child_path).unwrap() as FilepathIdx;
-                        let child_result: TreeDataCollection<F> =
-                            cache.get(&(*oid_idx, child_path_idx))?.clone();
-                        Some((filename_idx, child_result))
-                    })
-                    // Prepend the current filename to each result
-                    .flat_map(|(_filename_idx, data)| {
-                        data.into_iter().map(|(key, value)| {
-                            let new_path_idx = match key {
-                                Either::Left(_path_idx) => key,
-                                Either::Right(leaf_filename_idx) => {
-                                    let mut new_path = parent_path.clone();
-                                    new_path.push(leaf_filename_idx);
-                                    let new_path_idx = filepath_set
-                                        .get_index_of(&new_path)
-                                        .unwrap_or_else(|| {
-                                            panic!(
-                                                "Did not find new path in filepath set: {:?} ({})",
-                                                new_path,
-                                                aliased_path_to_string(filename_set, &new_path)
-                                            )
-                                        })
-                                        as FilepathIdx;
-                                    Either::Left(new_path_idx)
-                                }
-                            };
-                            (new_path_idx, value)
-                        })
-                    })
-                    .collect::<TreeDataCollection<F>>();
-                cache.insert((tree.oid_idx, path_idx), tree_agg);
-            } else {
-                stack.push_back((path_idx, tree, true));
-                for &child_entry_idx in tree.children.iter().rev() {
-                    let Some(entry) = entry_set.get_index(child_entry_idx as usize) else {
-                        panic!(
-                            "Did not find {} in entry_set, even though it has {} items",
-                            child_entry_idx,
-                            entry_set.len()
-                        );
+                let mut child_path = parent_path.clone();
+                child_path.push(entry.filename_idx);
+                let child_path_idx = filepath_set.get_index_of(&child_path).unwrap() as FilepathIdx;
+                if !cache.contains_key(&(child_entry_idx, child_path_idx)) {
+                    let Some(child) = flat_tree.get(&entry.oid_idx) else {
+                        panic!("Did not find {} in flat repo", entry.oid_idx)
                     };
-                    if entry.kind == TreeChildKind::Blob {
-                        continue;
-                    }
-                    let parent_path = filepath_set.get_index(path_idx as usize).unwrap();
-                    let mut child_path = parent_path.clone();
-                    child_path.push(entry.filename_idx);
-                    let child_path_idx =
-                        filepath_set.get_index_of(&child_path).unwrap() as FilepathIdx;
-                    if !cache.contains_key(&(child_entry_idx, child_path_idx)) {
-                        let Some(child) = flat_tree.get(&entry.oid_idx) else {
-                            panic!("Did not find {} in flat repo", entry.oid_idx)
-                        };
-                        stack.push_back((child_path_idx, child.unwrap_tree(), false));
-                    }
+                    stack.push_back((child_path_idx, child.unwrap_tree()));
                 }
             }
+        }
+        while let Some((path_idx, tree)) = agg_stack.pop_back() {
+            if cache.contains_key(&(tree.oid_idx, path_idx)) {
+                continue;
+            }
+            let parent_path = filepath_set.get_index(path_idx as usize).unwrap();
+            let tree_agg = tree
+                .children
+                .iter()
+                .filter_map(|child_idx| {
+                    let MyEntry {
+                        oid_idx,
+                        filename_idx,
+                        kind: _,
+                    } = entry_set.get_index(*child_idx as usize).unwrap();
+                    let mut child_path = parent_path.clone();
+                    child_path.push(*filename_idx);
+                    let child_path_idx =
+                        filepath_set.get_index_of(&child_path).unwrap() as FilepathIdx;
+                    let child_result: Option<TreeDataCollection<F>> =
+                        cache.get(&(*oid_idx, child_path_idx))?.clone();
+                    match child_result {
+                        Some(x) => Some((*filename_idx, x)),
+                        None => None,
+                    }
+                })
+                // .flatten()
+                // Prepend the current filename to each result
+                .flat_map(|(_filename_idx, data)| {
+                    let mut new_path = parent_path.clone(); //temp array to build a new path, reused for each child
+                    data.into_iter().map(move |(key, value)| {
+                        let new_path_idx = match key {
+                            Either::Left(_path_idx) => key,
+                            Either::Right(leaf_filename_idx) => {
+                                new_path.push(leaf_filename_idx);
+                                let new_path_idx = filepath_set
+                                    .get_index_of(&new_path)
+                                    .unwrap_or_else(|| {
+                                        panic!(
+                                            "Did not find new path in filepath set: {:?} ({})",
+                                            new_path,
+                                            aliased_path_to_string(filename_set, &new_path)
+                                        )
+                                    })
+                                    as FilepathIdx;
+                                new_path.pop();
+                                Either::Left(new_path_idx)
+                            }
+                        };
+                        (new_path_idx, value)
+                    })
+                })
+                .collect::<TreeDataCollection<F>>();
+            cache.insert((tree.oid_idx, path_idx), Some(tree_agg));
         }
 
         cache
             .get(&(root.oid_idx, empty_path_idx))
-            .map(|x| x.clone())
+            .map(|x| x.clone().unwrap())
             .ok_or_else(|| "Failed to aggregate results".into())
     }
     // fn measure_tree(
