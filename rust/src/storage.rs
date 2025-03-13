@@ -19,8 +19,9 @@ pub fn write_commit_stats_to_csv(
     repo_name: &str,
     stat_name: &str,
     df: &Vec<CommitData>,
+    dest: Option<PathBuf>,
 ) -> Result<(), Box<dyn Error>> {
-    let path = stat_storage_path(repo_name, stat_name);
+    let path = dest.unwrap_or_else(|| stat_storage_path(repo_name, stat_name));
     println!("Writing {repo_name}:{stat_name} to {}", path.display());
 
     let file = File::create(&path)?;

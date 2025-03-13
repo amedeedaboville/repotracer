@@ -3,6 +3,7 @@ pub mod commands {
     pub mod clone;
     pub mod config;
     pub mod run;
+    pub mod run_one_off;
     pub mod run_stat;
     pub mod serve;
 }

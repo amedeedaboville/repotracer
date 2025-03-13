@@ -37,7 +37,7 @@ fn run_stat(repo_name: &str, stat_name: &str) {
         .unwrap();
 
     let mut plot_df = res.clone();
-    write_commit_stats_to_csv(repo_name, stat_name, &mut res).unwrap();
+    write_commit_stats_to_csv(repo_name, stat_name, &mut res, None).unwrap();
     let stat_description = match stat_name {
         "tokei" => "LOC by Language",
         "grep" => "Number of TODOs",

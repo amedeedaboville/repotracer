@@ -5,6 +5,7 @@ use repotracer::commands::config::{
     config_add_repo_command, config_location_command, config_show_command,
 };
 use repotracer::commands::run::run_command;
+use repotracer::commands::run_one_off::run_one_off_command;
 use repotracer::commands::run_stat::run_stat_command;
 use repotracer::commands::serve::serve_command;
 
@@ -135,6 +136,29 @@ fn main() {
                 ),
         )
         .subcommand(
+            Command::new("run-one-off")
+                .about("Run a one-off stat from a JSON config file")
+                .arg(
+                    Arg::new("config")
+                        .value_name("CONFIG_FILE")
+                        .required(true)
+                        .help("Path to the JSON file containing the stat configuration"),
+                )
+                .arg(
+                    Arg::new("repo_path")
+                        .value_name("REPO_PATH")
+                        .required(true)
+                        .help("Path to the repository to analyze"),
+                )
+                .arg(
+                    Arg::new("output")
+                        .short('o')
+                        .long("output")
+                        .value_name("OUTPUT_FILE")
+                        .help("Path to save the results CSV (defaults to <stat_name>.csv in current directory)"),
+                ),
+        )
+        .subcommand(
             Command::new("serve")
                 .about("Start a webserver to interact with Repotracer")
                 .arg(
@@ -190,6 +214,12 @@ fn main() {
                 sub_m.get_one::<String>("since"),
                 sub_m.get_one::<String>("granularity"),
             );
+        }
+        Some(("run-one-off", sub_m)) => {
+            let config_path = sub_m.get_one::<String>("config").unwrap();
+            let repo_path = sub_m.get_one::<String>("repo_path").unwrap();
+            let output = sub_m.get_one::<String>("output");
+            run_one_off_command(config_path, repo_path, output);
         }
         Some(("serve", sub_m)) => {
             let port = sub_m.get_one::<String>("port").unwrap();
