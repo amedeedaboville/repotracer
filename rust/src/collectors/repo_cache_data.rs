@@ -1,4 +1,3 @@
-
 use crossbeam::channel::{bounded, Receiver, Sender};
 use crossbeam::queue::SegQueue;
 use dashmap::DashSet;
@@ -187,6 +186,13 @@ impl FlatRepoWithSets {
         self.flat_tree.extend(other.flat_tree);
     }
 }
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CacheMetadata {
+    pub last_commit_id: ObjectId,
+    pub creation_time: std::time::SystemTime,
+}
+
 impl RepoCacheData {
     pub fn new(repo_path: &str) -> Self {
         let start_time = Instant::now();
@@ -194,7 +200,7 @@ impl RepoCacheData {
             .unwrap_or_else(|_| panic!("Failed to open repo at {repo_path}"));
         let repo = repo_safe.clone().to_thread_local();
         let (flat_tree, filename_cache, filename_set, filepath_set, oid_set, entry_set) =
-            load_caches(&repo, &repo_safe);
+            load_or_rebuild_caches(&repo, &repo_safe);
         println!(
             "Loaded repo caches in {} seconds",
             start_time.elapsed().as_secs_f64()
@@ -210,15 +216,15 @@ impl RepoCacheData {
         }
     }
 }
+
 pub fn build_oid_set(repo: &Repository) -> Result<OidSetWithInfo, Box<dyn std::error::Error>> {
     let mut num_trees = 0;
     let mut num_blobs = 0;
     let mut oids = Vec::new();
-    for oid_res in repo
-        .objects
-        .iter()
-        .unwrap()
-        .with_ordering(gix::odb::store::iter::Ordering::PackAscendingOffsetThenLooseLexicographical)
+    for oid_res in
+        repo.objects.iter().unwrap().with_ordering(
+            gix::odb::store::iter::Ordering::PackAscendingOffsetThenLooseLexicographical,
+        )
     {
         if let Ok(oid) = oid_res {
             let kind = repo.find_header(oid).unwrap().kind();
@@ -564,7 +570,7 @@ pub fn build_flat_tree(
         });
     Ok(oid_entries)
 }
-pub fn load_caches(
+pub fn load_or_rebuild_caches(
     repo: &Repository,
     shared_repo: &ThreadSafeRepository,
 ) -> (
@@ -575,8 +581,45 @@ pub fn load_caches(
     OidSetWithInfo,
     EntrySet,
 ) {
-    // let repo_path = repo.path().to_str().unwrap();
-    let oid_set: OidSetWithInfo = load_and_save_cache(shared_repo, "oids", |_| build_oid_set(repo));
+    let repo_path = repo.path().to_str().unwrap();
+    let head_id = repo.head_id().expect("Failed to get HEAD id");
+    let metadata = load_cache::<CacheMetadata>(repo_path, "metadata").ok();
+    let cache_is_current = match &metadata {
+        Some(meta) => meta.last_commit_id == head_id,
+        None => false,
+    };
+    if cache_is_current {
+        println!("Cache is up to date with current HEAD");
+    } else {
+        println!("Cache is not up to date with current HEAD. Rebuilding from scratch...");
+        let cache_files = ["metadata", "filenames", "filepaths", "entries", "flat_tree"];
+        for cache_name in cache_files {
+            let cache_path = format!("{}/{}.bin", repo_path, cache_name);
+            if let Err(e) = std::fs::remove_file(&cache_path) {
+                // Only print error if file exists and couldn't be removed
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    println!(
+                        "Warning: Failed to remove old cache file {}: {}",
+                        cache_path, e
+                    );
+                }
+            }
+        }
+    }
+    return load_caches(repo, shared_repo);
+}
+fn load_caches(
+    repo: &Repository,
+    shared_repo: &ThreadSafeRepository,
+) -> (
+    FlatGitRepo,
+    FilenameCache,
+    FilenameSet,
+    FilepathSet,
+    OidSetWithInfo,
+    EntrySet,
+) {
+    let oid_set = build_oid_set(repo).unwrap();
     println!(
         "Found {} objects: {} trees and {} blobs.",
         oid_set.set.len(),
@@ -609,6 +652,11 @@ pub fn load_caches(
             caches
         }
     };
+    let new_metadata = CacheMetadata {
+        last_commit_id: repo.head_id().unwrap().into(),
+        creation_time: std::time::SystemTime::now(),
+    };
+    save_cache(repo_path, "metadata", &new_metadata).unwrap();
     let filename_cache = build_filename_cache(&entry_set, &flat_tree).unwrap();
 
     (
@@ -704,6 +752,7 @@ where
     Cache: DeserializeOwned,
 {
     let cache_path = format!("{}/{}.bin", repo_path, cache_name);
+    println!("Loading cache from {}", cache_path);
     let cache_file = File::open(cache_path)?;
     let cache_reader = BufReader::with_capacity(1024 * 1024, cache_file);
     let cache: Cache = bincode::deserialize_from(cache_reader)
@@ -715,6 +764,7 @@ where
     Cache: Serialize,
 {
     let cache_path = format!("{}/{}.bin", repo_path, cache_name);
+    println!("Saving cache to {}", cache_path);
     let cache_file = File::create(cache_path)?;
     let mut cache_writer = BufWriter::new(cache_file);
     bincode::serialize_into(&mut cache_writer, cache)
