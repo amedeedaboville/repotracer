@@ -1,6 +1,6 @@
 [package]
 name = "repotracer"
-version = "0.2.0"
+version = "0.5.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -28,7 +28,6 @@ ahash = {version = "0.8.8", features = ["serde"]}
 smallvec = {version = "1.13.1", features=["serde", "union"]}
 indexmap = {version = "2.2.3", features=["serde"]}
 dashmap = {version = "5.5.3", features=["inline"]}
-plotters = "0.3.5"
 crossbeam = {version = "0.8.4", features=["crossbeam-channel"]}
 dialoguer = "0.11.0"
 tiny_http = "0.12.0"

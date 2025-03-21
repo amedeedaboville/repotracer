@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2025-03-21
+- Officially made the Rust branch the default version. Things might not port over well or might be broken from the python version.
+
+### Removed
+- This removes the plotting support as Rust's plotting support is very weak.
+### Fixed
+- The new tool is now 10-30x more performant, through parallel processing, use of the gitx library and a new processing approach that reuses results from previous versions of files.
+- Tools like tokei, ripgrep and fd don't need to be installed anymore. They are written in Rust so we just use them as libraries. 
+
 ## [0.4.3] - 2023-11-02
 - Fixed bug in previous release.
 ## [0.4.2] - 2023-11-02

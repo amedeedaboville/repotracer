@@ -22,7 +22,6 @@ pub mod collectors {
 }
 
 pub mod config;
-pub mod plotter;
 pub mod repo;
 pub mod stat;
 pub mod storage;

@@ -2,7 +2,6 @@ use chrono::Utc;
 
 use crate::collectors::list_in_range::Granularity;
 use crate::config;
-use crate::plotter::plot;
 use crate::stat::build_measurement;
 use crate::storage::write_commit_stats_to_csv;
 
@@ -36,21 +35,5 @@ fn run_stat(repo_name: &str, stat_name: &str) {
         )
         .unwrap();
 
-    let mut plot_df = res.clone();
     write_commit_stats_to_csv(repo_name, stat_name, &mut res, None).unwrap();
-    let stat_description = match stat_name {
-        "tokei" => "LOC by Language",
-        "grep" => "Number of TODOs",
-        "filecount" => "Number of Files",
-        _ => stat_config.description.as_ref(),
-    };
-    println!("plotting");
-    plot(
-        repo_name,
-        stat_name,
-        &mut plot_df,
-        stat_description,
-        &Utc::now(),
-    )
-    .expect("Error plotting");
 }
