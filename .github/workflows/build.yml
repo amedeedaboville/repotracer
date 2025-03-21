@@ -24,8 +24,6 @@ jobs:
       
       - name: Cache dependencies
         uses: Swatinem/rust-cache@v2
-        with:
-          targets: x86_64-unknown-linux-gnu
       
       - name: Build
         run: cargo build --release --target x86_64-unknown-linux-gnu
