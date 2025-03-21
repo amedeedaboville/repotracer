@@ -44,7 +44,7 @@ jobs:
           name: repotracer
           path: target/x86_64-unknown-linux-gnu/release/repotracer
       
-      - name: Create Release
+      - name: Update Release
         if: github.event_name == 'release' && github.event.action == 'published'
         uses: softprops/action-gh-release@v1
         with:
@@ -53,5 +53,6 @@ jobs:
           name: Release ${{ github.ref_name }}
           draft: false
           prerelease: false
+          append_body: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} 
