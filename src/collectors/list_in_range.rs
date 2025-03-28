@@ -8,11 +8,16 @@ use std::option::Option;
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize, Clone)]
 pub enum Granularity {
+    #[serde(alias = "infinite", alias = "INFINITE", alias = "all", alias = "ALL")]
     Infinite,
+    #[serde(alias = "daily", alias = "DAILY", alias = "day", alias = "DAY")]
     Daily,
+    #[serde(alias = "hourly", alias = "HOURLY", alias = "hour", alias = "HOUR")]
     Hourly,
     EveryXHours(i64),
+    #[serde(alias = "weekly", alias = "WEEKLY", alias = "week", alias = "WEEK")]
     Weekly,
+    #[serde(alias = "monthly", alias = "MONTHLY", alias = "month", alias = "MONTH")]
     Monthly,
 }
 impl Granularity {

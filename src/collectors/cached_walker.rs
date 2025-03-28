@@ -163,15 +163,14 @@ where
                 .expect("Failed to compile path_in_repo into glob")
                 .compile_matcher()
         });
-        let commit_and_tree_oids =
-            commits_to_process
-                .iter()
-                .map(|commit| {
-                    let commit_oid = commit.id;
-                    let tree_oid = commit.tree().unwrap().id;
-                    (commit_oid, tree_oid)
-                })
-                .collect::<Vec<_>>();
+        let commit_and_tree_oids = commits_to_process
+            .iter()
+            .map(|commit| {
+                let commit_oid = commit.id;
+                let tree_oid = commit.tree().unwrap().id;
+                (commit_oid, tree_oid)
+            })
+            .collect::<Vec<_>>();
         let entries_to_process =
             self.gather_objects_to_process(&commit_and_tree_oids, path_glob)?;
         self.batch_process_objects(&mut cache, entries_to_process);
@@ -263,10 +262,9 @@ where
                     match self.file_measurer.measure_entry(repo, &path_str, oid) {
                         Ok(measurement) => {
                             let mut tree_collection: TreeDataCollection<F> = BTreeMap::new();
-                            let path_idx =
-                                filepath_set.get_index_of(&path).unwrap_or_else(
-                                    || panic!("Did not find {:?} in filepath set", path)
-                                ) as FilepathIdx;
+                            let path_idx = filepath_set.get_index_of(&path).unwrap_or_else(|| {
+                                panic!("Did not find {:?} in filepath set", path)
+                            }) as FilepathIdx;
                             tree_collection.insert(Either::Left(path_idx), measurement);
                             acc.insert((oid_idx, path_idx), Some(tree_collection));
                         }
@@ -305,16 +303,14 @@ where
             ..
         } = &self.repo_caches;
         let empty_path_idx = filepath_set.get_index_of(&SmallVec::new()).unwrap() as FilepathIdx;
-        let mut stack: VecDeque<(FilepathIdx, &TreeEntry)> = VecDeque::new();
-        stack.push_back((empty_path_idx, root));
+        let mut stack: Vec<(FilepathIdx, &TreeEntry)> = vec![(empty_path_idx, root)];
+        let mut agg_stack: Vec<(FilepathIdx, &TreeEntry)> = Vec::new();
 
-        let mut agg_stack: VecDeque<(FilepathIdx, &TreeEntry)> = VecDeque::new();
-
-        while let Some((path_idx, tree)) = stack.pop_back() {
+        while let Some((path_idx, tree)) = stack.pop() {
             if cache.contains_key(&(tree.oid_idx, path_idx)) {
                 continue;
             }
-            agg_stack.push_back((path_idx, tree));
+            agg_stack.push((path_idx, tree));
             for &child_entry_idx in tree.children.iter().rev() {
                 let Some(entry) = entry_set.get_index(child_entry_idx as usize) else {
                     panic!(
@@ -334,11 +330,11 @@ where
                     let Some(child) = flat_tree.get(&entry.oid_idx) else {
                         panic!("Did not find {} in flat repo", entry.oid_idx)
                     };
-                    stack.push_back((child_path_idx, child.unwrap_tree()));
+                    stack.push((child_path_idx, child.unwrap_tree()));
                 }
             }
         }
-        while let Some((path_idx, tree)) = agg_stack.pop_back() {
+        while let Some((path_idx, tree)) = agg_stack.pop() {
             if cache.contains_key(&(tree.oid_idx, path_idx)) {
                 continue;
             }
@@ -356,8 +352,9 @@ where
                     child_path.push(*filename_idx);
                     let child_path_idx =
                         filepath_set.get_index_of(&child_path).unwrap() as FilepathIdx;
-                    let child_result: Option<TreeDataCollection<F>> =
-                        cache.get(&(*oid_idx, child_path_idx))?.clone();
+                    let child_result: Option<TreeDataCollection<F>> = cache
+                        .get(&(*oid_idx, child_path_idx))
+                        .and_then(|x| x.clone());
                     match child_result {
                         Some(x) => Some((*filename_idx, x)),
                         None => None,
@@ -372,16 +369,14 @@ where
                             Either::Left(_path_idx) => key,
                             Either::Right(leaf_filename_idx) => {
                                 new_path.push(leaf_filename_idx);
-                                let new_path_idx = filepath_set
-                                    .get_index_of(&new_path)
-                                    .unwrap_or_else(|| {
+                                let new_path_idx =
+                                    filepath_set.get_index_of(&new_path).unwrap_or_else(|| {
                                         panic!(
                                             "Did not find new path in filepath set: {:?} ({})",
                                             new_path,
                                             aliased_path_to_string(filename_set, &new_path)
                                         )
-                                    })
-                                    as FilepathIdx;
+                                    }) as FilepathIdx;
                                 new_path.pop();
                                 Either::Left(new_path_idx)
                             }

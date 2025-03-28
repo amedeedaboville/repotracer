@@ -341,10 +341,18 @@ struct WorkItem {
 
 pub fn build_caches_with_paths(
     repo: &Repository,
-    oid_set: &OidSetWithInfo,
-) -> Result<(FilenameSet, FilepathSet, EntrySet, FlatGitRepo), Box<dyn std::error::Error>> {
+) -> Result<
+    (
+        OidSetWithInfo,
+        FilenameSet,
+        FilepathSet,
+        EntrySet,
+        FlatGitRepo,
+    ),
+    Box<dyn std::error::Error>,
+> {
     let queue: Arc<SegQueue<(Option<FilepathIdx>, OidIdx)>> = Arc::new(SegQueue::new());
-
+    let oid_set = build_oid_set(repo).unwrap();
     let start_time = Instant::now();
     let revwalk = repo
         .rev_walk(repo.head_id())
@@ -493,7 +501,8 @@ pub fn build_caches_with_paths(
         "Built flat tree in {} seconds.",
         start_time.elapsed().as_secs_f32()
     );
-    Ok(result)
+    let (filename_set, filepath_set, entry_set, flat_tree) = result;
+    Ok((oid_set, filename_set, filepath_set, entry_set, flat_tree))
 }
 pub fn build_flat_tree(
     repo: &ThreadSafeRepository,
@@ -592,7 +601,14 @@ pub fn load_or_rebuild_caches(
         println!("Cache is up to date with current HEAD");
     } else {
         println!("Cache is not up to date with current HEAD. Rebuilding from scratch...");
-        let cache_files = ["metadata", "filenames", "filepaths", "entries", "flat_tree"];
+        let cache_files = [
+            "oids",
+            "metadata",
+            "filenames",
+            "filepaths",
+            "entries",
+            "flat_tree",
+        ];
         for cache_name in cache_files {
             let cache_path = format!("{}/{}.bin", repo_path, cache_name);
             if let Err(e) = std::fs::remove_file(&cache_path) {
@@ -619,32 +635,26 @@ fn load_caches(
     OidSetWithInfo,
     EntrySet,
 ) {
-    let oid_set = build_oid_set(repo).unwrap();
-    println!(
-        "Found {} objects: {} trees and {} blobs.",
-        oid_set.set.len(),
-        oid_set.num_trees,
-        oid_set.num_blobs
-    );
-
     let start_time = Instant::now();
     let repo_path = repo.path().to_str().unwrap();
-    let (filename_set, filepath_set, entry_set, flat_tree) = match (
+    let (oid_set, filename_set, filepath_set, entry_set, flat_tree) = match (
+        load_cache::<OidSetWithInfo>(repo_path, "oids"),
         load_cache::<FilenameSet>(repo_path, "filenames"),
         load_cache::<FilepathSet>(repo_path, "filepaths"),
         load_cache::<EntrySet>(repo_path, "entries"),
         load_cache::<FlatGitRepo>(repo_path, "flat_tree"),
     ) {
-        (Ok(filename_set), Ok(filepath_set), Ok(entry_set), Ok(flat_tree)) => {
-            (filename_set, filepath_set, entry_set, flat_tree)
+        (Ok(oid_set), Ok(filename_set), Ok(filepath_set), Ok(entry_set), Ok(flat_tree)) => {
+            (oid_set, filename_set, filepath_set, entry_set, flat_tree)
         }
         _ => {
             println!("Computing flat tree from scratch.");
-            let caches = build_caches_with_paths(repo, &oid_set).unwrap();
-            save_cache(repo_path, "filenames", &caches.0).unwrap();
-            save_cache(repo_path, "filepaths", &caches.1).unwrap();
-            save_cache(repo_path, "entries", &caches.2).unwrap();
-            save_cache(repo_path, "flat_tree", &caches.3).unwrap();
+            let caches = build_caches_with_paths(repo).unwrap();
+            save_cache(repo_path, "oids", &caches.0).unwrap();
+            save_cache(repo_path, "filenames", &caches.1).unwrap();
+            save_cache(repo_path, "filepaths", &caches.2).unwrap();
+            save_cache(repo_path, "entries", &caches.3).unwrap();
+            save_cache(repo_path, "flat_tree", &caches.4).unwrap();
             println!(
                 "Built caches in {} seconds",
                 start_time.elapsed().as_secs_f32(),
@@ -652,6 +662,13 @@ fn load_caches(
             caches
         }
     };
+    println!(
+        "Found {} objects: {} trees and {} blobs.",
+        oid_set.set.len(),
+        oid_set.num_trees,
+        oid_set.num_blobs
+    );
+
     let new_metadata = CacheMetadata {
         last_commit_id: repo.head_id().unwrap().into(),
         creation_time: std::time::SystemTime::now(),
