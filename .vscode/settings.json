@@ -1,14 +1,6 @@
 {
-  "python.formatting.provider": "none",
-  "[python]": {
-    "editor.defaultFormatter": "ms-python.black-formatter"
-  },
   "files.autoSave": "off",
-  "editor.defaultFormatter": "ms-python.black-formatter",
-  "docker.languageserver.formatter.ignoreMultilineInstructions": true,
   "rust-analyzer.linkedProjects": [
-    "./rust/Cargo.toml",
-    "./rust/Cargo.toml",
-    "./rust/Cargo.toml"
+    "./Cargo.toml"
   ]
 }
