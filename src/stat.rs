@@ -53,26 +53,33 @@ impl Measurement {
         match self {
             Measurement::Tokei(tokei) => {
                 let mut walker = CachedWalker::<TokeiStat>::new(repo_path, tokei.clone());
-                walker.walk_repo_and_collect_stats(options, stream_sender)
+                let result = walker.walk_repo_and_collect_stats(options, stream_sender)?;
+                std::mem::forget(walker);
+                Ok(result)
             }
             Measurement::Grep(grep) => {
                 let mut walker = CachedWalker::<NumMatches>::new(repo_path, grep.clone());
-                walker.walk_repo_and_collect_stats(options, stream_sender)
+                let result = walker.walk_repo_and_collect_stats(options, stream_sender)?;
+                std::mem::forget(walker);
+                Ok(result)
             }
             Measurement::FileCount(filecount) => {
                 let mut walker = CachedWalker::<NumMatches>::new(repo_path, filecount.clone());
-                walker.walk_repo_and_collect_stats(options, stream_sender)
+                let result = walker.walk_repo_and_collect_stats(options, stream_sender)?;
+                std::mem::forget(walker);
+                Ok(result)
             }
             Measurement::Script(script) => {
                 let mut walker = CachedWalker::<String>::new(repo_path, script.clone());
-                walker.walk_repo_and_collect_stats(options, stream_sender)
+                let result = walker.walk_repo_and_collect_stats(options, stream_sender)?;
+                std::mem::forget(walker);
+                Ok(result)
             }
         }
     }
 }
 pub fn build_measurement(config: &UserStatConfig) -> Measurement {
     let valid_measurements = ["tokei", "grep/regex_count", "file_count", "script"];
-    // let granularity = config.as_object.get("granularity").as_string;
     match config.type_.as_str() {
         "tokei" => {
             let param_languages = config.get_param_array_string("languages");
