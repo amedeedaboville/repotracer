@@ -648,7 +648,7 @@ fn load_caches(
             (oid_set, filename_set, filepath_set, entry_set, flat_tree)
         }
         _ => {
-            println!("Computing flat tree from scratch.");
+            println!("Computing cachesfrom scratch.");
             let caches = build_caches_with_paths(repo).unwrap();
             save_cache(repo_path, "oids", &caches.0).unwrap();
             save_cache(repo_path, "filenames", &caches.1).unwrap();

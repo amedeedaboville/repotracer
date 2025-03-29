@@ -385,7 +385,9 @@ where
                     })
                 })
                 .collect::<TreeDataCollection<F>>();
-            cache.insert((tree.oid_idx, path_idx), Some(tree_agg));
+            cache
+                .entry((tree.oid_idx, path_idx))
+                .or_insert(Some(tree_agg));
         }
 
         cache
