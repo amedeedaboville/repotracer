@@ -40,10 +40,10 @@ impl FileMeasurement for RipgrepCollector {
     }
     fn summarize_tree_data(
         &self,
-        child_data: TreeDataCollection<NumMatches>,
+        child_data: &TreeDataCollection<NumMatches>,
     ) -> Result<SummaryData, Box<dyn std::error::Error>> {
         let total: u64 = child_data
-            .into_values()
+            .values()
             .map(|matches| matches.0 as u64)
             .sum::<u64>();
         let mut data = HashMap::new();

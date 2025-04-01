@@ -100,7 +100,7 @@ pub trait FileMeasurement: Sync {
 
     fn summarize_tree_data(
         &self,
-        child_data: TreeDataCollection<Self::Data>,
+        child_data: &TreeDataCollection<Self::Data>,
     ) -> Result<SummaryData, Box<dyn std::error::Error>>;
 }
 pub trait PossiblyEmpty {

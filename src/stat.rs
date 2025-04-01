@@ -49,29 +49,28 @@ impl Measurement {
             range,
             path_in_repo,
         };
-        let stream_sender = None;
         match self {
             Measurement::Tokei(tokei) => {
                 let mut walker = CachedWalker::<TokeiStat>::new(repo_path, tokei.clone());
-                let result = walker.walk_repo_and_collect_stats(options, stream_sender)?;
+                let result = walker.walk_repo_and_collect_stats(options)?;
                 std::mem::forget(walker);
                 Ok(result)
             }
             Measurement::Grep(grep) => {
                 let mut walker = CachedWalker::<NumMatches>::new(repo_path, grep.clone());
-                let result = walker.walk_repo_and_collect_stats(options, stream_sender)?;
+                let result = walker.walk_repo_and_collect_stats(options)?;
                 std::mem::forget(walker);
                 Ok(result)
             }
             Measurement::FileCount(filecount) => {
                 let mut walker = CachedWalker::<NumMatches>::new(repo_path, filecount.clone());
-                let result = walker.walk_repo_and_collect_stats(options, stream_sender)?;
+                let result = walker.walk_repo_and_collect_stats(options)?;
                 std::mem::forget(walker);
                 Ok(result)
             }
             Measurement::Script(script) => {
                 let mut walker = CachedWalker::<String>::new(repo_path, script.clone());
-                let result = walker.walk_repo_and_collect_stats(options, stream_sender)?;
+                let result = walker.walk_repo_and_collect_stats(options)?;
                 std::mem::forget(walker);
                 Ok(result)
             }

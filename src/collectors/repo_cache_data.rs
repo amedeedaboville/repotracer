@@ -215,6 +215,9 @@ impl RepoCacheData {
             tree_entry_set: entry_set,
         }
     }
+    pub fn get_empty_path_idx(&self) -> FilepathIdx {
+        self.filepath_set.get_index_of(&SmallVec::new()).unwrap() as FilepathIdx
+    }
 }
 
 pub fn build_oid_set(repo: &Repository) -> Result<OidSetWithInfo, Box<dyn std::error::Error>> {

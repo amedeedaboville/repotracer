@@ -1,11 +1,10 @@
 use chrono::{DateTime, Utc};
-use crossbeam::channel::Sender;
 
 use dashmap::DashMap;
 
 use globset::{Glob, GlobMatcher};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 
 use super::list_in_range::Granularity;
 use super::repo_cache_data::{
@@ -67,11 +66,23 @@ where
             file_measurer,
         }
     }
-    fn gather_objects_to_process(
+    /// Processes a set of Git tree objects to find and gather all the paths to process.
+    ///
+    /// # Parameters
+    /// * `tree_ids` - An iterable of Git tree ObjectIds (typically the tree references from commits)
+    /// * `path_glob` - Optional glob pattern to filter files by path
+    ///
+    /// # Returns
+    /// A vector of tuples containing (AliasedPath, OidIdx) for all relevant files
+    fn gather_objects_to_process<I>(
         &self,
-        commit_tree_ids: &Vec<(ObjectId, ObjectId)>,
+        tree_ids: I,
         path_glob: Option<GlobMatcher>,
-    ) -> Result<Vec<(AliasedPath, OidIdx)>, Box<dyn std::error::Error>> {
+    ) -> Result<Vec<(AliasedPath, OidIdx)>, Box<dyn std::error::Error>>
+    where
+        I: IntoIterator<Item = ObjectId>,
+        I::IntoIter: ExactSizeIterator,
+    {
         let RepoCacheData {
             oid_set,
             tree_entry_set,
@@ -83,13 +94,12 @@ where
             HashSet::with_capacity(oid_set.num_blobs / 3);
         let mut processed: HashSet<(Option<AliasedPath>, EntryIdx)> = HashSet::new();
         let mut entries_to_process = Vec::new();
-        for (_commit_oid, commit_tree_objectid) in commit_tree_ids
-            .iter()
-            .progress_with(pb_default(commit_tree_ids.len()))
-        {
-            let commit_tree_oid_idx = oid_set
-                .get_index_of(&(*commit_tree_objectid, Kind::Tree))
-                .unwrap() as OidIdx;
+
+        let tree_ids_iter = tree_ids.into_iter();
+        let tree_ids_len = tree_ids_iter.len();
+        for tree_id in tree_ids_iter.progress_with(pb_default(tree_ids_len)) {
+            let commit_tree_oid_idx =
+                oid_set.get_index_of(&(tree_id, Kind::Tree)).unwrap() as OidIdx;
             let commit_tree_item = flat_tree.get(&commit_tree_oid_idx).unwrap().unwrap_tree();
             entries_to_process.extend(commit_tree_item.children.iter().map(|entry| (None, entry)));
             while let Some((maybe_path, &entry_idx)) = entries_to_process.pop() {
@@ -135,7 +145,6 @@ where
     pub fn walk_repo_and_collect_stats(
         &mut self,
         options: MeasurementRunOptions,
-        stream_sender: Option<Sender<CommitData>>,
     ) -> Result<Vec<CommitData>, Box<dyn std::error::Error>> {
         let measurement_start = Instant::now();
         let MeasurementRunOptions {
@@ -163,47 +172,42 @@ where
                 .expect("Failed to compile path_in_repo into glob")
                 .compile_matcher()
         });
-        let commit_and_tree_oids = commits_to_process
+        let empty_path_idx = self.repo_caches.get_empty_path_idx();
+        let commits_with_info = commits_to_process
             .iter()
             .map(|commit| {
                 let commit_oid = commit.id;
                 let tree_oid = commit.tree().unwrap().id;
-                (commit_oid, tree_oid)
+                (commit_oid, tree_oid, commit.time().unwrap())
             })
             .collect::<Vec<_>>();
-        let entries_to_process =
-            self.gather_objects_to_process(&commit_and_tree_oids, path_glob)?;
+        let entries_to_process = self.gather_objects_to_process(
+            commits_with_info.iter().map(|&(_, tree_oid, _)| tree_oid),
+            path_glob,
+        )?;
         self.batch_process_objects(&mut cache, entries_to_process);
         let tree_processing_start = Instant::now();
         println!("Collecting file results into trees for each commit:");
         let commit_count = num_commits;
 
-        let tl = ThreadLocal::new();
-        let stream_sender = stream_sender.clone();
-
-        let commit_stats = commit_and_tree_oids
+        let commit_stats = commits_with_info
             .into_par_iter()
             .rev() //todo not sure this does anything
             .progress_with_style(pb_style())
-            .map(|(commit_oid, tree_oid)| {
+            .map(|(commit_oid, tree_oid, commit_date)| {
                 let tree_oid_idx = oid_set.get_index_of(&(tree_oid, Kind::Tree)).unwrap() as OidIdx;
                 let tree_entry = flat_tree.get(&tree_oid_idx).unwrap().unwrap_tree();
-                let repo = tl.get_or(|| safe_repo.clone().to_thread_local());
-                let commit = repo
-                    .find_object(commit_oid)
-                    .expect("Could not find commit in the repo")
-                    .into_commit();
-                let res = self.measure_tree_iterative(tree_entry, &cache).unwrap();
-                let data = self.file_measurer.summarize_tree_data(res).unwrap();
-                let cd = CommitData {
+                self.measure_tree_iterative(tree_entry, &cache).unwrap();
+                let res_ref = cache.get(&(tree_oid_idx, empty_path_idx)).unwrap();
+                let data = self
+                    .file_measurer
+                    .summarize_tree_data(res_ref.as_ref().unwrap())
+                    .unwrap();
+                CommitData {
                     oid: commit_oid,
-                    date: gix_time_to_chrono(commit.time().unwrap()),
+                    date: gix_time_to_chrono(commit_date),
                     data,
-                };
-                if let Some(sender) = &stream_sender {
-                    sender.send(cd.clone()).unwrap();
                 }
-                cd
             })
             .collect::<Vec<CommitData>>();
         let elapsed_secs = tree_processing_start.elapsed().as_secs_f64();
@@ -294,7 +298,7 @@ where
         &self,
         root: &TreeEntry,
         cache: &ResultCache<TreeDataCollection<F>>,
-    ) -> Result<TreeDataCollection<F>, Box<dyn std::error::Error>> {
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let RepoCacheData {
             flat_tree,
             tree_entry_set: entry_set,
@@ -305,6 +309,7 @@ where
         let empty_path_idx = filepath_set.get_index_of(&SmallVec::new()).unwrap() as FilepathIdx;
         let mut stack: Vec<(FilepathIdx, &TreeEntry)> = vec![(empty_path_idx, root)];
         let mut agg_stack: Vec<(FilepathIdx, &TreeEntry)> = Vec::new();
+        let mut path_buffer = SmallVec::new();
 
         while let Some((path_idx, tree)) = stack.pop() {
             if cache.contains_key(&(tree.oid_idx, path_idx)) {
@@ -322,10 +327,11 @@ where
                 if entry.kind == TreeChildKind::Blob {
                     continue;
                 }
-                let parent_path = filepath_set.get_index(path_idx as usize).unwrap();
-                let mut child_path = parent_path.clone();
-                child_path.push(entry.filename_idx);
-                let child_path_idx = filepath_set.get_index_of(&child_path).unwrap() as FilepathIdx;
+                path_buffer.clear();
+                path_buffer.extend_from_slice(filepath_set.get_index(path_idx as usize).unwrap());
+                path_buffer.push(entry.filename_idx);
+                let child_path_idx =
+                    filepath_set.get_index_of(&path_buffer).unwrap() as FilepathIdx;
                 if !cache.contains_key(&(child_entry_idx, child_path_idx)) {
                     let Some(child) = flat_tree.get(&entry.oid_idx) else {
                         panic!("Did not find {} in flat repo", entry.oid_idx)
@@ -348,10 +354,11 @@ where
                         filename_idx,
                         kind: _,
                     } = entry_set.get_index(*child_idx as usize).unwrap();
-                    let mut child_path = parent_path.clone();
-                    child_path.push(*filename_idx);
+                    path_buffer.clear();
+                    path_buffer.extend_from_slice(&parent_path);
+                    path_buffer.push(*filename_idx);
                     let child_path_idx =
-                        filepath_set.get_index_of(&child_path).unwrap() as FilepathIdx;
+                        filepath_set.get_index_of(&path_buffer).unwrap() as FilepathIdx;
                     let child_result: Option<TreeDataCollection<F>> = cache
                         .get(&(*oid_idx, child_path_idx))
                         .and_then(|x| x.clone());
@@ -392,7 +399,8 @@ where
 
         cache
             .get(&(root.oid_idx, empty_path_idx))
-            .map(|x| x.clone().unwrap())
+            .map(|x| x.as_ref().map(|_| ()))
+            .flatten()
             .ok_or_else(|| "Failed to aggregate results".into())
     }
     // fn measure_tree(

@@ -40,9 +40,9 @@ impl FileMeasurement for PathBlobCollector {
     }
     fn summarize_tree_data(
         &self,
-        data: TreeDataCollection<NumMatches>,
+        data: &TreeDataCollection<NumMatches>,
     ) -> Result<HashMap<String, String>, Box<dyn std::error::Error>> {
-        let total: u64 = data.into_values().map(|matches| matches.0 as u64).sum();
+        let total: u64 = data.values().map(|matches| matches.0 as u64).sum();
         let mut data = HashMap::new();
         data.insert("total".to_string(), total.to_string());
         Ok(data)

@@ -112,7 +112,7 @@ impl FileMeasurement for TokeiCollector {
 
     fn summarize_tree_data(
         &self,
-        tree_data: TreeDataCollection<TokeiStat>,
+        tree_data: &TreeDataCollection<TokeiStat>,
     ) -> Result<SummaryData, Box<dyn std::error::Error>> {
         let mut stats_by_language: HashMap<String, TokeiStat> = HashMap::new();
         for (_filename, stat) in tree_data.iter() {
