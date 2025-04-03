@@ -2,7 +2,6 @@ use comfy_table::{Cell, Color, Table};
 use dialoguer::console::{style, Term};
 
 use crate::config::{self, GlobalConfig};
-use chrono::Utc;
 
 use crate::collectors::list_in_range::Granularity;
 use crate::stat::build_measurement;
