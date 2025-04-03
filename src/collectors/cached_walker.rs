@@ -26,8 +26,35 @@ use rayon::prelude::*;
 use smallvec::SmallVec;
 use std::fmt::Debug;
 use std::sync::Arc;
+use std::sync::OnceLock;
+use std::thread;
+use std::time::Duration;
 use std::time::Instant;
 use thread_local::ThreadLocal;
+
+/// Represents a git object at a specific path in a git tree
+#[derive(Debug, Clone, Copy, Hash, Eq, PartialEq)]
+struct EntryKey {
+    oid_idx: OidIdx,
+    path_idx: FilepathIdx,
+}
+
+impl EntryKey {
+    fn new(oid_idx: OidIdx, path_idx: FilepathIdx) -> Self {
+        Self { oid_idx, path_idx }
+    }
+}
+
+#[derive(Debug)]
+struct AggTask<F> {
+    id: usize,
+    entry_key: EntryKey,
+    dependencies: Vec<usize>,
+    children_info: Vec<(EntryKey, u32, TreeChildKind)>,
+    is_commit_root: bool,
+    commit_info: Option<(ObjectId, DateTime<Utc>)>,
+    result: OnceLock<Option<TreeDataCollection<F>>>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommitData {
@@ -37,7 +64,7 @@ pub struct CommitData {
     pub data: HashMap<String, String>,
 }
 
-type ResultCache<F> = DashMap<(OidIdx, FilepathIdx), Option<F>>;
+type ResultCache<F> = DashMap<EntryKey, Option<F>>;
 
 //todo figure out what to call this or whether to put it in the Stat options themselves
 //probably should go in the stat options
@@ -143,7 +170,7 @@ where
     }
 
     pub fn walk_repo_and_collect_stats(
-        &mut self,
+        &self,
         options: MeasurementRunOptions,
     ) -> Result<Vec<CommitData>, Box<dyn std::error::Error>> {
         let measurement_start = Instant::now();
@@ -156,6 +183,9 @@ where
             oid_set,
             flat_tree,
             repo_safe: safe_repo,
+            filepath_set,   // Needed for path calculations
+            tree_entry_set, // Needed for child lookups
+            filename_set,   // Needed for panic message
             ..
         } = &self.repo_caches;
         let inner_repo = safe_repo.clone().to_thread_local();
@@ -178,7 +208,8 @@ where
             .map(|commit| {
                 let commit_oid = commit.id;
                 let tree_oid = commit.tree().unwrap().id;
-                (commit_oid, tree_oid, commit.time().unwrap())
+                let commit_time = commit.time().unwrap();
+                (commit_oid, tree_oid, commit_time)
             })
             .collect::<Vec<_>>();
         let entries_to_process = self.gather_objects_to_process(
@@ -187,29 +218,242 @@ where
         )?;
         self.batch_process_objects(&mut cache, entries_to_process);
         let tree_processing_start = Instant::now();
-        println!("Collecting file results into trees for each commit:");
+        println!("Collecting file results into trees for each commit using parallel task-based approach:");
         let commit_count = num_commits;
 
-        let commit_stats = commits_with_info
-            .into_par_iter()
-            .rev() //todo not sure this does anything
-            .progress_with_style(pb_style())
-            .map(|(commit_oid, tree_oid, commit_date)| {
-                let tree_oid_idx = oid_set.get_index_of(&(tree_oid, Kind::Tree)).unwrap() as OidIdx;
-                let tree_entry = flat_tree.get(&tree_oid_idx).unwrap().unwrap_tree();
-                self.measure_tree_iterative(tree_entry, &cache).unwrap();
-                let res_ref = cache.get(&(tree_oid_idx, empty_path_idx)).unwrap();
-                let data = self
-                    .file_measurer
-                    .summarize_tree_data(res_ref.as_ref().unwrap())
-                    .unwrap();
-                CommitData {
-                    oid: commit_oid,
-                    date: gix_time_to_chrono(commit_date),
-                    data,
+        let mut all_tasks: Vec<AggTask<F>> = Vec::new();
+        let mut task_id_counter = 0;
+        // Global map across all commits for task lookup
+        let mut task_id_map: AHashMap<EntryKey, usize> = AHashMap::new();
+        let mut path_buffer = SmallVec::new(); // Reusable buffer for path calculations
+
+        // --- Task Creation Phase ---
+        for (commit_oid, tree_oid, commit_date) in commits_with_info.iter().rev() {
+            let tree_oid_idx = oid_set.get_index_of(&(*tree_oid, Kind::Tree)).unwrap() as OidIdx;
+            let root_tree_entry = flat_tree.get(&tree_oid_idx).unwrap().unwrap_tree();
+            let commit_root_entry_key = EntryKey::new(tree_oid_idx, empty_path_idx);
+
+            // Data structures local to this commit's traversal
+            let mut stack: Vec<(FilepathIdx, &TreeEntry)> = Vec::new();
+            let mut creation_stack: Vec<(EntryKey, &TreeEntry)> = Vec::new();
+            let mut visited: HashSet<EntryKey> = HashSet::new();
+
+            stack.push((empty_path_idx, root_tree_entry));
+
+            // 1. DFS Traversal to populate creation_stack (post-order)
+            while let Some((path_idx, tree)) = stack.pop() {
+                let entry_key = EntryKey::new(tree.oid_idx, path_idx);
+
+                if visited.contains(&entry_key) {
+                    continue;
                 }
-            })
-            .collect::<Vec<CommitData>>();
+                visited.insert(entry_key);
+                creation_stack.push((entry_key, tree)); // Push self onto creation stack
+
+                // Push unvisited children onto DFS stack
+                for &child_entry_idx in tree.children.iter() {
+                    let Some(entry) = tree_entry_set.get_index(child_entry_idx as usize) else {
+                        panic!("Did not find {} in entry_set", child_entry_idx);
+                    };
+
+                    if entry.kind == TreeChildKind::Blob {
+                        continue; // Blobs don't have tasks
+                    }
+
+                    let parent_path = filepath_set.get_index(path_idx as usize).unwrap();
+                    path_buffer.clear();
+                    path_buffer.extend_from_slice(parent_path);
+                    path_buffer.push(entry.filename_idx);
+                    let child_path_idx =
+                        filepath_set.get_index_of(&path_buffer).unwrap() as FilepathIdx;
+                    let child_entry_key = EntryKey::new(entry.oid_idx, child_path_idx);
+
+                    if !visited.contains(&child_entry_key) {
+                        let Some(child_tree) = flat_tree.get(&entry.oid_idx) else {
+                            panic!("Did not find {} in flat repo", entry.oid_idx);
+                        };
+                        stack.push((child_path_idx, child_tree.unwrap_tree()));
+                    }
+                }
+            }
+
+            // 2. Process creation_stack to create tasks in post-order
+            while let Some((entry_key, tree)) = creation_stack.pop() {
+                // Skip if task already created (e.g., from another commit's traversal)
+                if task_id_map.contains_key(&entry_key) {
+                    continue;
+                }
+
+                let task_id = task_id_counter;
+                task_id_counter += 1;
+
+                // Determine dependilncies (children's task IDs MUST exist now)
+                let mut dependencies = Vec::new();
+                let mut children_info = Vec::with_capacity(tree.children.len());
+                let parent_path = filepath_set.get_index(entry_key.path_idx as usize).unwrap();
+
+                // Precompute info for ALL children
+                for &child_entry_idx in tree.children.iter() {
+                    let Some(entry) = tree_entry_set.get_index(child_entry_idx as usize) else {
+                        /* panic */
+                        continue;
+                    };
+                    let child_filename_idx = entry.filename_idx;
+                    let child_kind = &entry.kind;
+
+                    path_buffer.clear();
+                    path_buffer.extend_from_slice(parent_path);
+                    path_buffer.push(child_filename_idx);
+                    let child_path_idx =
+                        filepath_set.get_index_of(&path_buffer).unwrap() as FilepathIdx;
+                    let child_entry_key = EntryKey::new(entry.oid_idx, child_path_idx);
+
+                    // If it's a tree, add its task ID to dependencies
+                    if *child_kind == TreeChildKind::Tree {
+                        let child_task_id = *task_id_map
+                            .get(&child_entry_key)
+                            .expect("Tree child task ID missing in post-order creation");
+                        dependencies.push(child_task_id);
+                    }
+                    children_info.push((child_entry_key, child_filename_idx, child_kind.clone()));
+                }
+
+                let is_commit_root = entry_key == commit_root_entry_key;
+                let current_commit_info = if is_commit_root {
+                    Some((*commit_oid, gix_time_to_chrono(*commit_date)))
+                } else {
+                    None
+                };
+
+                let task = AggTask {
+                    id: task_id,
+                    entry_key,
+                    dependencies,  // Only tree task IDs
+                    children_info, // Info for all children (blobs and trees)
+                    is_commit_root,
+                    commit_info: current_commit_info,
+                    result: OnceLock::new(),
+                };
+
+                all_tasks.push(task);
+                task_id_map.insert(entry_key, task_id);
+            }
+        }
+
+        println!("Created {} tasks", all_tasks.len());
+        println!("task_id_map has {:?} tasks", task_id_map.len());
+        let commit_results = Arc::new(DashMap::<ObjectId, CommitData>::new());
+        let file_measurer = self.file_measurer.clone();
+        let task_id_map = Arc::new(task_id_map);
+        let all_tasks_arc = Arc::new(all_tasks);
+        let blob_cache = Arc::new(cache);
+        let repo_caches = &self.repo_caches;
+
+        all_tasks_arc // Use the Arc'd version
+            .par_iter()
+            .progress_with_style(pb_style())
+            .for_each(|task| {
+                // Use captured references/Arcs
+                let filepath_set = &repo_caches.filepath_set;
+
+                // 1. Wait for Dependencies (only need IDs)
+                for &dep_id in &task.dependencies {
+                    let dep_task = &all_tasks_arc[dep_id];
+                    let mut time_slept = 0;
+                    while dep_task.result.get().is_none() {
+                        thread::sleep(Duration::from_nanos(100));
+                        time_slept += 1;
+                    }
+                    if time_slept > 1000 {
+                        println!("Task {} slept for {} steps", dep_id, time_slept);
+                    }
+                }
+
+                let aggregation_result = task.result.get_or_init(|| {
+                    // Get parent path once for the flat_map closure later
+                    let parent_path = filepath_set
+                        .get_index(task.entry_key.path_idx as usize)
+                        .unwrap();
+
+                    // Iterate precomputed children info
+                    let tree_agg = task
+                        .children_info
+                        .iter()
+                        .filter_map(|&(child_entry_key, child_filename_idx, ref child_kind)| {
+                            if *child_kind == TreeChildKind::Blob {
+                                blob_cache
+                                    .get(&child_entry_key)
+                                    .and_then(|v_ref| Some(v_ref.as_ref().unwrap().clone()))
+                                    .map(|data| (child_filename_idx, data))
+                            } else {
+                                let child_task_id = *task_id_map
+                                    .get(&child_entry_key)
+                                    .expect("Child task ID missing during aggregation");
+                                let child_task = &all_tasks_arc[child_task_id];
+                                match child_task.result.get() {
+                                    Some(Some(result)) => {
+                                        Some((child_filename_idx, result.clone()))
+                                    }
+                                    _ => panic!("Dependency task result not available after wait"),
+                                }
+                            }
+                        })
+                        .flat_map(move |(child_filename_idx, data)| {
+                            let mut current_child_path = parent_path.clone();
+                            data.into_iter().map(move |(key, value)| {
+                                let final_path_idx = match key {
+                                    Either::Left(full_path_idx) => Either::Left(full_path_idx),
+                                    Either::Right(_leaf_filename_idx) => {
+                                        // This case implies the data came from a blob child
+                                        // We need the full path of the blob itself
+                                        current_child_path.push(child_filename_idx); // Use captured filename
+                                        let idx = filepath_set
+                                            .get_index_of(&current_child_path)
+                                            .unwrap_or_else(|| panic!(/*...*/))
+                                            as FilepathIdx;
+                                        current_child_path.pop();
+                                        Either::Left(idx)
+                                    }
+                                };
+                                (final_path_idx.clone(), value.clone())
+                            })
+                        })
+                        .collect::<TreeDataCollection<F>>();
+
+                    Some(tree_agg) // Return Some(result) for OnceLock
+                });
+
+                if task.is_commit_root {
+                    if let Some((commit_oid, commit_date)) = task.commit_info {
+                        let final_data = file_measurer
+                            .summarize_tree_data(aggregation_result.as_ref().unwrap())
+                            .unwrap();
+
+                        let commit_data = CommitData {
+                            oid: commit_oid,
+                            date: commit_date,
+                            data: final_data,
+                        };
+                        commit_results.insert(commit_oid, commit_data);
+                    } else {
+                        panic!("Commit root task missing commit info: {:?}", task.entry_key);
+                    }
+                }
+            });
+        let parallel_elapsed_secs = tree_processing_start.elapsed().as_secs_f64();
+        println!(
+            "paralle portion: processed {commit_count} commits in {parallel_elapsed_secs} seconds"
+        );
+
+        let mut commit_stats = Vec::with_capacity(commits_with_info.len());
+        for (commit_oid, _, _) in commits_with_info {
+            if let Some(entry) = commit_results.remove(&commit_oid) {
+                commit_stats.push(entry.1);
+            } else {
+                eprintln!("Warning: No result found for commit {}", commit_oid);
+            }
+        }
+
         let elapsed_secs = tree_processing_start.elapsed().as_secs_f64();
         println!("processed: {commit_count} commits in {elapsed_secs} seconds");
         println!(
@@ -219,20 +463,6 @@ where
         Ok(commit_stats)
     }
 
-    // pub fn run_streaming_then_collect(
-    //     &mut self,
-    //     granularity: Granularity,
-    //     range: (Option<DateTime<Utc>>, Option<DateTime<Utc>>),
-    //     path_in_repo: Option<String>,
-    // ) -> Result<Vec<CommitData>, Box<dyn std::error::Error>> {
-    //     let (sender, receiver) = channel::unbounded();
-    //     self.run_measurement_streaming(granularity, range, path_in_repo, sender)?;
-    //     let commit_stats = receiver
-    //         .into_iter()
-    //         .map(|msg| serde_json::from_str(&msg).unwrap())
-    //         .collect();
-    //     Ok(commit_stats)
-    // }
     fn batch_process_objects(
         &self,
         cache: &mut ResultCache<TreeDataCollection<F>>,
@@ -256,8 +486,7 @@ where
             .progress_with(progress)
             .fold(
                 AHashMap::new,
-                |mut acc: AHashMap<(OidIdx, FilepathIdx), Option<TreeDataCollection<F>>>,
-                 (path, entry_idx)| {
+                |mut acc: AHashMap<EntryKey, Option<TreeDataCollection<F>>>, (path, entry_idx)| {
                     let path_str = aliased_path_to_string(filename_set, &path);
                     let repo: &Repository = tl.get_or(|| shared_repo.clone().to_thread_local());
                     let MyEntry { oid_idx, .. } =
@@ -270,7 +499,8 @@ where
                                 panic!("Did not find {:?} in filepath set", path)
                             }) as FilepathIdx;
                             tree_collection.insert(Either::Left(path_idx), measurement);
-                            acc.insert((oid_idx, path_idx), Some(tree_collection));
+                            let entry_key = EntryKey::new(oid_idx, path_idx);
+                            acc.insert(entry_key, Some(tree_collection));
                         }
                         Err(_) => {}
                     };
@@ -279,7 +509,7 @@ where
             )
             .reduce(
                 AHashMap::new,
-                |mut acc: AHashMap<(OidIdx, FilepathIdx), Option<TreeDataCollection<F>>>, cur| {
+                |mut acc: AHashMap<EntryKey, Option<TreeDataCollection<F>>>, cur| {
                     acc.extend(cur);
                     acc
                 },
@@ -312,7 +542,8 @@ where
         let mut path_buffer = SmallVec::new();
 
         while let Some((path_idx, tree)) = stack.pop() {
-            if cache.contains_key(&(tree.oid_idx, path_idx)) {
+            let entry_key = EntryKey::new(tree.oid_idx, path_idx);
+            if cache.contains_key(&entry_key) {
                 continue;
             }
             agg_stack.push((path_idx, tree));
@@ -332,7 +563,8 @@ where
                 path_buffer.push(entry.filename_idx);
                 let child_path_idx =
                     filepath_set.get_index_of(&path_buffer).unwrap() as FilepathIdx;
-                if !cache.contains_key(&(child_entry_idx, child_path_idx)) {
+                let child_entry_key = EntryKey::new(entry.oid_idx, child_path_idx);
+                if !cache.contains_key(&child_entry_key) {
                     let Some(child) = flat_tree.get(&entry.oid_idx) else {
                         panic!("Did not find {} in flat repo", entry.oid_idx)
                     };
@@ -341,7 +573,8 @@ where
             }
         }
         while let Some((path_idx, tree)) = agg_stack.pop() {
-            if cache.contains_key(&(tree.oid_idx, path_idx)) {
+            let entry_key = EntryKey::new(tree.oid_idx, path_idx);
+            if cache.contains_key(&entry_key) {
                 continue;
             }
             let parent_path = filepath_set.get_index(path_idx as usize).unwrap();
@@ -359,9 +592,9 @@ where
                     path_buffer.push(*filename_idx);
                     let child_path_idx =
                         filepath_set.get_index_of(&path_buffer).unwrap() as FilepathIdx;
-                    let child_result: Option<TreeDataCollection<F>> = cache
-                        .get(&(*oid_idx, child_path_idx))
-                        .and_then(|x| x.clone());
+                    let child_entry_key = EntryKey::new(*oid_idx, child_path_idx);
+                    let child_result: Option<TreeDataCollection<F>> =
+                        cache.get(&child_entry_key).and_then(|x| x.clone());
                     match child_result {
                         Some(x) => Some((*filename_idx, x)),
                         None => None,
@@ -392,13 +625,12 @@ where
                     })
                 })
                 .collect::<TreeDataCollection<F>>();
-            cache
-                .entry((tree.oid_idx, path_idx))
-                .or_insert(Some(tree_agg));
+            cache.entry(entry_key).or_insert(Some(tree_agg));
         }
 
+        let root_entry_key = EntryKey::new(root.oid_idx, empty_path_idx);
         cache
-            .get(&(root.oid_idx, empty_path_idx))
+            .get(&root_entry_key)
             .map(|x| x.as_ref().map(|_| ()))
             .flatten()
             .ok_or_else(|| "Failed to aggregate results".into())

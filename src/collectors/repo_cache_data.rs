@@ -629,7 +629,7 @@ pub fn load_or_rebuild_caches(
 }
 fn load_caches(
     repo: &Repository,
-    shared_repo: &ThreadSafeRepository,
+    _shared_repo: &ThreadSafeRepository,
 ) -> (
     FlatGitRepo,
     FilenameCache,
