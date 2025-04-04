@@ -414,9 +414,14 @@ where
         );
 
         // --- Convert blob set to Vec and process them ---
-        let entries_to_process_vec = entries_to_process_set.into_iter().collect::<Vec<_>>();
+        let mut entries_to_process_vec = entries_to_process_set.into_iter().collect::<Vec<_>>();
         // Sorting might still be beneficial for batch_process_objects cache locality if it reads sequentially
-        // entries_to_process_vec.sort_by_key(|(_path, idx)| tree_entry_set.get_index(*idx as usize).map(|e| e.oid_idx).unwrap_or(OidIdx::MAX));
+        entries_to_process_vec.sort_by_key(|(_path, idx)| {
+            tree_entry_set
+                .get_index(*idx as usize)
+                .map(|e| e.oid_idx)
+                .unwrap_or(OidIdx::MAX)
+        });
         self.batch_process_objects(&mut cache, entries_to_process_vec);
 
         // --- Parallel Task Execution Phase (Unchanged) ---
