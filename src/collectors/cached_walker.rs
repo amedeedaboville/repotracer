@@ -27,8 +27,6 @@ use smallvec::SmallVec;
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::sync::OnceLock;
-use std::thread;
-use std::time::Duration;
 use std::time::Instant;
 use thread_local::ThreadLocal;
 
@@ -49,8 +47,7 @@ impl EntryKey {
 struct AggTask<F> {
     id: usize,
     entry_key: EntryKey,
-    dependencies: Vec<usize>,
-    children_info: Vec<(EntryKey, u32, TreeChildKind)>,
+    children_info: Vec<(Either<EntryKey, usize>, u32, TreeChildKind)>,
     is_commit_root: bool,
     commit_info: Option<(ObjectId, DateTime<Utc>)>,
     result: OnceLock<Option<TreeDataCollection<F>>>,
@@ -106,7 +103,7 @@ where
         &self,
         tree_ids: I,
         path_glob: Option<GlobMatcher>,
-    ) -> Result<Vec<(AliasedPath, OidIdx)>, Box<dyn std::error::Error>>
+    ) -> Result<Vec<(AliasedPath, EntryIdx)>, Box<dyn std::error::Error>>
     where
         I: IntoIterator<Item = ObjectId>,
         I::IntoIter: ExactSizeIterator,
@@ -186,6 +183,7 @@ where
             repo_safe: safe_repo,
             filepath_set,   // Needed for path calculations
             tree_entry_set, // Needed for child lookups
+            filename_set,   // Needed for blob path matching
             ..
         } = &self.repo_caches;
         let inner_repo = safe_repo.clone().to_thread_local();
@@ -212,92 +210,129 @@ where
                 (commit_oid, tree_oid, commit_time)
             })
             .collect::<Vec<_>>();
-        let entries_to_process = self.gather_objects_to_process(
-            commits_with_info.iter().map(|&(_, tree_oid, _)| tree_oid),
-            path_glob,
-        )?;
-        self.batch_process_objects(&mut cache, entries_to_process);
+
         let tree_processing_start = Instant::now();
-        println!("Collecting file results into trees for each commit using parallel task-based approach:");
+        println!("Building task graph and identifying blobs via commit traversal:");
         let task_graph_start = Instant::now();
         let commit_count = num_commits;
 
         let mut all_tasks: Vec<AggTask<F>> = Vec::new();
         let mut task_id_counter = 0;
-        // Global map across all commits for task lookup
         let mut task_id_map: AHashMap<EntryKey, usize> = AHashMap::new();
         let mut path_buffer = SmallVec::new(); // Reusable buffer for path calculations
-        let mut tasks_by_depth: Vec<Vec<usize>> = Vec::new(); // <-- New: Store task IDs by depth
+        let mut tasks_by_depth: Vec<Vec<usize>> = Vec::new();
+
+        let mut entries_to_process_set: HashSet<(AliasedPath, EntryIdx)> = HashSet::new();
+        let mut task_creation_visited: HashSet<EntryKey> = HashSet::new(); // Tracks visited nodes *within* a single commit's DFS pass
+        let mut globally_traversed_trees: HashSet<EntryKey> = HashSet::new(); // Tracks trees already fully explored by *any* previous commit pass
 
         // --- Task Creation Phase ---
-        for (commit_oid, tree_oid, commit_date) in commits_with_info.iter().rev() {
+        let pb_commits = pb_default(commits_with_info.len());
+        pb_commits.set_message("Building tasks");
+        for (commit_oid, tree_oid, commit_date) in
+            commits_with_info.iter().rev().progress_with(pb_commits)
+        {
             let tree_oid_idx = oid_set.get_index_of(&(*tree_oid, Kind::Tree)).unwrap() as OidIdx;
-            let root_tree_entry = flat_tree.get(&tree_oid_idx).unwrap().unwrap_tree();
+            let Some(root_tree_entry) = flat_tree.get(&tree_oid_idx) else {
+                eprintln!("Warning: Commit {} root tree OID index {} not found in flat_tree. Skipping commit.", commit_oid, tree_oid_idx);
+                continue;
+            };
+            let root_tree_entry = root_tree_entry.unwrap_tree();
             let commit_root_entry_key = EntryKey::new(tree_oid_idx, empty_path_idx);
 
-            // Data structures local to this commit's traversal
-            let mut stack: Vec<(FilepathIdx, &TreeEntry)> = Vec::new();
+            let mut dfs_stack: Vec<(FilepathIdx, &TreeEntry)> = Vec::new();
             let mut creation_stack: Vec<(EntryKey, &TreeEntry)> = Vec::new();
-            let mut visited: HashSet<EntryKey> = HashSet::new();
 
-            stack.push((empty_path_idx, root_tree_entry));
+            dfs_stack.push((empty_path_idx, root_tree_entry));
+            task_creation_visited.clear(); // Reset for this commit's internal DFS cycle detection
 
-            // 1. DFS Traversal to populate creation_stack (post-order)
-            while let Some((path_idx, tree)) = stack.pop() {
+            // 1. DFS Traversal (with global skip)
+            while let Some((path_idx, tree)) = dfs_stack.pop() {
                 let entry_key = EntryKey::new(tree.oid_idx, path_idx);
-
-                if visited.contains(&entry_key) {
+                if globally_traversed_trees.contains(&entry_key) {
                     continue;
                 }
-                visited.insert(entry_key);
-                creation_stack.push((entry_key, tree)); // Push self onto creation stack
+                if !task_creation_visited.insert(entry_key) {
+                    continue; // Avoid cycles within this single commit's DFS pass
+                }
 
-                // Push unvisited children onto DFS stack
+                // If we reached here, it means this node is being visited *either*
+                // globally for the first time, *or* for the first time within this commit's DFS path.
+                // We push it onto the creation stack for potential task creation later.
+                creation_stack.push((entry_key, tree));
+
+                let parent_path_slice = filepath_set.get_index(path_idx as usize).unwrap();
+
+                // Process children (for blob collection and further DFS)
                 for &child_entry_idx in tree.children.iter() {
                     let Some(entry) = tree_entry_set.get_index(child_entry_idx as usize) else {
-                        panic!("Did not find {} in entry_set", child_entry_idx);
+                        eprintln!("Warning: Child entry index {} not found in tree_entry_set for tree {}. Skipping.", child_entry_idx, tree.oid_idx);
+                        continue;
                     };
 
-                    if entry.kind == TreeChildKind::Blob {
-                        continue; // Blobs don't have tasks
-                    }
-
-                    let parent_path = filepath_set.get_index(path_idx as usize).unwrap();
                     path_buffer.clear();
-                    path_buffer.extend_from_slice(parent_path);
+                    path_buffer.extend_from_slice(parent_path_slice);
                     path_buffer.push(entry.filename_idx);
-                    let child_path_idx =
-                        filepath_set.get_index_of(&path_buffer).unwrap() as FilepathIdx;
-                    let child_entry_key = EntryKey::new(entry.oid_idx, child_path_idx);
 
-                    if !visited.contains(&child_entry_key) {
-                        let Some(child_tree) = flat_tree.get(&entry.oid_idx) else {
-                            panic!("Did not find {} in flat repo", entry.oid_idx);
-                        };
-                        stack.push((child_path_idx, child_tree.unwrap_tree()));
+                    match entry.kind {
+                        TreeChildKind::Blob => {
+                            // Collect blobs only if the parent tree wasn't globally skipped
+                            if path_glob.as_ref().map_or(true, |glob| {
+                                glob.is_match(aliased_path_to_string(filename_set, &path_buffer))
+                            }) {
+                                entries_to_process_set
+                                    .insert((path_buffer.clone(), child_entry_idx));
+                            }
+                        }
+                        TreeChildKind::Tree => {
+                            let child_path_idx =
+                                filepath_set.get_index_of(&path_buffer).unwrap() as FilepathIdx;
+                            let child_entry_key = EntryKey::new(entry.oid_idx, child_path_idx);
+
+                            // --- Check global traversal BEFORE pushing to stack ---
+                            // No need to push/process children if they've been globally handled
+                            if globally_traversed_trees.contains(&child_entry_key) {
+                                continue;
+                            }
+
+                            // Also, don't push if it's already in this commit's visited set (cycle)
+                            if !task_creation_visited.contains(&child_entry_key) {
+                                if let Some(child_tree) = flat_tree.get(&entry.oid_idx) {
+                                    dfs_stack.push((child_path_idx, child_tree.unwrap_tree()));
+                                } else {
+                                    eprintln!("Warning: Child tree OID index {} not found in flat_tree. Skipping subtree.", entry.oid_idx);
+                                }
+                            }
+                        }
                     }
                 }
-            }
+            } // end while dfs_stack.pop()
+
+            // ---- After DFS for this commit is complete, mark visited nodes as globally traversed ----
+            // We only mark them *after* the full DFS for this commit ensures they weren't part of an internal cycle
+            // that was skipped *before* full exploration. Add all keys from this commit's visited set.
+            globally_traversed_trees.extend(task_creation_visited.iter());
 
             // 2. Process creation_stack to create tasks in post-order
             while let Some((entry_key, tree)) = creation_stack.pop() {
-                // Skip if task already created (e.g., from another commit's traversal)
+                // If a task for this EntryKey already exists (created by a previous commit),
+                // we don't need to create it again. But we *do* need its ID for dependencies.
                 if task_id_map.contains_key(&entry_key) {
                     continue;
                 }
 
+                // --- Task Creation Logic (remains the same) ---
                 let task_id = task_id_counter;
                 task_id_counter += 1;
 
-                // Determine dependencies and children info
-                let mut dependencies = Vec::new();
-                let mut children_info = Vec::with_capacity(tree.children.len());
+                let mut children_info: Vec<(Either<EntryKey, usize>, u32, TreeChildKind)> =
+                    Vec::with_capacity(tree.children.len());
                 let parent_path = filepath_set.get_index(entry_key.path_idx as usize).unwrap();
 
-                // Precompute info for ALL children
+                let mut max_depth = 0;
                 for &child_entry_idx in tree.children.iter() {
                     let Some(entry) = tree_entry_set.get_index(child_entry_idx as usize) else {
-                        /* panic */
+                        eprintln!("Error: Child entry {} missing during task creation phase for parent {}. Task graph may be incomplete.", child_entry_idx, entry_key.oid_idx);
                         continue;
                     };
                     let child_filename_idx = entry.filename_idx;
@@ -310,25 +345,39 @@ where
                         filepath_set.get_index_of(&path_buffer).unwrap() as FilepathIdx;
                     let child_entry_key = EntryKey::new(entry.oid_idx, child_path_idx);
 
-                    // If it's a tree, add its task ID to dependencies
-                    if *child_kind == TreeChildKind::Tree {
-                        let child_task_id = *task_id_map
-                            .get(&child_entry_key)
-                            .expect("Tree child task ID missing in post-order creation");
-                        dependencies.push(child_task_id);
+                    match child_kind {
+                        TreeChildKind::Blob => {
+                            // Blobs don't have tasks, link directly to EntryKey
+                            children_info.push((
+                                Either::Left(child_entry_key),
+                                child_filename_idx,
+                                child_kind.clone(),
+                            ));
+                        }
+                        TreeChildKind::Tree => {
+                            // Find the child task ID (it *must* exist if code reached here,
+                            // either created now or by a previous commit).
+                            let child_task_id = *task_id_map.get(&child_entry_key).expect(
+                                &format!("Tree child task ID missing for {:?} (parent {:?}) in post-order creation. This should not happen.", child_entry_key, entry_key)
+                            );
+                            // We need the depth from the actual task struct
+                            if let Some(child_task) = all_tasks.get(child_task_id) {
+                                max_depth = child_task.depth.max(max_depth);
+                            } else {
+                                // This case should be impossible if task_id_map lookup succeeded
+                                eprintln!("Error: Could not find child task struct for ID {} derived from map.", child_task_id);
+                            }
+
+                            children_info.push((
+                                Either::Right(child_task_id),
+                                child_filename_idx,
+                                child_kind.clone(),
+                            ));
+                        }
                     }
-                    children_info.push((child_entry_key, child_filename_idx, child_kind.clone()));
                 }
-
-                // --- Calculate Depth ---
-                let task_depth = dependencies // Vec<usize> of child tree task IDs
-                    .iter()
-                    .map(|&dep_id| all_tasks[dep_id].depth) // Get depth of each dependency task
-                    .max() // Find the maximum depth among dependencies
-                    .unwrap_or(0) // If no tree dependencies (only blobs), max depth is 0
-                    + 1; // Current task is 1 level deeper than its deepest dependency
-
-                // --- Store Task ID by Depth ---
+                // ... rest of task creation (depth calculation, storing task, adding to task_id_map) ...
+                let task_depth = max_depth + 1;
                 if task_depth >= tasks_by_depth.len() {
                     tasks_by_depth.resize_with(task_depth + 1, Vec::new);
                 }
@@ -344,144 +393,159 @@ where
                 let task = AggTask {
                     id: task_id,
                     entry_key,
-                    dependencies,  // Only tree task IDs
-                    children_info, // Info for all children (blobs and trees)
+                    children_info,
                     is_commit_root,
                     commit_info: current_commit_info,
                     result: OnceLock::new(),
-                    depth: task_depth, // <-- Store calculated depth
+                    depth: task_depth,
                 };
 
                 all_tasks.push(task);
-                task_id_map.insert(entry_key, task_id);
-            }
-        }
+                task_id_map.insert(entry_key, task_id); // Add task ID to map
+            } // end while creation_stack.pop()
+        } // end commit loop
 
         println!(
-            "Created {} tasks in {} secs",
+            "Created {} tasks (across {} unique trees) and identified {} unique blobs in {:.2} secs",
             all_tasks.len(),
+            globally_traversed_trees.len(), // Number of unique EntryKeys traversed
+            entries_to_process_set.len(),
             task_graph_start.elapsed().as_secs_f64()
         );
-        println!("task_id_map has {:?} tasks", task_id_map.len());
-        println!("Tasks grouped into {} depth levels", tasks_by_depth.len());
 
+        // --- Convert blob set to Vec and process them ---
+        let entries_to_process_vec = entries_to_process_set.into_iter().collect::<Vec<_>>();
+        // Sorting might still be beneficial for batch_process_objects cache locality if it reads sequentially
+        // entries_to_process_vec.sort_by_key(|(_path, idx)| tree_entry_set.get_index(*idx as usize).map(|e| e.oid_idx).unwrap_or(OidIdx::MAX));
+        self.batch_process_objects(&mut cache, entries_to_process_vec);
+
+        // --- Parallel Task Execution Phase (Unchanged) ---
+        println!("Executing {} tasks level-by-level:", all_tasks.len()); // Use len() from Vec directly
+        let parallel_start = Instant::now();
         let commit_results = Arc::new(DashMap::<ObjectId, CommitData>::new());
         let file_measurer = self.file_measurer.clone();
-        let task_id_map_arc = Arc::new(task_id_map); // Arc needed for lookup within parallel step
-        let all_tasks_arc = Arc::new(all_tasks); // Arc needed for access within parallel step
-        let blob_cache = Arc::new(cache);
-        let repo_caches = &self.repo_caches; // Capture as reference
-
-        let overall_progress = pb_default(all_tasks_arc.len()); // Use commit count for overall progress
+        let all_tasks_arc = Arc::new(all_tasks); // Base Arc for tasks
+        let blob_cache = Arc::new(cache); // Base Arc for blob cache
+        let overall_progress = pb_default(all_tasks_arc.len());
         overall_progress.set_style(pb_style());
 
-        for (_depth, tasks_at_this_depth) in tasks_by_depth.iter().enumerate() {
+        for (depth, tasks_at_this_depth) in tasks_by_depth.iter().enumerate() {
+            // Optional: Add progress message per depth level
+            // overall_progress.set_message(format!("Processing depth {}", depth));
             tasks_at_this_depth
                 .par_iter()
-                .for_each(|&task_id| {
+                .for_each(|&task_id| { // This closure captures original Arcs by reference implicitly
                     let task = &all_tasks_arc[task_id];
-                    let filepath_set = &repo_caches.filepath_set;
-                    let aggregation_result = task.result.get_or_init(|| {
-                        let parent_path = filepath_set
-                            .get_index(task.entry_key.path_idx as usize)
-                            .unwrap();
+                     // Ensure clones are created *inside* the closure if needed for 'move'
+                     let all_tasks_clone = all_tasks_arc.clone();
+                     let blob_cache_clone = blob_cache.clone();
+                     let commit_results_clone = commit_results.clone(); // Clone for commit results access
+                     let file_measurer_clone = file_measurer.clone(); // Clone file measurer if needed inside get_or_init or summarize
+                     let overall_progress_clone = overall_progress.clone(); // Clone progress bar
 
-                        // Iterate precomputed children info
+                    let aggregation_result = task.result.get_or_init(move || { // 'move' captures the *clones*
                         let tree_agg = task
                             .children_info
                             .iter()
-                            .filter_map(|&(child_entry_key, child_filename_idx, ref child_kind)| {
-                                if *child_kind == TreeChildKind::Blob {
-                                    // Retrieve blob result directly from blob_cache
-                                    blob_cache
-                                        .get(&child_entry_key)
-                                        // Value stored in blob_cache is Option<TreeDataCollection>, unwrap it
-                                        .and_then(|v_ref| v_ref.as_ref().cloned())
-                                        .map(|data| (child_filename_idx, data))
-                                } else {
-                                    // Retrieve tree result from the corresponding child task
-                                    let child_task_id = *task_id_map_arc // Use Arc'd version
-                                        .get(&child_entry_key)
-                                        .expect("Child task ID missing during aggregation");
-                                    let child_task = &all_tasks_arc[child_task_id]; // Use Arc'd version
-                                    match child_task.result.get() {
-                                        // This .get() is now guaranteed to succeed & contain Some(result)
-                                        Some(Some(result)) => {
-                                            Some((child_filename_idx, result.clone()))
-                                        }
-                                        _ => panic!(
-                                            "Dependency task result not available for task {} (child of {}) depth {} even though it should be (processed in lower depth {})",
-                                            child_task_id, task.id, child_task.depth, task.depth
-                                        ),
+                             // Use a separate move for flat_map's closure if necessary, or rely on captured clones
+                            .flat_map(move |(child_key_or_id, _child_filename_idx, _child_kind)| {
+                                let results_for_child: Vec<(Either<FilepathIdx, u32>, F)> = match child_key_or_id {
+                                    Either::Left(blob_entry_key) => {
+                                        // Prefer using get and Option methods over expect/unwrap inside parallel code
+                                        blob_cache_clone.get(blob_entry_key)
+                                            .and_then(|v| v.value().as_ref().cloned()) // Option<TDC<F>>
+                                            .map(|tdc| tdc.into_iter().collect::<Vec<_>>())
+                                            .unwrap_or_default() // Use Vec::default() which is an empty Vec
                                     }
-                                }
-                            })
-                            .flat_map(move |(child_filename_idx, data)| {
-                                let mut current_child_path = parent_path.clone();
-                                data.into_iter().map(move |(key, value)| {
-                                    let final_path_idx = match key {
-                                        Either::Left(full_path_idx) => Either::Left(full_path_idx),
-                                        Either::Right(_leaf_filename_idx) => {
-                                            current_child_path.push(child_filename_idx);
-                                            let idx = filepath_set
-                                                .get_index_of(&current_child_path)
-                                                .unwrap_or_else(|| panic!("Did not find calculated path {:?} in filepath set during aggregation", aliased_path_to_string(&repo_caches.filename_set, &current_child_path)))
-                                                as FilepathIdx;
-                                            current_child_path.pop();
-                                            Either::Left(idx)
-                                        }
-                                    };
-                                    (final_path_idx.clone(), value.clone())
-                                })
-                            })
+                                    Either::Right(child_task_id) => {
+                                        let child_task = &all_tasks_clone[*child_task_id];
+                                         // Use get() which returns Option<&T>, then process the Option
+                                         child_task.result.get()
+                                             .and_then(|opt_data| opt_data.as_ref()) // Converts Option<&Option<TDC>> to Option<&TDC>
+                                             .map(|data_ref| {
+                                                 data_ref.iter()
+                                                     .map(|(key, value)| (key.clone(), value.clone()))
+                                                     .collect::<Vec<_>>() // Collect into Vec<(K, F)>
+                                             })
+                                             .unwrap_or_else(|| {
+                                                  // Log error instead of panicking if possible, or handle differently
+                                                  eprintln!(
+                                                      "Dependency task {} result not available for task {} (entry: {:?}) at depth {}",
+                                                      child_task_id, task.id, task.entry_key, depth // Add depth context
+                                                  );
+                                                  Vec::new() // Return empty vec on error
+                                             })
+                                    }
+                                };
+                                // Return the iterator from the Vec
+                                results_for_child.into_iter()
+                            }) // end flat_map
                             .collect::<TreeDataCollection<F>>();
+                        Some(tree_agg)
+                    }); // end get_or_init closure
 
-                    Some(tree_agg) // Return Some(result) for OnceLock
-                });
-
-                if task.is_commit_root {
-                    if let Some((commit_oid, commit_date)) = task.commit_info {
-                        let final_data = file_measurer
-                            .summarize_tree_data(aggregation_result.as_ref().unwrap())
-                            .unwrap();
-
-                            let commit_data = CommitData {
-                                oid: commit_oid,
-                                date: commit_date,
-                                data: final_data,
-                            };
-                            commit_results.insert(commit_oid, commit_data);
+                    if task.is_commit_root {
+                        if let Some((commit_oid, commit_date)) = task.commit_info {
+                            // Use file_measurer_clone captured by the outer closure
+                             // Ensure aggregation_result is valid before unwrapping
+                             if let Some(agg_res) = aggregation_result.as_ref() {
+                                 match file_measurer_clone.summarize_tree_data(agg_res) {
+                                     Ok(final_data) => {
+                                         let commit_data = CommitData {
+                                             oid: commit_oid,
+                                             date: commit_date,
+                                             data: final_data,
+                                         };
+                                          // Use commit_results_clone captured by the outer closure
+                                         commit_results_clone.insert(commit_oid, commit_data);
+                                     }
+                                     Err(e) => {
+                                         eprintln!("Error summarizing tree data for commit {}: {}", commit_oid, e);
+                                     }
+                                 }
+                            } else {
+                                 eprintln!("Warning: Aggregation result was None for commit root task {:?} (commit {})", task.entry_key, commit_oid);
+                            }
                         } else {
-                            // This should ideally not happen if logic is correct
                             eprintln!("Warning: Commit root task missing commit info: {:?}", task.entry_key);
                         }
                     }
-                overall_progress.inc(1); // Increment progress per commit processed
+                    // Use overall_progress_clone captured by the outer closure
+                    overall_progress_clone.inc(1);
                 }); // end par_iter().for_each()
         } // end loop over depths
 
-        overall_progress.finish_with_message("Finished processing all commits");
-
-        let parallel_elapsed_secs = tree_processing_start.elapsed().as_secs_f64();
+        overall_progress.finish_with_message("Finished processing all tasks");
+        let parallel_elapsed_secs = parallel_start.elapsed().as_secs_f64();
         println!(
-            "Parallel portion (level-by-level): processed {commit_count} commits in {parallel_elapsed_secs} seconds"
+            "Parallel task execution: processed {} commits in {:.2} seconds", // Use commit_count if defined or recalculate
+            commit_results.len(), // Use the actual number of results collected
+            parallel_elapsed_secs
         );
 
         let mut commit_stats = Vec::with_capacity(commits_with_info.len());
-        for (commit_oid, _, _) in commits_with_info {
-            if let Some(entry) = commit_results.remove(&commit_oid) {
-                commit_stats.push(entry.1);
+        // Ensure we iterate over the original commit list to maintain order if needed
+        for (commit_oid, _, _) in &commits_with_info {
+            // Iterate over the original list
+            if let Some(entry) = commit_results.remove(commit_oid) {
+                commit_stats.push(entry.1); // entry is a tuple (key, value)
             } else {
-                eprintln!("Warning: No result found for commit {}", commit_oid);
+                // This might happen if a commit was skipped earlier due to missing tree, etc.
+                eprintln!(
+                    "Warning: No result found for commit {} in final collection.",
+                    commit_oid
+                );
             }
         }
 
-        let elapsed_secs = tree_processing_start.elapsed().as_secs_f64();
-        println!("processed: {commit_count} commits in {elapsed_secs} seconds");
+        let total_elapsed_secs = measurement_start.elapsed().as_secs_f64();
         println!(
-            "Total time for measurement: {}",
-            measurement_start.elapsed().as_secs_f64()
+            "Total time for measurement: {:.2} seconds",
+            total_elapsed_secs
         );
+        std::mem::forget(all_tasks_arc);
+        std::mem::forget(blob_cache);
+
         Ok(commit_stats)
     }
 
