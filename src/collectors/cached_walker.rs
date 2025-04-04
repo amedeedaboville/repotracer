@@ -185,6 +185,10 @@ where
             commits_with_info.iter().map(|&(_, tree_oid, _)| tree_oid),
             path_glob,
         )?;
+        println!(
+            "listing entries to process took {}",
+            measurement_start.elapsed().as_secs_f64()
+        );
         self.batch_process_objects(&mut cache, entries_to_process);
         let tree_processing_start = Instant::now();
         println!("Collecting file results into trees for each commit:");
@@ -216,6 +220,7 @@ where
             "Total time for measurement: {}",
             measurement_start.elapsed().as_secs_f64()
         );
+        std::mem::forget(cache);
         Ok(commit_stats)
     }
 
