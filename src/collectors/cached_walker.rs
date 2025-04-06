@@ -71,6 +71,13 @@ pub struct MeasurementRunOptions {
     pub range: (Option<DateTime<Utc>>, Option<DateTime<Utc>>),
     pub path_in_repo: Option<String>,
 }
+
+struct BuildTaskGraphResult<F> {
+    all_tasks: Vec<AggTask<F>>,
+    tasks_by_depth: Vec<Vec<usize>>,
+    entries_to_process_set: HashSet<(AliasedPath, EntryIdx)>,
+}
+
 pub struct CachedWalker<F>
 where
     F: FileData + PossiblyEmpty,
@@ -91,15 +98,6 @@ where
             file_measurer,
         }
     }
-    /// Processes a set of Git tree objects to find and gather all the paths to process.
-    ///
-    /// # Parameters
-    /// * `tree_ids` - An iterable of Git tree ObjectIds (typically the tree references from commits)
-    /// * `path_glob` - Optional glob pattern to filter files by path
-    ///
-    /// # Returns
-    /// A vector of tuples containing (AliasedPath, OidIdx) for all relevant files
-
     pub fn walk_repo_and_collect_stats(
         &self,
         options: MeasurementRunOptions,
@@ -111,12 +109,9 @@ where
             path_in_repo,
         } = options;
         let RepoCacheData {
-            oid_set,
             flat_tree,
             repo_safe: safe_repo,
-            filepath_set,
             tree_entry_set,
-            filename_set,
             ..
         } = &self.repo_caches;
         let inner_repo = safe_repo.clone().to_thread_local();
@@ -146,6 +141,127 @@ where
 
         println!("Building task graph and identifying blobs via commit traversal:");
         let task_graph_start = Instant::now();
+        let BuildTaskGraphResult {
+            all_tasks,
+            tasks_by_depth,
+            entries_to_process_set,
+        } = Self::build_task_graph(
+            &commits_with_info,
+            &self.repo_caches,
+            path_glob.as_ref(),
+            empty_path_idx,
+        );
+        println!(
+            "Created {} tasks and identified {} unique blobs in {:.2} secs",
+            all_tasks.len(),
+            entries_to_process_set.len(),
+            task_graph_start.elapsed().as_secs_f64()
+        );
+
+        let mut entries_to_process_vec = entries_to_process_set.into_iter().collect::<Vec<_>>();
+        // this is very important, we need to process the blobs in the order they exist in the git odb
+        entries_to_process_vec
+            .sort_by_key(|(_path, idx)| tree_entry_set.get_index(*idx as usize).unwrap().oid_idx);
+        self.batch_process_objects(&mut cache, entries_to_process_vec);
+
+        println!("Executing {} tasks level-by-level:", all_tasks.len()); // Use direct len()
+        let parallel_start = Instant::now();
+        let commit_results = Arc::new(DashMap::<ObjectId, CommitData>::new());
+        let file_measurer = self.file_measurer.clone();
+        let all_tasks_arc = Arc::new(all_tasks);
+        let blob_cache = Arc::new(cache);
+        let overall_progress = pb_default(all_tasks_arc.len());
+        overall_progress.set_style(pb_style());
+
+        for tasks_at_this_depth in tasks_by_depth.iter() {
+            tasks_at_this_depth
+                .par_iter()
+                .for_each(|&task_id| {
+                    let task = &all_tasks_arc[task_id];
+                    let all_tasks_clone = all_tasks_arc.clone();
+                    let blob_cache_clone = blob_cache.clone();
+                    let commit_results_clone = commit_results.clone();
+                    let file_measurer_clone = file_measurer.clone();
+                    let overall_progress_clone = overall_progress.clone();
+
+                    let aggregation_result_opt = task.result.get_or_init(|| {
+                        Self::aggregate_task_children(task, &all_tasks_clone, &blob_cache_clone)
+                    }); // end get_or_init
+
+                    if task.is_commit_root {
+                        if let Some((commit_oid_task, commit_date)) = task.commit_info {
+                            if let Some(aggregation_result) = aggregation_result_opt.as_ref() {
+                                match file_measurer_clone.summarize_tree_data(aggregation_result) {
+                                    Ok(final_data) => {
+                                        let commit_data = CommitData { oid: commit_oid_task, date: commit_date, data: final_data };
+                                        commit_results_clone.insert(commit_oid_task, commit_data);
+                                    }
+                                    Err(e) => {
+                                        eprintln!("Error summarizing tree data for commit {}: {}", commit_oid_task, e);
+                                    }
+                                }
+                            } else {
+                                eprintln!("Warning: Aggregation result was None for commit root task {:?} (commit {})", task.entry_key, commit_oid_task);
+                            }
+                        } else { eprintln!("Warning: Commit root task missing commit info: {:?}", task.entry_key); }
+                    }
+                    overall_progress_clone.inc(1);
+                }); // end par_iter().for_each()
+        } // end loop over depths
+
+        overall_progress.finish_with_message("Finished processing all tasks");
+
+        let parallel_elapsed_secs = parallel_start.elapsed().as_secs_f64();
+        println!(
+            "Parallel task execution: processed {} commits in {:.2} seconds",
+            commit_results.len(),
+            parallel_elapsed_secs
+        );
+
+        let mut commit_stats = Vec::with_capacity(commits_with_info.len());
+        for (commit_oid, _, _) in &commits_with_info {
+            if let Some(entry) = commit_results.remove(commit_oid) {
+                commit_stats.push(entry.1);
+            } else {
+                eprintln!(
+                    "Warning: No result found for commit {} in final collection.",
+                    commit_oid
+                );
+            }
+        }
+
+        let total_elapsed_secs = measurement_start.elapsed().as_secs_f64();
+        println!(
+            "Total time for measurement: {:.2} seconds",
+            total_elapsed_secs
+        );
+
+        //Leak these on purpose, the OS will clean up when the program exits
+        //They take a long time to drop and we don't have to do it
+        std::mem::forget(all_tasks_arc);
+        std::mem::forget(blob_cache);
+
+        Ok(commit_stats)
+    }
+
+    fn build_task_graph<'a>(
+        commits_with_info: &[(ObjectId, ObjectId, gix::date::Time)],
+        repo_caches: &'a RepoCacheData,
+        path_glob: Option<&'a GlobMatcher>,
+        empty_path_idx: FilepathIdx,
+    ) -> BuildTaskGraphResult<F>
+    where
+        F: FileData + Debug + Clone + Send + Sync + 'static + PossiblyEmpty,
+    {
+        let RepoCacheData {
+            oid_set,
+            flat_tree,
+            filepath_set,
+            tree_entry_set,
+            filename_set,
+            ..
+        } = repo_caches;
+
         let mut all_tasks: Vec<AggTask<F>> = Vec::new();
         let mut task_id_counter = 0;
         let mut task_id_map: AHashMap<EntryKey, usize> = AHashMap::new();
@@ -204,7 +320,7 @@ where
 
                     match entry.kind {
                         TreeChildKind::Blob => {
-                            if path_glob.as_ref().map_or(true, |glob| {
+                            if path_glob.map_or(true, |glob| {
                                 glob.is_match(aliased_path_to_string(filename_set, &path_buffer))
                             }) {
                                 entries_to_process_set
@@ -324,98 +440,11 @@ where
             } // end while creation_stack.pop()
         } // end commit loop
 
-        println!(
-            "Created {} tasks (across {} unique trees) and identified {} unique blobs in {:.2} secs",
-            all_tasks.len(),
-            globally_traversed_trees.len(),
-            entries_to_process_set.len(),
-            task_graph_start.elapsed().as_secs_f64()
-        );
-
-        let mut entries_to_process_vec = entries_to_process_set.into_iter().collect::<Vec<_>>();
-        // this is very important, we need to process the blobs in the order they exist in the git odb
-        entries_to_process_vec
-            .sort_by_key(|(_path, idx)| tree_entry_set.get_index(*idx as usize).unwrap().oid_idx);
-        self.batch_process_objects(&mut cache, entries_to_process_vec);
-
-        println!("Executing {} tasks level-by-level:", all_tasks.len()); // Use direct len()
-        let parallel_start = Instant::now();
-        let commit_results = Arc::new(DashMap::<ObjectId, CommitData>::new());
-        let file_measurer = self.file_measurer.clone();
-        let all_tasks_arc = Arc::new(all_tasks);
-        let blob_cache = Arc::new(cache);
-        let overall_progress = pb_default(all_tasks_arc.len());
-        overall_progress.set_style(pb_style());
-
-        for tasks_at_this_depth in tasks_by_depth.iter() {
-            tasks_at_this_depth
-                .par_iter()
-                .for_each(|&task_id| {
-                    let task = &all_tasks_arc[task_id];
-                    let all_tasks_clone = all_tasks_arc.clone();
-                    let blob_cache_clone = blob_cache.clone();
-                    let commit_results_clone = commit_results.clone();
-                    let file_measurer_clone = file_measurer.clone();
-                    let overall_progress_clone = overall_progress.clone();
-
-                    let aggregation_result_opt = task.result.get_or_init(|| {
-                        Self::aggregate_task_children(task, &all_tasks_clone, &blob_cache_clone)
-                    }); // end get_or_init
-
-                    if task.is_commit_root {
-                        if let Some((commit_oid_task, commit_date)) = task.commit_info {
-                            if let Some(aggregation_result) = aggregation_result_opt.as_ref() {
-                                match file_measurer_clone.summarize_tree_data(aggregation_result) {
-                                    Ok(final_data) => {
-                                        let commit_data = CommitData { oid: commit_oid_task, date: commit_date, data: final_data };
-                                        commit_results_clone.insert(commit_oid_task, commit_data);
-                                    }
-                                    Err(e) => {
-                                        eprintln!("Error summarizing tree data for commit {}: {}", commit_oid_task, e);
-                                    }
-                                }
-                            } else {
-                                eprintln!("Warning: Aggregation result was None for commit root task {:?} (commit {})", task.entry_key, commit_oid_task);
-                            }
-                        } else { eprintln!("Warning: Commit root task missing commit info: {:?}", task.entry_key); }
-                    }
-                    overall_progress_clone.inc(1);
-                }); // end par_iter().for_each()
-        } // end loop over depths
-
-        overall_progress.finish_with_message("Finished processing all tasks");
-
-        let parallel_elapsed_secs = parallel_start.elapsed().as_secs_f64();
-        println!(
-            "Parallel task execution: processed {} commits in {:.2} seconds",
-            commit_results.len(),
-            parallel_elapsed_secs
-        );
-
-        let mut commit_stats = Vec::with_capacity(commits_with_info.len());
-        for (commit_oid, _, _) in &commits_with_info {
-            if let Some(entry) = commit_results.remove(commit_oid) {
-                commit_stats.push(entry.1);
-            } else {
-                eprintln!(
-                    "Warning: No result found for commit {} in final collection.",
-                    commit_oid
-                );
-            }
+        BuildTaskGraphResult {
+            all_tasks,
+            tasks_by_depth,
+            entries_to_process_set,
         }
-
-        let total_elapsed_secs = measurement_start.elapsed().as_secs_f64();
-        println!(
-            "Total time for measurement: {:.2} seconds",
-            total_elapsed_secs
-        );
-
-        //Leak these on purpose, the OS will clean up when the program exits
-        //They take a long time to drop and we don't have to do it
-        std::mem::forget(all_tasks_arc);
-        std::mem::forget(blob_cache);
-
-        Ok(commit_stats)
     }
 
     fn batch_process_objects(
