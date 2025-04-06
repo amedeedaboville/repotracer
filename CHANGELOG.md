@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2025-04-06
+- Fixed the race conditions leading to spikes in the charts by rewriting the aggregation logic, which also gave a 5% overall boost.
+
 ## [0.5.0] - 2025-03-21
 - Officially made the Rust branch the default version. Things might not port over well or might be broken from the python version.
 

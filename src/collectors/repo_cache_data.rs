@@ -629,7 +629,7 @@ pub fn load_or_rebuild_caches(
 }
 fn load_caches(
     repo: &Repository,
-    shared_repo: &ThreadSafeRepository,
+    _shared_repo: &ThreadSafeRepository,
 ) -> (
     FlatGitRepo,
     FilenameCache,
@@ -688,7 +688,8 @@ fn load_caches(
         entry_set,
     )
 }
-fn load_and_save_cache<T: Serialize + DeserializeOwned>(
+
+fn _load_and_save_cache<T: Serialize + DeserializeOwned>(
     repo: &ThreadSafeRepository,
     cache_name: &str,
     build_fn: impl FnOnce(&ThreadSafeRepository) -> Result<T, Box<dyn std::error::Error>>,

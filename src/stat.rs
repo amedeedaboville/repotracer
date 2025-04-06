@@ -51,25 +51,25 @@ impl Measurement {
         };
         match self {
             Measurement::Tokei(tokei) => {
-                let mut walker = CachedWalker::<TokeiStat>::new(repo_path, tokei.clone());
+                let walker = CachedWalker::<TokeiStat>::new(repo_path, tokei.clone());
                 let result = walker.walk_repo_and_collect_stats(options)?;
                 std::mem::forget(walker);
                 Ok(result)
             }
             Measurement::Grep(grep) => {
-                let mut walker = CachedWalker::<NumMatches>::new(repo_path, grep.clone());
+                let walker = CachedWalker::<NumMatches>::new(repo_path, grep.clone());
                 let result = walker.walk_repo_and_collect_stats(options)?;
                 std::mem::forget(walker);
                 Ok(result)
             }
             Measurement::FileCount(filecount) => {
-                let mut walker = CachedWalker::<NumMatches>::new(repo_path, filecount.clone());
+                let walker = CachedWalker::<NumMatches>::new(repo_path, filecount.clone());
                 let result = walker.walk_repo_and_collect_stats(options)?;
                 std::mem::forget(walker);
                 Ok(result)
             }
             Measurement::Script(script) => {
-                let mut walker = CachedWalker::<String>::new(repo_path, script.clone());
+                let walker = CachedWalker::<String>::new(repo_path, script.clone());
                 let result = walker.walk_repo_and_collect_stats(options)?;
                 std::mem::forget(walker);
                 Ok(result)
