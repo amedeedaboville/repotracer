@@ -168,71 +168,29 @@ where
                 continue;
             };
             let root_tree_entry = root_tree_entry.unwrap_tree();
-            let commit_root_entry_key = EntryKey::new(tree_oid_idx, empty_path_idx);
-
             let mut dfs_stack: Vec<(FilepathIdx, &TreeEntry)> = Vec::new();
             let mut creation_stack: Vec<(EntryKey, &TreeEntry)> = Vec::new();
-
             task_creation_visited.clear();
 
-            // --- Handle Root Node Specially ---
-            if task_creation_visited.insert(commit_root_entry_key) {
-                creation_stack.push((commit_root_entry_key, root_tree_entry));
+            dfs_stack.push((empty_path_idx, root_tree_entry));
 
-                for &child_entry_idx in root_tree_entry.children.iter() {
-                    let Some(entry) = tree_entry_set.get_index(child_entry_idx as usize) else {
-                        eprintln!(
-                            "Warning: Child entry index {} not found for root tree {}. Skipping.",
-                            child_entry_idx, tree_oid_idx
-                        );
-                        continue;
-                    };
-
-                    path_buffer.clear();
-                    path_buffer.push(entry.filename_idx); // Path relative to root is just filename
-
-                    match entry.kind {
-                        TreeChildKind::Blob => {
-                            // Collect blobs directly under root if they match glob
-                            if path_glob.as_ref().map_or(true, |glob| {
-                                glob.is_match(aliased_path_to_string(filename_set, &path_buffer))
-                            }) {
-                                entries_to_process_set
-                                    .insert((path_buffer.clone(), child_entry_idx));
-                            }
-                        }
-                        TreeChildKind::Tree => {
-                            let child_path_idx =
-                                filepath_set.get_index_of(&path_buffer).unwrap() as FilepathIdx;
-                            let child_entry_key = EntryKey::new(entry.oid_idx, child_path_idx);
-
-                            if globally_traversed_trees.contains(&child_entry_key) {
-                                continue;
-                            }
-                            if let Some(child_tree) = flat_tree.get(&entry.oid_idx) {
-                                dfs_stack.push((child_path_idx, child_tree.unwrap_tree()));
-                            } else {
-                                eprintln!("Warning: Child tree OID index {} (under root {}) not found in flat_tree. Skipping subtree.", entry.oid_idx, tree_oid_idx);
-                            }
-                        }
-                    }
-                }
-            } else {
-                eprintln!("Critical Error: Root entry key {:?} visited twice within commit {}. Aborting DFS for commit.", commit_root_entry_key, commit_oid);
-                continue;
-            }
-
-            // 1. DFS Traversal (starts from root's children pushed above)
+            // 1. DFS Traversal to collect blobs and build dependency order for tasks
             while let Some((path_idx, tree)) = dfs_stack.pop() {
                 let entry_key = EntryKey::new(tree.oid_idx, path_idx);
-                if globally_traversed_trees.contains(&entry_key) {
+                let is_root_node_for_this_commit = path_idx == empty_path_idx;
+
+                if !is_root_node_for_this_commit && globally_traversed_trees.contains(&entry_key) {
                     continue;
                 }
+                // Skip if already visited *within this commit's traversal*
+                // `insert` returns false if the value was already present.
                 if !task_creation_visited.insert(entry_key) {
                     continue;
                 }
-                creation_stack.push((entry_key, tree)); // Add node for post-order processing
-                                                        // Process children (for blob collection and further DFS)
+
+                // Add node to creation stack for post-order processing
+                creation_stack.push((entry_key, tree));
+
                 let parent_path_slice = filepath_set.get_index(path_idx as usize).unwrap();
                 for &child_entry_idx in tree.children.iter() {
                     let Some(entry) = tree_entry_set.get_index(child_entry_idx as usize) else {
@@ -262,13 +220,15 @@ where
                                 continue;
                             }
 
-                            if !task_creation_visited.contains(&child_entry_key) {
-                                if let Some(child_tree) = flat_tree.get(&entry.oid_idx) {
-                                    dfs_stack.push((child_path_idx, child_tree.unwrap_tree()));
-                                } else {
-                                    /* Warning */
-                                    eprintln!("Warning: Child tree OID index {} (under root {}) not found in flat_tree. Skipping subtree.", entry.oid_idx, tree_oid_idx);
-                                }
+                            // If we encounter the child tree again *within this commit's traversal*
+                            // before processing it (cycle check handled by `task_creation_visited` at loop start),
+                            // we don't need to push it again. However, the check at the start of the
+                            // loop (`!task_creation_visited.insert(entry_key)`) already covers this.
+                            // We only need to find the tree and push it onto the stack if it exists.
+                            if let Some(child_tree) = flat_tree.get(&entry.oid_idx) {
+                                dfs_stack.push((child_path_idx, child_tree.unwrap_tree()));
+                            } else {
+                                eprintln!("Warning: Child tree OID index {} (path: {:?}) not found in flat_tree. Skipping subtree.", entry.oid_idx, aliased_path_to_string(filename_set, &path_buffer));
                             }
                         }
                     }
@@ -372,7 +332,10 @@ where
             task_graph_start.elapsed().as_secs_f64()
         );
 
-        let entries_to_process_vec = entries_to_process_set.into_iter().collect::<Vec<_>>();
+        let mut entries_to_process_vec = entries_to_process_set.into_iter().collect::<Vec<_>>();
+        // this is very important, we need to process the blobs in the order they exist in the git odb
+        entries_to_process_vec
+            .sort_by_key(|(_path, idx)| tree_entry_set.get_index(*idx as usize).unwrap().oid_idx);
         self.batch_process_objects(&mut cache, entries_to_process_vec);
 
         println!("Executing {} tasks level-by-level:", all_tasks.len()); // Use direct len()
