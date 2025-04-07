@@ -1,5 +1,3 @@
-use chrono::Utc;
-
 use crate::collectors::list_in_range::Granularity;
 use crate::config;
 use crate::stat::build_measurement;

@@ -1,4 +1,4 @@
-use chrono::{DateTime, Datelike, Duration, NaiveDateTime, Timelike, Utc};
+use chrono::{DateTime, Datelike, Duration, Timelike, Utc};
 use gix::Commit;
 use gix::Repository;
 use serde::{Deserialize, Serialize};
@@ -62,10 +62,7 @@ pub fn list_commits_with_granularity(
         let commit = info.object().unwrap();
         let _tree = commit.tree().unwrap();
         let commit_time = commit.time()?;
-        let datetime = DateTime::<Utc>::from_naive_utc_and_offset(
-            NaiveDateTime::from_timestamp_opt(commit_time.seconds, 0).unwrap(),
-            Utc,
-        );
+        let datetime = DateTime::from_timestamp(commit_time.seconds, 0).unwrap();
 
         // If the commit is before the start time, end the loop early
         if let Some(start) = start {
