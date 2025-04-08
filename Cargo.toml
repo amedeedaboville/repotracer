@@ -2,6 +2,7 @@
 name = "repotracer"
 version = "0.6.0"
 edition = "2021"
+description = "Collect stats about a repo over time."
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [profile.release]

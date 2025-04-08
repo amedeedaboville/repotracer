@@ -9,11 +9,21 @@ use repotracer::commands::run_one_off::run_one_off_command;
 use repotracer::commands::run_stat::run_stat_command;
 use repotracer::commands::serve::serve_command;
 
+const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("GIT_HASH"), ")");
+const ABOUT: &str = concat!(
+    "repotracer ",
+    env!("CARGO_PKG_VERSION"),
+    " (",
+    env!("GIT_HASH"),
+    ")\n",
+    env!("CARGO_PKG_DESCRIPTION")
+);
+
 fn main() {
     let matches = Command::new("Repotracer")
-        .version("0.1")
+        .version(VERSION)
         .author("Amédée d'Aboville")
-        .about("collects stats about repos over time")
+        .about(ABOUT)
         .arg_required_else_help(true)
         .subcommand(
             Command::new("run")
