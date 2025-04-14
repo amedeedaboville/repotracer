@@ -25,7 +25,8 @@ pub fn run_one_off_command(config_path: &str, repo_path: &str, output_path: Opti
         .run(
             repo_path.to_string(),
             stat_config
-                .get_param("granularity")
+                .granularity
+                .clone()
                 .unwrap_or(Granularity::Daily),
             (None, None),
             stat_config.path_in_repo.clone(),

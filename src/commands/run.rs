@@ -27,7 +27,10 @@ fn run_stat(repo_name: &str, stat_name: &str) {
     let mut res = meas
         .run(
             repo_path.to_string(),
-            Granularity::Daily,
+            stat_config
+                .granularity
+                .clone()
+                .unwrap_or(Granularity::Daily),
             (None, None),
             stat_config.path_in_repo.clone(),
         )
