@@ -56,6 +56,7 @@ impl AddAssign for TokeiStat {
 pub struct TokeiCollector {
     languages: Option<Vec<LanguageType>>,
     top_n: Option<usize>,
+    failed_extensions: Vec<String>,
 }
 impl Default for TokeiCollector {
     fn default() -> Self {
@@ -72,6 +73,7 @@ impl TokeiCollector {
                     .collect()
             }),
             top_n,
+            failed_extensions: Vec::new(),
         }
     }
 }
@@ -93,8 +95,14 @@ impl FileMeasurement for TokeiCollector {
         if path.starts_with('.') || path.contains("/.") {
             return Ok(TokeiStat::default());
         }
-        let language_type = LanguageType::from_path(path, &config)
-            .ok_or_else(|| Error::msg(format!("Failed to get language type for path: '{path}'")))?;
+
+        let language_type = if let Some(lt) = LanguageType::from_path(path, &config) {
+            lt
+        } else {
+            //For now ignore "failed to get language" errors, later we can log them to something
+            // self.failed_extensions.push(path.to_string());
+            return Ok(TokeiStat::default()); // Return early if None
+        };
         if let Some(languages) = &self.languages {
             if !languages.contains(&language_type) {
                 return Ok(TokeiStat::default());
