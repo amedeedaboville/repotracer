@@ -69,7 +69,13 @@ impl TokeiCollector {
         TokeiCollector {
             languages: languages.map(|l| {
                 l.into_iter()
-                    .map(|l| LanguageType::from_str(&l).unwrap())
+                    .map(|l| {
+                        match LanguageType::from_str(&l) {
+                            Ok(lt) => Ok(lt),
+                            Err(_) => Err(anyhow::anyhow!("Unsupported language: {}", l)),
+                        }
+                        .unwrap()
+                    })
                     .collect()
             }),
             top_n,
