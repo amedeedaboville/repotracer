@@ -94,7 +94,10 @@ impl FileMeasurement for TokeiCollector {
         path: &str,
         contents: &str,
     ) -> Result<TokeiStat, Box<dyn std::error::Error>> {
-        let config = Config::default();
+        let config = Config {
+            treat_doc_strings_as_comments: Some(true),
+            ..Config::default()
+        };
         //tokei ignores dotfiles
         //todo we should add other paths to care about
         //todo we should make measure_file return an Result<Option>
