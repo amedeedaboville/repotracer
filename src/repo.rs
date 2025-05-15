@@ -92,9 +92,10 @@ fn ensure_cloned(full_clone_url: &str, repo_path: &str) -> Result<(), String> {
         println!("Repository already cloned, refreshing: {}", repo_path);
         //refresh the repo with git pull
         let _output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo_path)
             .arg("pull")
             .arg("--rebase")
-            .arg(repo_path)
             .output()
             .map_err(|_| "Failed to execute git pull".to_string())?;
 
