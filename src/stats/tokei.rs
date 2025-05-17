@@ -5,6 +5,7 @@ use std::{
 
 use crate::stats::common::FileMeasurement;
 use ahash::{HashMap, HashMapExt};
+use anyhow::Error;
 use gix::Repository;
 use tokei::{Config, LanguageType};
 
@@ -63,13 +64,16 @@ impl Default for TokeiCollector {
     }
 }
 
+fn str_to_language_type(name: &str) -> Result<LanguageType, serde_json::Error> {
+    serde_json::from_value(serde_json::Value::String(name.to_string()))
+}
 impl TokeiCollector {
     pub fn new(languages: Option<Vec<String>>, top_n: Option<usize>) -> Self {
         TokeiCollector {
             languages: languages.map(|l| {
                 l.into_iter()
                     .map(|l| {
-                        match LanguageType::from_str(&l) {
+                        match str_to_language_type(&l) {
                             Ok(lt) => Ok(lt),
                             Err(_) => Err(anyhow::anyhow!("Unsupported language: {}", l)),
                         }

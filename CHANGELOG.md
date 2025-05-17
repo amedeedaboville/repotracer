@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [Unreleased]
+## [0.6.3] - 2025-05-17
+- Be more flexible in language names, allowing both "Cpp" and "C++". We allow both the "inner"
+language name and the tokei public name.
+
 ## [0.6.0] - 2025-04-06
 - Fixed the race conditions leading to spikes in the charts by rewriting the aggregation logic, which also gave a 5% overall boost.
 

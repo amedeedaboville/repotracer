@@ -1,0 +1,7 @@
+{
+  "name": "sample-tokei",
+  "description": "A tokei stat using the 'inner' name instead of the ouptut name",
+  "type": "tokei",
+  "granularity": "daily",
+  "params": { "languages": ["CHeader", "Cpp"] }
+}
