@@ -9,10 +9,12 @@ use crate::{
     },
     config::UserStatConfig,
     stats::{
-        common::{FileMeasurement, NumMatches},
+        common::{FileMeasurement, NumMatches, NumberStat},
+        custom_file_measurement::{CustomFileCommand, CustomFileMeasurement},
         custom_script::CustomScriptCollector,
         filecount::PathBlobCollector,
         grep::RipgrepCollector,
+        jq_collector::{JqNumberCollector, JqNumberStat},
         tokei::{TokeiCollector, TokeiStat},
     },
 };
@@ -22,13 +24,21 @@ pub enum FileDataEnum {
     NumMatches(NumMatches),
     String(String),
 }
-pub static ALL_MEASUREMENTS: [&str; 4] = ["tokei", "regex_count", "file_count", "script"];
+pub static ALL_MEASUREMENTS: [&str; 5] = [
+    "tokei",
+    "regex_count",
+    "file_count",
+    "script",
+    "file_script",
+];
 
 pub enum Measurement {
     Tokei(Arc<dyn FileMeasurement<Data = TokeiStat> + Send + 'static>),
     Grep(Arc<dyn FileMeasurement<Data = NumMatches> + Send + 'static>),
     FileCount(Arc<dyn FileMeasurement<Data = NumMatches> + Send + 'static>),
     Script(Arc<dyn FileMeasurement<Data = String> + Send + 'static>),
+    Jq(Arc<dyn FileMeasurement<Data = JqNumberStat> + Send + 'static>),
+    FileScript(Arc<dyn FileMeasurement<Data = NumberStat> + Send + 'static>),
 }
 impl Measurement {
     pub fn run(
@@ -74,6 +84,18 @@ impl Measurement {
                 std::mem::forget(walker);
                 Ok(result)
             }
+            Measurement::FileScript(file_script) => {
+                let walker = CachedWalker::<NumberStat>::new(repo_path, file_script.clone());
+                let result = walker.walk_repo_and_collect_stats(options)?;
+                std::mem::forget(walker);
+                Ok(result)
+            }
+            Measurement::Jq(jq) => {
+                let walker = CachedWalker::<JqNumberStat>::new(repo_path, jq.clone());
+                let result = walker.walk_repo_and_collect_stats(options)?;
+                std::mem::forget(walker);
+                Ok(result)
+            }
         }
     }
 }
@@ -103,6 +125,25 @@ pub fn build_measurement(config: &UserStatConfig) -> Measurement {
                 .get_param("script")
                 .unwrap_or_else(|| "echo 1".to_owned());
             Measurement::Script(Arc::new(CustomScriptCollector::new(param_script)))
+        }
+        "file_script" => {
+            let param_command = config
+                .get_param("command")
+                .unwrap_or_else(|| "echo 1".to_owned());
+            let param_args = config
+                .get_param_array_string("args")
+                .unwrap_or_else(|| vec![]);
+            Measurement::FileScript(Arc::new(
+                CustomFileMeasurement::new(CustomFileCommand {
+                    executable: param_command,
+                    args: param_args,
+                })
+                .expect("Failed to create CustomFileMeasurement"),
+            ))
+        }
+        "jq" => {
+            let param_jq = config.get_param("query").unwrap_or_else(|| ".".to_owned());
+            Measurement::Jq(Arc::new(JqNumberCollector::new(&param_jq).unwrap()))
         }
         _ => panic!(
             "{} is not a valid stat type. Known stat types are: '{}'",

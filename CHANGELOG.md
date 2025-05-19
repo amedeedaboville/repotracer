@@ -7,7 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [Unreleased]
+- Add jq stat collector using the jaq library.
+- Add "custom script" file measurement that can run a given shell script over the files that match a pattern.
+
 ## [0.6.3] - 2025-05-17
 - Be more flexible in language names, allowing both "Cpp" and "C++". We allow both the "inner"
 language name and the tokei public name.

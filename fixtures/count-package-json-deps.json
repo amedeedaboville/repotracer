@@ -1,0 +1,8 @@
+{
+  "name": "count-package-json-deps",
+  "description": "A custom script stat that counts the number of dependencies in package.json",
+  "type": "file_script",
+  "granularity": "daily",
+  "path_in_repo": "package.json",
+  "params": { "command": "jq", "args": [".devDependencies | length"] }
+}

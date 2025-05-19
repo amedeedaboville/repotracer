@@ -9,9 +9,12 @@ pub mod commands {
 }
 pub mod stats {
     pub mod common;
+    pub mod custom_file_measurement;
     pub mod custom_script;
     pub mod filecount;
     pub mod grep;
+    pub mod jq_collector;
+    pub mod test_utils;
     pub mod tokei;
 }
 

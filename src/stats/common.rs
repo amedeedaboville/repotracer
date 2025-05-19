@@ -135,6 +135,20 @@ impl PossiblyEmpty for NumMatches {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct NumberStat(pub f64);
+
+unsafe impl Send for NumberStat {}
+unsafe impl Sync for NumberStat {}
+impl FileData for NumberStat {}
+impl PossiblyEmpty for NumberStat {
+    fn is_empty(&self) -> bool {
+        self.0 == 0.0
+    }
+}
+
+// CustomFileMeasurement struct and impls have been moved to custom_file_measurement.rs
+
 // pub fn str_to_measurement(name: &str) -> Result<FileMeasurement, String> {
 //     match name {
 //         "file" => Ok(Measurements::FileCount(FileCount(0))),
