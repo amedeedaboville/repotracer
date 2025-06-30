@@ -2,6 +2,7 @@ pub mod commands {
     pub mod add_stat;
     pub mod clone;
     pub mod config;
+    pub mod guess_tools;
     pub mod run;
     pub mod run_one_off;
     pub mod run_stat;

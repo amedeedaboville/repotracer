@@ -4,10 +4,12 @@ use repotracer::commands::clone::clone_command;
 use repotracer::commands::config::{
     config_add_repo_command, config_location_command, config_show_command,
 };
+use repotracer::commands::detect_tools::detect_tools_command;
 use repotracer::commands::run::run_command;
 use repotracer::commands::run_one_off::run_one_off_command;
 use repotracer::commands::run_stat::run_stat_command;
 use repotracer::commands::serve::serve_command;
+use std::path::PathBuf;
 
 const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("GIT_HASH"), ")");
 const ABOUT: &str = concat!(
@@ -180,6 +182,42 @@ fn main() {
                         .help("The port to run the server on"),
                 ),
         )
+        .subcommand(Command::new("detect-tools")
+            .about("Detect tools used in the repo based on indicator files (eg Cargo.toml -> Cargo)")
+            .arg(
+                Arg::new("tool-definitions")
+                    .short('t')
+                    .long("tool-definitions")
+                    .value_name("TOOL_DEFINITIONS_FILE")
+                    .required(true)
+                    .help("Path to the tool definitions JSONL file")
+            )
+            .arg(
+                Arg::new("repo-path")
+                    .short('r')
+                    .long("repo-path")
+                    .value_name("REPO_PATH")
+                    .help("Path to a single Git repository to scan (ignored if --scan-root is used)")
+            )
+            .arg(
+                Arg::new("scan-root")
+                    .long("scan-root")
+                    .value_name("SCAN_ROOT")
+                    .help("Root directory to scan for repositories (activates multi-repo NDJSON output mode)")
+            )
+            .arg(
+                Arg::new("json")
+                    .long("json")
+                    .help("Output results as a JSON array for single repository mode (ignored if --scan-root is used)")
+            )
+            .arg(
+                Arg::new("max-depth")
+                    .long("max-depth")
+                    .value_name("MAX_DEPTH")
+                    .default_value("3")
+                    .help("Max depth to search for repositories under --scan-root (e.g., 3 for ~/repos/host/org/repo)")
+            )
+        )
         .get_matches();
 
     match matches.subcommand() {
@@ -234,6 +272,25 @@ fn main() {
         Some(("serve", sub_m)) => {
             let port = sub_m.get_one::<String>("port").unwrap();
             serve_command(port);
+        }
+        Some(("detect-tools", sub_m)) => {
+            let tool_definitions = sub_m.get_one::<String>("tool-definitions").unwrap();
+            let repo_path = sub_m.get_one::<String>("repo-path");
+            let json = sub_m.contains_id("json");
+            let scan_root = sub_m.get_one::<String>("scan-root");
+            let max_depth = sub_m
+                .get_one::<String>("max-depth")
+                .unwrap()
+                .parse::<usize>()
+                .unwrap();
+
+            detect_tools_command(
+                &PathBuf::from(tool_definitions),
+                repo_path.map(|p| PathBuf::from(p)),
+                json,
+                scan_root.map(|p| PathBuf::from(p)),
+                max_depth,
+            );
         }
         _ => unreachable!("Unknown command"),
     }
