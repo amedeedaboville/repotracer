@@ -5,6 +5,9 @@ use std::error::Error;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::PathBuf;
+use std::sync::LazyLock;
+
+static ZERO_STRING: LazyLock<String> = LazyLock::new(|| "0".to_string());
 
 fn stat_storage_path(repo_name: &str, stat_name: &str) -> PathBuf {
     let stats_dir = get_stats_dir().join(repo_name);
@@ -29,9 +32,15 @@ pub fn write_commit_stats_to_csv(
 
     // Write header
     let mut header = vec!["commit", "date"];
-    if let Some(first_commit) = df.first() {
-        header.extend(first_commit.data.keys().map(|s| s.as_str()));
-    }
+    let mut sorted_keys: Vec<_> = df
+        .iter()
+        .flat_map(|commit| commit.data.keys().map(|s| s.as_str()))
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+    sorted_keys.sort();
+
+    header.extend(sorted_keys);
     writer.write_record(&header)?;
 
     // Write data
@@ -39,9 +48,8 @@ pub fn write_commit_stats_to_csv(
         let oid_str = commit.oid.to_string();
         let date_str = commit.date.to_string();
         let mut record = vec![&oid_str, &date_str];
-        let empty = String::new();
         for key in header.iter().skip(2) {
-            let value = commit.data.get(*key).unwrap_or(&empty);
+            let value = commit.data.get(*key).unwrap_or(&ZERO_STRING);
             record.push(value);
         }
         writer.write_record(&record)?;
