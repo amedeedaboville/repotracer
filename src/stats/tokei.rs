@@ -1,11 +1,7 @@
-use std::{
-    ops::{Add, AddAssign},
-    str::FromStr,
-};
+use std::ops::{Add, AddAssign};
 
 use crate::stats::common::FileMeasurement;
 use ahash::{HashMap, HashMapExt};
-use anyhow::Error;
 use gix::Repository;
 use tokei::{Config, LanguageType};
 

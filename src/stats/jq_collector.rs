@@ -48,7 +48,7 @@ impl PossiblyEmpty for JqNumberStat {
 }
 
 pub struct JqNumberCollector {
-    query: String,
+    _query: String,
     compiled_query: Filter,
 }
 
@@ -73,7 +73,7 @@ impl JqNumberCollector {
     pub fn new(query: &str) -> Result<Self, Error> {
         let filter = build_filter(query)?;
         Ok(Self {
-            query: query.to_string(),
+            _query: query.to_string(),
             compiled_query: filter,
         })
     }

@@ -4,7 +4,7 @@ use repotracer::commands::clone::clone_command;
 use repotracer::commands::config::{
     config_add_repo_command, config_location_command, config_show_command,
 };
-use repotracer::commands::detect_tools::detect_tools_command;
+use repotracer::commands::guess_tools::detect_tools_command;
 use repotracer::commands::run::run_command;
 use repotracer::commands::run_one_off::run_one_off_command;
 use repotracer::commands::run_stat::run_stat_command;
@@ -290,7 +290,8 @@ fn main() {
                 json,
                 scan_root.map(|p| PathBuf::from(p)),
                 max_depth,
-            );
+            )
+            .unwrap();
         }
         _ => unreachable!("Unknown command"),
     }
