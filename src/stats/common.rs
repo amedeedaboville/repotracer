@@ -81,7 +81,7 @@ pub trait FileMeasurement: Sync {
         &self,
         repo: &Repository,
         path: &str,
-        contents: &str,
+        contents: &[u8],
     ) -> Result<Self::Data, Box<dyn std::error::Error>>;
 
     fn measure_entry(
@@ -91,11 +91,10 @@ pub trait FileMeasurement: Sync {
         oid: &ObjectId,
     ) -> Result<Self::Data, Box<dyn std::error::Error>> {
         if self.kind() == MeasurementKind::FilePathOnly {
-            return self.measure_file(repo, path, "");
+            return self.measure_file(repo, path, &[]);
         }
         let obj = repo.find_object(*oid)?;
-        let content = std::str::from_utf8(&obj.data).unwrap_or_default();
-        self.measure_file(repo, path, content)
+        self.measure_file(repo, path, &obj.data)
     }
 
     fn summarize_tree_data(

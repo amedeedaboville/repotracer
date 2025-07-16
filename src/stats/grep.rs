@@ -18,9 +18,9 @@ impl RipgrepCollector {
     }
     pub fn get_matches(
         &self,
-        contents: &str,
+        contents: &[u8],
     ) -> Result<Vec<(u64, String)>, Box<dyn std::error::Error>> {
-        let matches = grep_slice(&self.pattern, contents.as_bytes())?;
+        let matches = grep_slice(&self.pattern, contents)?;
         Ok(matches)
     }
 }
@@ -33,7 +33,7 @@ impl FileMeasurement for RipgrepCollector {
         &self,
         _repo: &Repository,
         _path: &str,
-        contents: &str,
+        contents: &[u8],
     ) -> Result<NumMatches, Box<dyn std::error::Error>> {
         let matches = self.get_matches(contents)?;
         Ok(NumMatches(matches.len()))

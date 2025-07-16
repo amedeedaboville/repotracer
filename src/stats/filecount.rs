@@ -31,7 +31,7 @@ impl FileMeasurement for PathBlobCollector {
         &self,
         _repo: &Repository,
         path: &str,
-        _contents: &str,
+        _contents: &[u8],
     ) -> Result<NumMatches, Box<dyn std::error::Error>> {
         if path.ends_with(std::path::MAIN_SEPARATOR) {
             return Ok(NumMatches(0));

@@ -21,7 +21,7 @@ impl FileMeasurement for CustomScriptCollector {
         &self,
         _repo: &Repository,
         _path: &str,
-        _contents: &str,
+        _contents: &[u8],
     ) -> Result<Self::Data, Box<dyn std::error::Error>> {
         unimplemented!()
     }

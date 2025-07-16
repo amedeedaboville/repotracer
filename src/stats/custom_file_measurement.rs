@@ -42,7 +42,7 @@ impl FileMeasurement for CustomFileMeasurement {
         &self,
         _repo: &Repository,
         _original_path: &str, // Path in repo, can be used for context if needed
-        contents: &str,
+        contents: &[u8],
     ) -> Result<Self::Data, Box<dyn std::error::Error>> {
         let temp_file_name = format!(
             "repotracer_custom_{}_{}.tmp",
@@ -57,7 +57,7 @@ impl FileMeasurement for CustomFileMeasurement {
 
         {
             let mut file = File::create(&temp_file_path)?;
-            file.write_all(contents.as_bytes())?;
+            file.write_all(contents)?;
         }
 
         let mut cmd = Command::new(&self.command.executable);

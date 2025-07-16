@@ -53,6 +53,7 @@ pub struct TokeiCollector {
     languages: Option<Vec<LanguageType>>,
     top_n: Option<usize>,
     failed_extensions: Vec<String>,
+    tokei_config: Config,
 }
 impl Default for TokeiCollector {
     fn default() -> Self {
@@ -79,6 +80,10 @@ impl TokeiCollector {
             }),
             top_n,
             failed_extensions: Vec::new(),
+            tokei_config: Config {
+                treat_doc_strings_as_comments: Some(true),
+                ..Config::default()
+            },
         }
     }
 }
@@ -91,12 +96,8 @@ impl FileMeasurement for TokeiCollector {
         &self,
         _repo: &Repository,
         path: &str,
-        contents: &str,
+        contents: &[u8],
     ) -> Result<TokeiStat, Box<dyn std::error::Error>> {
-        let config = Config {
-            treat_doc_strings_as_comments: Some(true),
-            ..Config::default()
-        };
         //tokei ignores dotfiles
         //todo we should add other paths to care about
         //todo we should make measure_file return an Result<Option>
@@ -104,7 +105,7 @@ impl FileMeasurement for TokeiCollector {
             return Ok(TokeiStat::default());
         }
 
-        let language_type = if let Some(lt) = LanguageType::from_path(path, &config) {
+        let language_type = if let Some(lt) = LanguageType::from_path(path, &self.tokei_config) {
             lt
         } else {
             //For now ignore "failed to get language" errors, later we can log them to something
@@ -116,7 +117,7 @@ impl FileMeasurement for TokeiCollector {
                 return Ok(TokeiStat::default());
             }
         }
-        let codestat = language_type.parse_from_slice(contents, &config);
+        let codestat = language_type.parse_from_slice(contents, &self.tokei_config);
         let stat = TokeiStat {
             language: language_type,
             blanks: codestat.blanks,
@@ -130,21 +131,15 @@ impl FileMeasurement for TokeiCollector {
         &self,
         tree_data: &TreeDataCollection<TokeiStat>,
     ) -> Result<SummaryData, Box<dyn std::error::Error>> {
-        let mut stats_by_language: HashMap<String, TokeiStat> = HashMap::new();
+        let mut stats_by_language: HashMap<LanguageType, TokeiStat> = HashMap::new();
         for (_filename, stat) in tree_data.iter() {
             if stat.is_empty() {
                 continue;
             }
-            if let std::collections::hash_map::Entry::Vacant(e) =
-                stats_by_language.entry(stat.language.to_string())
-            {
-                e.insert(stat.clone());
-            } else {
-                let entry = stats_by_language
-                    .get_mut(&stat.language.to_string())
-                    .unwrap();
-                *entry += stat.clone();
-            }
+            stats_by_language
+                .entry(stat.language)
+                .and_modify(|e| *e += stat.clone())
+                .or_insert(stat.clone());
         }
 
         // Sort languages by LOC in descending order

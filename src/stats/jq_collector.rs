@@ -1,6 +1,6 @@
 use crate::stats::common::FileMeasurement;
 use anyhow::Error;
-use gix::Repository;
+use gix::{bstr::ByteSlice, Repository};
 use jaq_core::{
     load::{Arena, File, Loader},
     Ctx, Native, RcIter,
@@ -97,21 +97,28 @@ impl FileMeasurement for JqNumberCollector {
         &self,
         _repo: &Repository,
         path: &str,
-        contents: &str,
+        contents: &[u8],
     ) -> Result<JqNumberStat, Box<dyn std::error::Error>> {
         println!("[DEBUG JqNumberCollector] Processing file: {}", path);
         if !path.ends_with(".json") {
             return Ok(JqNumberStat::default());
         }
-        if contents.trim().is_empty() {
+        if contents.is_empty() {
             println!(
-                "[DEBUG JqNumberCollector] Skipping empty or whitespace-only JSON file: {}",
+                "[DEBUG JqNumberCollector] Skipping empty JSON file: {}",
                 path
             );
             return Ok(JqNumberStat::default());
         }
 
-        let serde_value = serde_json::from_str::<serde_json::Value>(contents).map_err(|e| anyhow::anyhow!("Failed to parse JSON from file {} with serde_json: {}. Content (first 200 chars): {:.200}", path, e, contents))?;
+        let serde_value = serde_json::from_slice::<serde_json::Value>(contents).map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to parse JSON from file {} with serde_json: {}. Content: {:#?}",
+                path,
+                e,
+                contents
+            )
+        })?;
         let jaq_input_val = jaq_json::Val::from(serde_value);
 
         let inputs = RcIter::new(core::iter::empty());
@@ -235,13 +242,20 @@ impl FileMeasurement for JqObjectCollector {
         &self,
         _repo: &Repository,
         path: &str,
-        contents: &str,
+        contents: &[u8],
     ) -> Result<JqObjectStat, Box<dyn std::error::Error>> {
         if !path.ends_with(".json") {
             return Ok(JqObjectStat::default());
         }
 
-        let serde_value = serde_json::from_str::<serde_json::Value>(contents).map_err(|e| anyhow::anyhow!("Failed to parse JSON from file {} with serde_json: {}. Content (first 200 chars): {:.200}", path, e, contents))?;
+        let serde_value = serde_json::from_slice::<serde_json::Value>(contents).map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to parse JSON from file {} with serde_json: {}. Content: {:?}",
+                path,
+                e,
+                contents
+            )
+        })?;
         let jaq_input_val = jaq_json::Val::from(serde_value);
 
         let inputs = RcIter::new(core::iter::empty());
