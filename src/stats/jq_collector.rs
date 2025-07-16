@@ -1,6 +1,6 @@
 use crate::stats::common::FileMeasurement;
 use anyhow::Error;
-use gix::{bstr::ByteSlice, Repository};
+use gix::Repository;
 use jaq_core::{
     load::{Arena, File, Loader},
     Ctx, Native, RcIter,
