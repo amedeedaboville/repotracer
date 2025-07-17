@@ -274,7 +274,7 @@ where
 
         // --- Task Creation Phase ---
         let pb_commits = pb_default(commits_with_info.len());
-        pb_commits.set_message("Building tasks");
+        pb_commits.set_message("Building aggregation tasks");
         for (commit_oid, tree_oid, commit_date) in
             commits_with_info.iter().rev().progress_with(pb_commits)
         {
