@@ -133,7 +133,8 @@ mod tests {
             args: vec!["-l".to_string()],
         })?;
         let five_line_content = "line one\nline two\nline three\nline four\nline five\n";
-        let result_f64 = measurement.measure_file(&repo, "test_file.txt", five_line_content)?;
+        let result_f64 =
+            measurement.measure_file(&repo, "test_file.txt", five_line_content.as_bytes())?;
 
         assert_eq!(result_f64.0, 5.0, "Expected measure_file to return 5.0");
 

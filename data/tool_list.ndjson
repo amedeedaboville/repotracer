@@ -1,0 +1,279 @@
+{"name": "Cargo", "files": ["Cargo.toml", "Cargo.lock"], "dirs": [".cargo"], "language": "Rust", "category": "package-manager"}
+{"name": "Maven", "files": ["pom.xml"], "dirs": [".mvn"], "language": "Java", "category": "build-tool"}
+{"name": "Gradle", "files": ["build.gradle", "settings.gradle", "gradle.properties", "gradlew"], "dirs": [], "language": "Java", "category": "build-tool"}
+{"name": "NPM", "files": ["package.json", "package-lock.json", "npm-shrinkwrap.json"], "dirs": [], "language": "JavaScript", "category": "package-manager"}
+{"name": "Pnpm", "files": ["pnpm-lock.yaml"], "dirs": [], "language": "JavaScript", "category": "package-manager"}
+{"name": "Yarn", "files": ["yarn.lock", ".yarnrc"], "dirs": [], "language": "JavaScript", "category": "package-manager"}
+{"name": "Make", "files": ["Makefile", "makefile", "GNUmakefile"], "dirs": [], "language": "", "category": "build-tool"}
+{"name": "CMake", "files": ["CMakeLists.txt", "CMakePresets.json"], "dirs": ["cmake"], "language": "C/C++", "category": "build-tool"}
+{"name": "Bazel", "files": ["BUILD", "WORKSPACE", "BUILD.bazel", ".bazelrc"], "dirs": [], "language": "", "category": "build-tool"}
+{"name": "Ant", "files": ["build.xml"], "dirs": [], "language": "Java", "category": "build-tool"}
+{"name": "SBT", "files": ["build.sbt"], "dirs": [], "language": "Scala", "category": "build-tool"}
+{"name": "Go Modules", "files": ["go.mod", "go.sum"], "dirs": [], "language": "Go", "category": "package-manager"}
+{"name": "Pipfile", "files": ["Pipfile", "Pipfile.lock"], "dirs": [], "language": "Python", "category": "package-manager"}
+{"name": "Poetry", "files": ["poetry.lock"], "dirs": [], "language": "Python", "category": "package-manager"}
+{"name": "Requirements.txt", "files": ["requirements.txt"], "dirs": [], "language": "Python", "category": "package-manager"}
+{"name": "Pyproject.toml", "files": ["pyproject.toml"], "dirs": [], "language": "Python", "category": "package-manager"}
+{"name": "PDM", "files": ["pdm.lock"], "dirs": [], "language": "Python", "category": "package-manager"}
+{"name": "NuGet", "files": ["*.csproj", "*.fsproj", "packages.config", "*.sln"], "dirs": [], "language": ".NET", "category": "package-manager"}
+{"name": "Bundler", "files": ["Gemfile", "Gemfile.lock"], "dirs": [], "language": "Ruby", "category": "package-manager"}
+{"name": "Composer", "files": ["composer.json", "composer.lock"], "dirs": [], "language": "PHP", "category": "package-manager"}
+{"name": "Conan", "files": ["conanfile.txt", "conanfile.py"], "dirs": [], "language": "C++", "category": "package-manager"}
+{"name": "vcpkg", "files": ["vcpkg.json"], "dirs": [], "language": "C++", "category": "package-manager"}
+{"name": "Swift Package Manager", "files": ["Package.swift"], "dirs": [], "language": "Swift", "category": "package-manager"}
+{"name": "Bun", "files": ["bun.lockb"], "dirs": [], "language": "JavaScript", "category": "package-manager"}
+{"name": "GitLab CI", "files": [".gitlab-ci.yml"], "dirs": [], "language": "", "category": "ci-cd"}
+{"name": "Travis CI", "files": [".travis.yml"], "dirs": [], "language": "", "category": "ci-cd"}
+{"name": "CircleCI", "files": [".circleci/config.yml"], "dirs": [".circleci"], "language": "", "category": "ci-cd"}
+{"name": "Jenkins", "files": ["Jenkinsfile"], "dirs": [], "language": "", "category": "ci-cd"}
+{"name": "Azure Pipelines", "files": ["azure-pipelines.yml"], "dirs": [], "language": "", "category": "ci-cd"}
+{"name": "Drone CI", "files": [".drone.yml"], "dirs": [], "language": "", "category": "ci-cd"}
+{"name": "Buildkite", "files": [".buildkite/pipeline.yml"], "dirs": [".buildkite"], "language": "", "category": "ci-cd"}
+{"name": "AppVeyor", "files": ["appveyor.yml"], "dirs": [], "language": "", "category": "ci-cd"}
+{"name": "GitHub Actions", "files": [], "dirs": [".github/actions", ".github/workflows"], "language": "", "category": "ci-cd"}
+{"name": "ArgoCD", "files": ["argo-cd.yaml"], "dirs": [], "language": "", "category": "ci-cd"}
+{"name": "FluxCD", "files": ["flux-system"], "dirs": [], "language": "", "category": "ci-cd"}
+{"name": "Concourse", "files": ["pipeline.yml"], "dirs": [], "language": "", "category": "ci-cd"}
+{"name": "Tekton", "files": ["tekton"], "dirs": [], "language": "", "category": "ci-cd"}
+{"name": "GoReleaser", "files": [".goreleaser.yml", ".goreleaser.yaml"], "dirs": [], "language": "Go", "category": "ci-cd"}
+{"name": "Jest", "files": ["jest.config.js", "jest.config.ts"], "dirs": [], "language": "JavaScript", "category": "test-framework"}
+{"name": "Mocha", "files": ["mocha.opts", ".mocharc.js", ".mocharc.json"], "dirs": [], "language": "JavaScript", "category": "test-framework"}
+{"name": "Jasmine", "files": ["jasmine.json"], "dirs": [], "language": "JavaScript", "category": "test-framework"}
+{"name": "Pytest", "files": ["pytest.ini", "conftest.py"], "dirs": [], "language": "Python", "category": "test-framework"}
+{"name": "RSpec", "files": [".rspec"], "dirs": [], "language": "Ruby", "category": "test-framework"}
+{"name": "PHPUnit", "files": ["phpunit.xml", "phpunit.xml.dist"], "dirs": [], "language": "PHP", "category": "test-framework"}
+{"name": "Cypress", "files": ["cypress.json", "cypress.config.js"], "dirs": ["cypress"], "language": "JavaScript", "category": "test-framework"}
+{"name": "Playwright", "files": ["playwright.config.js", "playwright.config.ts"], "dirs": [], "language": "JavaScript", "category": "test-framework"}
+{"name": "Vitest", "files": ["vitest.config.js", "vitest.config.ts"], "dirs": [], "language": "JavaScript", "category": "test-framework"}
+{"name": "AVA", "files": ["ava.config.js"], "dirs": [], "language": "JavaScript", "category": "test-framework"}
+{"name": "Tape", "files": ["tape.js"], "dirs": [], "language": "JavaScript", "category": "test-framework"}
+{"name": "QUnit", "files": ["qunit.js", "qunit.html"], "dirs": [], "language": "JavaScript", "category": "test-framework"}
+{"name": "JUnit5", "files": ["junit-platform.properties"], "dirs": [], "language": "Java", "category": "test-framework"}
+{"name": "TestNG", "files": ["testng.xml"], "dirs": [], "language": "Java", "category": "test-framework"}
+{"name": "Robot Framework", "files": ["*.robot"], "dirs": [], "language": "", "category": "test-framework"}
+{"name": "NUnit", "files": ["*.nunit"], "dirs": [], "language": "C#", "category": "test-framework"}
+{"name": "xUnit", "files": ["xunit.runner.json"], "dirs": [], "language": "C#", "category": "test-framework"}
+{"name": "MSTest", "files": ["*.vsmdi"], "dirs": [], "language": "C#", "category": "test-framework"}
+{"name": "GoogleTest", "files": ["*_test.cc", "*_unittest.cc"], "dirs": [], "language": "C++", "category": "test-framework"}
+{"name": "CTest", "files": ["CTestTestfile.cmake"], "dirs": [], "language": "C/C++", "category": "test-framework"}
+{"name": "WebdriverIO", "files": ["wdio.conf.js"], "dirs": [], "language": "JavaScript", "category": "test-framework"}
+{"name": "Protractor", "files": ["protractor.conf.js"], "dirs": [], "language": "JavaScript", "category": "test-framework"}
+{"name": "Appium", "files": [".appiumrc.json"], "dirs": [], "language": "JavaScript", "category": "test-framework"}
+{"name": "Nightwatch", "files": ["nightwatch.conf.js"], "dirs": [], "language": "JavaScript", "category": "test-framework"}
+{"name": "TestCafe", "files": [".testcaferc.json"], "dirs": [], "language": "JavaScript", "category": "test-framework"}
+{"name": "Postman", "files": ["postman_collection.json"], "dirs": [], "language": "", "category": "test-framework"}
+{"name": "Insomnia", "files": ["insomnia.json"], "dirs": [], "language": "", "category": "test-framework"}
+{"name": "Newman", "files": ["newman.json"], "dirs": [], "language": "JavaScript", "category": "test-framework"}
+{"name": "Docker", "files": ["Dockerfile", "docker-compose.yml", ".dockerignore"], "dirs": [], "language": "", "category": "container-orchestration"}
+{"name": "Kubernetes", "files": ["kustomization.yaml", "k8s/*.yaml", "k8s/*.yml"], "dirs": ["k8s"], "language": "", "category": "container-orchestration"}
+{"name": "Helm", "files": ["Chart.yaml", "values.yaml"], "dirs": [], "language": "", "category": "container-orchestration"}
+{"name": "Istio", "files": ["istio.yaml"], "dirs": [], "language": "", "category": "container-orchestration"}
+{"name": "Kustomize", "files": ["kustomization.yaml", "kustomization.yml"], "dirs": [], "language": "", "category": "container-orchestration"}
+{"name": "Skaffold", "files": ["skaffold.yaml"], "dirs": [], "language": "", "category": "container-orchestration"}
+{"name": "Buildah", "files": ["buildah.yaml"], "dirs": [], "language": "", "category": "container-orchestration"}
+{"name": "Kaniko", "files": ["kaniko.yaml"], "dirs": [], "language": "", "category": "container-orchestration"}
+{"name": "Podman Compose", "files": ["podman-compose.yml"], "dirs": [], "language": "", "category": "container-orchestration"}
+{"name": "Docker Compose", "files": ["docker-compose.yml", "docker-compose.yaml"], "dirs": [], "language": "", "category": "container-orchestration"}
+{"name": "Trivy", "files": [".trivyignore"], "dirs": [], "language": "", "category": "container-orchestration"}
+{"name": "Lima", "files": [".lima"], "dirs": [], "language": "", "category": "container-orchestration"}
+{"name": "k3s", "files": ["k3s.yaml"], "dirs": [], "language": "", "category": "container-orchestration"}
+{"name": "k3d", "files": ["k3d.yaml"], "dirs": [], "language": "", "category": "container-orchestration"}
+{"name": "kind", "files": ["kind.yaml"], "dirs": [], "language": "", "category": "container-orchestration"}
+{"name": "Ansible", "files": ["ansible.cfg"], "dirs": [], "language": "", "category": "iaac"}
+{"name": "Chef", "files": ["Berksfile"], "dirs": [], "language": "Ruby", "category": "iaac"}
+{"name": "Puppet", "files": ["Puppetfile"], "dirs": [], "language": "", "category": "iaac"}
+{"name": "Pulumi", "files": ["Pulumi.yaml"], "dirs": [], "language": "", "category": "iaac"}
+{"name": "AWS CDK", "files": ["cdk.json"], "dirs": ["cdk"], "language": "TypeScript/Python", "category": "iaac"}
+{"name": "Terraform", "files": ["*.tf", "*.tfvars", "terraform.tfstate"], "dirs": [".terraform"], "language": "HCL", "category": "iaac"}
+{"name": "Vagrant", "files": ["Vagrantfile"], "dirs": [".vagrant"], "language": "Ruby", "category": "iaac"}
+{"name": "Packer", "files": ["*.pkr.hcl", "packer.json"], "dirs": [], "language": "HCL", "category": "iaac"}
+{"name": "ESLint", "files": [".eslintrc.js", ".eslintrc.json", ".eslintrc.yml"], "dirs": [], "language": "JavaScript", "category": "linter-formatter"}
+{"name": "Prettier", "files": [".prettierrc", ".prettierrc.js", ".prettier.config.js"], "dirs": [], "language": "JavaScript", "category": "linter-formatter"}
+{"name": "Stylelint", "files": [".stylelintrc", ".stylelintrc.json"], "dirs": [], "language": "CSS", "category": "linter-formatter"}
+{"name": "Flake8", "files": [".flake8"], "dirs": [], "language": "Python", "category": "linter-formatter"}
+{"name": "Black", "files": ["pyproject.toml"], "dirs": [], "language": "Python", "category": "linter-formatter"}
+{"name": "Pylint", "files": ["pylintrc", ".pylintrc"], "dirs": [], "language": "Python", "category": "linter-formatter"}
+{"name": "Ruff", "files": ["ruff.toml"], "dirs": [], "language": "Python", "category": "linter-formatter"}
+{"name": "mypy", "files": ["mypy.ini", ".mypy.ini"], "dirs": [], "language": "Python", "category": "linter-formatter"}
+{"name": "isort", "files": [".isort.cfg"], "dirs": [], "language": "Python", "category": "linter-formatter"}
+{"name": "RuboCop", "files": [".rubocop.yml"], "dirs": [], "language": "Ruby", "category": "linter-formatter"}
+{"name": "Clippy", "files": [".clippy.toml"], "dirs": [], "language": "Rust", "category": "linter-formatter"}
+{"name": "Checkstyle", "files": ["checkstyle.xml"], "dirs": [], "language": "Java", "category": "linter-formatter"}
+{"name": "PMD", "files": ["pmd-ruleset.xml"], "dirs": [], "language": "Java", "category": "linter-formatter"}
+{"name": "SpotBugs", "files": ["spotbugs-exclude.xml"], "dirs": [], "language": "Java", "category": "linter-formatter"}
+{"name": "Hadolint", "files": [".hadolint.yaml"], "dirs": [], "language": "", "category": "linter-formatter"}
+{"name": "ShellCheck", "files": [".shellcheckrc"], "dirs": [], "language": "Bash", "category": "linter-formatter"}
+{"name": "Rome", "files": ["rome.json"], "dirs": [], "language": "JavaScript", "category": "linter-formatter"}
+{"name": "Biome", "files": ["biome.json", "biome.jsonc"], "dirs": [], "language": "JavaScript", "category": "linter-formatter"}
+{"name": "Oxlint", "files": [".oxlintrc", ".oxlintrc.js", ".oxlintrc.json"], "dirs": [], "language": "JavaScript", "category": "linter-formatter"}
+{"name": "Vale", "files": [".vale.ini"], "dirs": [], "language": "", "category": "linter-formatter"}
+{"name": "yamllint", "files": [".yamllint", ".yamllint.yml"], "dirs": [], "language": "YAML", "category": "linter-formatter"}
+{"name": "scalafmt", "files": [".scalafmt.conf"], "dirs": [], "language": "Scala", "category": "linter-formatter"}
+{"name": "ktlint", "files": [".ktlint.gradle"], "dirs": [], "language": "Kotlin", "category": "linter-formatter"}
+{"name": "gofmt", "files": [".gofmt"], "dirs": [], "language": "Go", "category": "linter-formatter"}
+{"name": "golangci-lint", "files": [".golangci.yml"], "dirs": [], "language": "Go", "category": "linter-formatter"}
+{"name": "Clang-Tidy", "files": [".clang-tidy", ".clang-format"], "dirs": [], "language": "C/C++", "category": "linter-formatter"}
+{"name": "SonarQube", "files": ["sonar-project.properties"], "dirs": [], "language": "", "category": "code-quality"}
+{"name": "Codecov", "files": [".codecov.yml"], "dirs": [], "language": "", "category": "code-quality"}
+{"name": "Coveralls", "files": [".coveralls.yml"], "dirs": [], "language": "", "category": "code-quality"}
+{"name": "CodeClimate", "files": [".codeclimate.yml"], "dirs": [], "language": "", "category": "code-quality"}
+{"name": "Codeowners", "files": ["CODEOWNERS"], "dirs": [], "language": "", "category": "code-quality"}
+{"name": "Conventional Commits", "files": ["commitlint.config.js", ".commitlintrc.js"], "dirs": [], "language": "JavaScript", "category": "code-quality"}
+{"name": "Husky", "files": [".huskyrc"], "dirs": [".husky"], "language": "JavaScript", "category": "code-quality"}
+{"name": "lint-staged", "files": [".lintstagedrc", "lint-staged.config.js"], "dirs": [], "language": "JavaScript", "category": "code-quality"}
+{"name": "commitizen", "files": [".czrc"], "dirs": [], "language": "JavaScript", "category": "code-quality"}
+{"name": "Danger", "files": ["dangerfile.js", "Dangerfile"], "dirs": [], "language": "", "category": "code-quality"}
+{"name": "ReviewDog", "files": [".reviewdog.yml"], "dirs": [], "language": "", "category": "code-quality"}
+{"name": "Betterer", "files": [".betterer.js", ".betterer.ts"], "dirs": [], "language": "JavaScript", "category": "code-quality"}
+{"name": "Sphinx", "files": ["docs/conf.py", "docs/source/conf.py"], "dirs": [], "language": "Python", "category": "documentation"}
+{"name": "JsDoc", "files": ["jsdoc.json", ".jsdoc.json"], "dirs": [], "language": "JavaScript", "category": "documentation"}
+{"name": "TypeDoc", "files": ["typedoc.json"], "dirs": [], "language": "TypeScript", "category": "documentation"}
+{"name": "OpenAPI", "files": ["swagger.json", "swagger.yaml", "openapi.json", "openapi.yaml"], "dirs": [], "language": "", "category": "documentation"}
+{"name": "MkDocs", "files": ["mkdocs.yml"], "dirs": [], "language": "Python", "category": "documentation"}
+{"name": "Docusaurus", "files": ["docusaurus.config.js"], "dirs": [], "language": "JavaScript", "category": "documentation"}
+{"name": "VuePress", "files": [], "dirs": [".vuepress"], "language": "JavaScript", "category": "documentation"}
+{"name": "Doxygen", "files": ["Doxyfile"], "dirs": [], "language": "C/C++", "category": "documentation"}
+{"name": "mdBook", "files": ["book.toml"], "dirs": [], "language": "Rust", "category": "documentation"}
+{"name": "tldoc", "files": ["tldoc.config.json"], "dirs": [], "language": "JavaScript", "category": "documentation"}
+{"name": "Swagger", "files": ["swagger.json", "swagger.yaml"], "dirs": [], "language": "", "category": "documentation"}
+{"name": "Redoc", "files": ["redoc.html"], "dirs": [], "language": "HTML", "category": "documentation"}
+{"name": "API Blueprint", "files": ["*.apib"], "dirs": [], "language": "", "category": "documentation"}
+{"name": "RAML", "files": ["*.raml"], "dirs": [], "language": "", "category": "documentation"}
+{"name": "Storybook", "files": [".storybook/main.js", ".storybook"], "dirs": [".storybook"], "language": "JavaScript", "category": "documentation"}
+{"name": "TypeScript", "files": ["tsconfig.json"], "dirs": [], "language": "TypeScript", "category": "build-tool"}
+{"name": "Babel", "files": [".babelrc", "babel.config.js"], "dirs": [], "language": "JavaScript", "category": "build-tool"}
+{"name": "Webpack", "files": ["webpack.config.js"], "dirs": [], "language": "JavaScript", "category": "build-tool"}
+{"name": "Rollup", "files": ["rollup.config.js"], "dirs": [], "language": "JavaScript", "category": "build-tool"}
+{"name": "Vite", "files": ["vite.config.js", "vite.config.ts"], "dirs": [], "language": "JavaScript", "category": "build-tool"}
+{"name": "Parcel", "files": [".parcelrc"], "dirs": [], "language": "JavaScript", "category": "build-tool"}
+{"name": "Nx", "files": ["nx.json", "workspace.json"], "dirs": [], "language": "JavaScript", "category": "build-tool"}
+{"name": "Lerna", "files": ["lerna.json"], "dirs": [], "language": "JavaScript", "category": "package-manager"}
+{"name": "Turbo", "files": ["turbo.json"], "dirs": [], "language": "JavaScript", "category": "build-tool"}
+{"name": "Gulp", "files": ["gulpfile.js"], "dirs": [], "language": "JavaScript", "category": "task-runner"}
+{"name": "Grunt", "files": ["Gruntfile.js", "grunt.js"], "dirs": [], "language": "JavaScript", "category": "task-runner"}
+{"name": "Esbuild", "files": ["esbuild.config.js"], "dirs": [], "language": "JavaScript", "category": "build-tool"}
+{"name": "SWC", "files": [".swcrc"], "dirs": [], "language": "JavaScript", "category": "build-tool"}
+{"name": "Watchman", "files": [".watchmanconfig"], "dirs": [], "language": "", "category": "task-runner"}
+{"name": "Dependabot", "files": ["dependabot.yml"], "dirs": [], "language": "", "category": "dependency-management"}
+{"name": "Renovate", "files": ["renovate.json"], "dirs": [], "language": "", "category": "dependency-management"}
+{"name": "Meson", "files": ["meson.build", "meson_options.txt"], "dirs": ["meson"], "language": "C/C++", "category": "build-tool"}
+{"name": "M4", "files": ["*.m4", "configure.ac"], "dirs": ["m4"], "language": "", "category": "build-tool"}
+{"name": "Semgrep", "files": [".semgrep.yml", ".semgrep", "semgrep.yml"], "dirs": [".semgrep"], "language": "", "category": "static-analysis"}
+{"name": "SCons", "files": ["SConstruct", "SConscript"], "dirs": [], "language": "Python", "category": "build-tool"}
+{"name": "Yocto", "files": ["local.conf", "bblayers.conf"], "dirs": [], "language": "", "category": "build-tool"}
+{"name": "Ninja", "files": ["build.ninja"], "dirs": [], "language": "C/C++", "category": "build-tool"}
+{"name": "Earthly", "files": ["Earthfile"], "dirs": [], "language": "", "category": "build-tool"}
+{"name": "Makefile.PL", "files": ["Makefile.PL"], "dirs": [], "language": "Perl", "category": "build-tool"}
+{"name": "Dist.zilla", "files": ["dist.ini"], "dirs": [], "language": "Perl", "category": "build-tool"}
+{"name": "Serverless", "files": ["serverless.yml", "serverless.yaml"], "dirs": [], "language": "", "category": "serverless"}
+{"name": "AWS SAM", "files": ["template.yaml", "samconfig.toml"], "dirs": [], "language": "", "category": "serverless"}
+{"name": "Firebase", "files": ["firebase.json", ".firebaserc"], "dirs": [], "language": "", "category": "serverless"}
+{"name": "Netlify", "files": ["netlify.toml"], "dirs": [], "language": "", "category": "serverless"}
+{"name": "Vercel", "files": ["vercel.json"], "dirs": [], "language": "", "category": "serverless"}
+{"name": "Google Cloud Functions", "files": ["gcloudignore"], "dirs": [], "language": "", "category": "serverless"}
+{"name": "Azure Functions", "files": ["host.json", "function.json"], "dirs": [], "language": "", "category": "serverless"}
+{"name": "OpenFaas", "files": ["stack.yml"], "dirs": [], "language": "", "category": "serverless"}
+{"name": "Fn Project", "files": ["func.yml"], "dirs": [], "language": "", "category": "serverless"}
+{"name": "Knative", "files": ["knative.yaml"], "dirs": [], "language": "", "category": "serverless"}
+{"name": "Grafana", "files": ["dashboard.json", "datasource.yaml", "grafana.ini"], "dirs": [], "language": "", "category": "monitoring/observability"}
+{"name": "Prometheus", "files": ["prometheus.yml"], "dirs": [], "language": "", "category": "monitoring/observability"}
+{"name": "Jaeger", "files": ["jaeger.yaml"], "dirs": [], "language": "", "category": "monitoring/observability"}
+{"name": "OpenTelemetry", "files": ["otel-collector-config.yaml"], "dirs": [], "language": "", "category": "monitoring/observability"}
+{"name": "Datadog", "files": ["datadog.yaml"], "dirs": [], "language": "", "category": "monitoring/observability"}
+{"name": "New Relic", "files": ["newrelic.yml"], "dirs": [], "language": "", "category": "monitoring/observability"}
+{"name": "Sentry", "files": [".sentryclirc"], "dirs": [], "language": "", "category": "monitoring/observability"}
+{"name": "Elastic APM", "files": ["elasticapm.properties"], "dirs": [], "language": "", "category": "monitoring/observability"}
+{"name": "Logstash", "files": ["logstash.conf"], "dirs": [], "language": "", "category": "monitoring/observability"}
+{"name": "Kibana", "files": ["kibana.yml"], "dirs": [], "language": "", "category": "monitoring/observability"}
+{"name": "Fluentd", "files": ["fluent.conf"], "dirs": [], "language": "", "category": "monitoring/observability"}
+{"name": "Splunk", "files": ["splunk.conf"], "dirs": [], "language": "", "category": "monitoring/observability"}
+{"name": "Graylog", "files": ["graylog.conf"], "dirs": [], "language": "", "category": "monitoring/observability"}
+{"name": "Locust", "files": ["locustfile.py"], "dirs": [], "language": "Python", "category": "performance-testing"}
+{"name": "Gatling", "files": ["gatling.conf"], "dirs": [], "language": "Scala", "category": "performance-testing"}
+{"name": "Artillery", "files": ["artillery.yml"], "dirs": [], "language": "JavaScript", "category": "performance-testing"}
+{"name": "k6", "files": ["k6.js"], "dirs": [], "language": "JavaScript", "category": "performance-testing"}
+{"name": "GitLFS", "files": [], "dirs": [".git/lfs"], "language": "", "category": "version-control"}
+{"name": "dotenv", "files": [".env", ".env.local", ".env.development"], "dirs": [], "language": "", "category": "devops"}
+{"name": "EditorConfig", "files": [".editorconfig"], "dirs": [], "language": "", "category": "editor-config"}
+{"name": "WiX Toolset", "files": ["*.wxs"], "dirs": [], "language": "XML", "category": "devops"}
+{"name": "NSIS", "files": ["*.nsi"], "dirs": [], "language": "NSIS", "category": "devops"}
+{"name": "Ionic", "files": ["ionic.config.json"], "dirs": [], "language": "JavaScript", "category": "mobile-development"}
+{"name": "React Native", "files": ["metro.config.js"], "dirs": [], "language": "JavaScript", "category": "mobile-development"}
+{"name": "Capacitor", "files": ["capacitor.config.ts", "capacitor.config.json"], "dirs": [], "language": "JavaScript", "category": "mobile-development"}
+{"name": "Cordova", "files": ["config.xml"], "dirs": [], "language": "JavaScript", "category": "mobile-development"}
+{"name": "Flutter Config", "files": ["pubspec.yaml"], "dirs": [], "language": "Dart", "category": "mobile-development"}
+{"name": "Xamarin.Forms", "files": ["*.xaml.cs"], "dirs": [], "language": "C#", "category": "mobile-development"}
+{"name": "Android Gradle", "files": ["build.gradle", "gradle.properties"], "dirs": [], "language": "Java/Kotlin", "category": "mobile-development"}
+{"name": "CocoaPods", "files": ["Podfile", "Podfile.lock"], "dirs": [], "language": "Ruby", "category": "mobile-development"}
+{"name": "Carthage", "files": ["Cartfile", "Cartfile.resolved"], "dirs": [], "language": "Swift", "category": "mobile-development"}
+{"name": "Swift Package Manager", "files": ["Package.swift"], "dirs": [".swiftpm"], "language": "Swift", "category": "package-manager"}
+{"name": "Electron Forge", "files": ["forge.config.js"], "dirs": [], "language": "JavaScript", "category": "desktop-development"}
+{"name": "Electron Builder", "files": ["electron-builder.yml", "electron.vite.config.ts"], "dirs": [], "language": "JavaScript", "category": "desktop-development"}
+{"name": "Tauri", "files": ["tauri.conf.json"], "dirs": ["src-tauri"], "language": "Rust", "category": "desktop-development"}
+{"name": "NW.js", "files": ["package.nw"], "dirs": [], "language": "JavaScript", "category": "desktop-development"}
+{"name": "CppUnit", "files": ["cppunit.h"], "dirs": [], "language": "C++", "category": "test-framework"}
+{"name": "Boost.Test", "files": ["*.hpp"], "dirs": ["boost/test"], "language": "C++", "category": "test-framework"}
+{"name": "Catch2", "files": ["catch.hpp"], "dirs": [], "language": "C++", "category": "test-framework"}
+{"name": "Doctest", "files": ["doctest.h"], "dirs": [], "language": "C++", "category": "test-framework"}
+{"name": "GTest", "files": ["gtest.h"], "dirs": [], "language": "C++", "category": "test-framework"}
+{"name": "Unity", "files": ["unity.h"], "dirs": [], "language": "C", "category": "test-framework"}
+{"name": "Criterion", "files": ["criterion.h"], "dirs": [], "language": "C", "category": "test-framework"}
+{"name": "Hardhat", "files": ["hardhat.config.js", "hardhat.config.ts"], "dirs": [], "language": "JavaScript/Solidity", "category": "blockchain"}
+{"name": "Foundry", "files": ["foundry.toml"], "dirs": [], "language": "Solidity", "category": "blockchain"}
+{"name": "Truffle", "files": ["truffle-config.js", "truffle.js"], "dirs": [], "language": "JavaScript/Solidity", "category": "blockchain"}
+{"name": "Ganache", "files": [".ganache"], "dirs": [], "language": "JavaScript/Ethereum", "category": "blockchain"}
+{"name": "Anchor", "files": ["Anchor.toml"], "dirs": [], "language": "Rust/Solana", "category": "blockchain"}
+{"name": "Brownie", "files": ["brownie-config.yaml"], "dirs": [], "language": "Python", "category": "blockchain"}
+{"name": "Embark", "files": ["embark.json"], "dirs": [], "language": "JavaScript", "category": "blockchain"}
+{"name": "Dapp Tools", "files": [".dapprc"], "dirs": [], "language": "Solidity", "category": "blockchain"}
+{"name": "Forge", "files": ["forge.yaml"], "dirs": [], "language": "Solidity", "category": "blockchain"}
+{"name": "Waffle", "files": [".waffle.json"], "dirs": [], "language": "TypeScript", "category": "blockchain"}
+{"name": "NextUI", "files": ["next.config.js"], "dirs": [], "language": "JavaScript", "category": "frontend-framework"}
+{"name": "Nuxt", "files": ["nuxt.config.js", "nuxt.config.ts"], "dirs": [], "language": "JavaScript", "category": "frontend-framework"}
+{"name": "Svelte", "files": ["svelte.config.js"], "dirs": [], "language": "JavaScript", "category": "frontend-framework"}
+{"name": "Tailwind", "files": ["tailwind.config.js", "tailwind.config.ts"], "dirs": [], "language": "JavaScript", "category": "frontend-framework"}
+{"name": "PostCSS", "files": ["postcss.config.js"], "dirs": [], "language": "JavaScript", "category": "frontend-framework"}
+{"name": "Sass", "files": [".sassrc", ".sass-lint.yml"], "dirs": [], "language": "CSS", "category": "frontend-framework"}
+{"name": "Snowpack", "files": ["snowpack.config.js", "snowpack.config.mjs"], "dirs": [], "language": "JavaScript", "category": "build-tool"}
+{"name": "Browserslist", "files": [".browserslistrc", "browserslist"], "dirs": [], "language": "", "category": "frontend-framework"}
+{"name": "Eleventy", "files": [".eleventy.js", "eleventy.config.js"], "dirs": [], "language": "JavaScript", "category": "static-site-generator"}
+{"name": "Astro", "files": ["astro.config.mjs", "astro.config.js"], "dirs": [], "language": "JavaScript", "category": "static-site-generator"}
+{"name": "Hugo", "files": ["hugo.toml"], "dirs": [], "language": "", "category": "static-site-generator"}
+{"name": "Gatsby", "files": ["gatsby-config.js"], "dirs": [], "language": "JavaScript", "category": "static-site-generator"}
+{"name": "Gridsome", "files": ["gridsome.config.js"], "dirs": [], "language": "JavaScript", "category": "static-site-generator"}
+{"name": "VuePress Config", "files": [".vuepress/config.js"], "dirs": [".vuepress"], "language": "JavaScript", "category": "static-site-generator"}
+{"name": "Prisma", "files": ["schema.prisma"], "dirs": [], "language": "JavaScript", "category": "database-tool"}
+{"name": "Sequelize", "files": [".sequelizerc"], "dirs": [], "language": "JavaScript", "category": "database-tool"}
+{"name": "Knex", "files": ["knexfile.js"], "dirs": [], "language": "JavaScript", "category": "database-tool"}
+{"name": "TypeORM", "files": ["ormconfig.json", "ormconfig.js"], "dirs": [], "language": "TypeScript", "category": "database-tool"}
+{"name": "Hibernate", "files": ["hibernate.cfg.xml"], "dirs": [], "language": "Java", "category": "database-tool"}
+{"name": "Liquibase", "files": ["changelog.xml", "liquibase.properties"], "dirs": [], "language": "Java", "category": "database-tool"}
+{"name": "Flyway", "files": ["flyway.conf", "V*__*.sql"], "dirs": [], "language": "Java", "category": "database-tool"}
+{"name": "SQLite", "files": ["*.sqlite", "*.db"], "dirs": [], "language": "", "category": "database-tool"}
+{"name": "MongoDB", "files": ["mongodb.conf"], "dirs": [], "language": "", "category": "database-tool"}
+{"name": "Mongoose", "files": ["mongoose.config.js"], "dirs": [], "language": "JavaScript", "category": "database-tool"}
+{"name": "Redis", "files": ["redis.conf"], "dirs": [], "language": "", "category": "database-tool"}
+{"name": "DVC", "files": [".dvc", "dvc.yaml", "dvc.lock"], "dirs": [".dvc"], "language": "Python", "category": "machine-learning"}
+{"name": "MLflow", "files": ["MLproject", "mlflow.yml"], "dirs": [], "language": "Python", "category": "machine-learning"}
+{"name": "Ray", "files": ["ray.yaml"], "dirs": [], "language": "Python", "category": "machine-learning"}
+{"name": "Kedro", "files": ["kedro_cli.py", "pipeline.yml"], "dirs": [], "language": "Python", "category": "machine-learning"}
+{"name": "Airflow", "files": ["airflow.cfg", "dags"], "dirs": [], "language": "Python", "category": "workflow-orchestration"}
+{"name": "Prefect", "files": ["prefect.yaml"], "dirs": [], "language": "Python", "category": "workflow-orchestration"}
+{"name": "Luigi", "files": ["luigi.cfg"], "dirs": [], "language": "Python", "category": "workflow-orchestration"}
+{"name": "Apache Nifi", "files": ["nifi.properties"], "dirs": [], "language": "Java", "category": "workflow-orchestration"}
+{"name": "Apache Beam", "files": ["beam.yaml"], "dirs": [], "language": "Java/Python", "category": "workflow-orchestration"}
+{"name": "Argo Workflows", "files": ["workflow.yaml"], "dirs": [], "language": "", "category": "workflow-orchestration"}
+{"name": "Dagster", "files": ["dagster.yaml"], "dirs": [], "language": "Python", "category": "workflow-orchestration"}
+{"name": "Flyte", "files": ["flyte.yaml"], "dirs": [], "language": "Python", "category": "workflow-orchestration"}
+{"name": "Kubeflow", "files": ["kfp.yaml"], "dirs": [], "language": "", "category": "workflow-orchestration"}
+{"name": "Temporal", "files": ["temporal.yaml"], "dirs": [], "language": "", "category": "workflow-orchestration"}
+{"name": "Conductor", "files": ["conductor.yaml"], "dirs": [], "language": "", "category": "workflow-orchestration"}
+{"name": "Buildkite", "files": [".buildkite/pipeline.yml"], "dirs": [".buildkite"], "language": "", "category": "ci-cd"}
+{"name": "Drone", "files": [".drone.yml"], "dirs": [], "language": "", "category": "ci-cd"}
+{"name": "Spinnaker", "files": ["spinnaker.yml"], "dirs": [], "language": "", "category": "ci-cd"}
+{"name": "Concourse", "files": ["pipeline.yml"], "dirs": [], "language": "", "category": "ci-cd"}
+{"name": "Jenkins X", "files": ["jx-requirements.yml"], "dirs": [], "language": "", "category": "ci-cd"}
+{"name": "GoCD", "files": ["gocd.yaml"], "dirs": [], "language": "", "category": "ci-cd"}
+{"name": "CircleCI", "files": [".circleci/config.yml"], "dirs": [".circleci"], "language": "", "category": "ci-cd"}
+{"name": "Harness", "files": ["harness.yml"], "dirs": [], "language": "", "category": "ci-cd"}
+{"name": "Codefresh", "files": ["codefresh.yml"], "dirs": [], "language": "", "category": "ci-cd"}
