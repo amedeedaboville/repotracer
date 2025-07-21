@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Make `--tool-definition-file` optional, bundle the one in `data/` by default and use that if none is given.
+
 ## [0.7.0] - 2025-08-18
 
 ## [Breaking]

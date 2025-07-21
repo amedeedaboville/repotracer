@@ -189,15 +189,13 @@ fn main() {
                     .short('t')
                     .long("tool-definitions")
                     .value_name("TOOL_DEFINITIONS_FILE")
-                    .required(true)
-                    .help("Path to the tool definitions JSONL file")
+                    .help("Path to a custom tool definitions JSONL file (uses bundled definitions if not provided)")
             )
             .arg(
                 Arg::new("repo-path")
-                    .short('r')
-                    .long("repo-path")
                     .value_name("REPO_PATH")
-                    .help("Path to a single Git repository to scan (ignored if --scan-root is used)")
+                    .help("Path to a Git repository to scan (ignored if --scan-root is used)")
+                    .index(1)
             )
             .arg(
                 Arg::new("scan-root")
@@ -274,7 +272,9 @@ fn main() {
             serve_command(port);
         }
         Some(("detect-tools", sub_m)) => {
-            let tool_definitions = sub_m.get_one::<String>("tool-definitions").unwrap();
+            let tool_definitions = sub_m
+                .get_one::<String>("tool-definitions")
+                .map(|p| PathBuf::from(p));
             let repo_path = sub_m.get_one::<String>("repo-path");
             let json = sub_m.contains_id("json");
             let scan_root = sub_m.get_one::<String>("scan-root");
@@ -285,7 +285,7 @@ fn main() {
                 .unwrap();
 
             detect_tools_command(
-                &PathBuf::from(tool_definitions),
+                tool_definitions.as_ref(),
                 repo_path.map(|p| PathBuf::from(p)),
                 json,
                 scan_root.map(|p| PathBuf::from(p)),

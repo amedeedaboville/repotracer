@@ -10,6 +10,7 @@ use std::sync::Arc;
 use walkdir::WalkDir;
 
 const MAX_WILDCARD_MATCHES: usize = 10;
+const BUNDLED_TOOL_DEFINITIONS: &str = include_str!("../../data/tool_list.ndjson");
 
 #[derive(Deserialize, Debug, Clone)]
 struct ToolDefinition {
@@ -52,14 +53,14 @@ struct ScannedRepoToolMatch {
 }
 
 pub fn detect_tools_command(
-    tool_definitions: &PathBuf,
+    tool_definitions: Option<&PathBuf>,
     repo_path: Option<PathBuf>,
     json: bool,
     scan_root: Option<PathBuf>,
     max_depth: usize,
 ) -> Result<()> {
     let tool_rules = Arc::new(
-        load_and_compile_tool_definitions(&tool_definitions)
+        load_and_compile_tool_definitions(tool_definitions)
             .with_context(|| "Failed to load and compile tool definitions")?,
     );
 
@@ -161,9 +162,7 @@ pub fn detect_tools_command(
         }
     } else {
         // This case should ideally be prevented by clap's `required_unless_present`
-        eprintln!(
-            "Error: No repository path provided and not in scan mode. Use -r or --scan-root."
-        );
+        eprintln!("Error: No repository path provided.");
         std::process::exit(1);
     }
 
@@ -231,11 +230,17 @@ fn compile_tool_definitions<R: BufRead>(reader: R) -> Result<Vec<CompiledToolRul
     Ok(rules)
 }
 
-fn load_and_compile_tool_definitions(file_path: &Path) -> Result<Vec<CompiledToolRule>> {
-    let file = File::open(file_path)
-        .with_context(|| format!("Failed to open tool definitions file: {:?}", file_path))?;
-    let reader = BufReader::new(file);
-    compile_tool_definitions(reader)
+fn load_and_compile_tool_definitions(file_path: Option<&PathBuf>) -> Result<Vec<CompiledToolRule>> {
+    if let Some(path) = file_path {
+        let file = File::open(path)
+            .with_context(|| format!("Failed to open tool definitions file: {:?}", path))?;
+        let reader = BufReader::new(file);
+        compile_tool_definitions(reader)
+    } else {
+        // Load bundled tool definitions
+        let reader = BufReader::new(BUNDLED_TOOL_DEFINITIONS.as_bytes());
+        compile_tool_definitions(reader)
+    }
 }
 
 fn list_git_files(repo_path: &Path) -> Result<Vec<String>> {
