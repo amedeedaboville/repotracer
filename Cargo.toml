@@ -25,6 +25,7 @@ indicatif = {version = "0.17.7", features = ["rayon"]}
 chrono = {version = "0.4.33", features = ["serde"]}
 url = "2.5.0"
 gix = {version = "0.72.1", features=["revision", "parallel", "max-performance", "progress-tree", "serde"]}
+gix-blame = "0.3.0"
 tokei = "13.0.0-alpha.8"
 ahash = {version = "0.8.8", features = ["serde"]}
 smallvec = {version = "1.13.1", features=["serde", "union"]}

@@ -7,6 +7,7 @@ pub mod commands {
     pub mod run_one_off;
     pub mod run_stat;
     pub mod serve;
+    pub mod theseus;
 }
 pub mod stats {
     pub mod common;

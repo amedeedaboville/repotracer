@@ -9,6 +9,7 @@ use repotracer::commands::run::run_command;
 use repotracer::commands::run_one_off::run_one_off_command;
 use repotracer::commands::run_stat::run_stat_command;
 use repotracer::commands::serve::serve_command;
+use repotracer::commands::theseus::theseus_command;
 use std::path::PathBuf;
 
 const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("GIT_HASH"), ")");
@@ -216,6 +217,15 @@ fn main() {
                     .help("Max depth to search for repositories under --scan-root (e.g., 3 for ~/repos/host/org/repo)")
             )
         )
+        .subcommand(Command::new("theseus")
+            .about("Run theseus analysis on a repository")
+            .arg(
+                Arg::new("repo-path")
+                    .value_name("REPO_PATH")
+                    .required(true)
+                    .help("Path to the Git repository to analyze")
+            )
+        )
         .get_matches();
 
     match matches.subcommand() {
@@ -292,6 +302,10 @@ fn main() {
                 max_depth,
             )
             .unwrap();
+        }
+        Some(("theseus", sub_m)) => {
+            let repo_path = sub_m.get_one::<String>("repo-path").unwrap();
+            theseus_command(repo_path);
         }
         _ => unreachable!("Unknown command"),
     }
