@@ -212,7 +212,6 @@
 {"name": "Tauri", "files": ["tauri.conf.json"], "dirs": ["src-tauri"], "language": "Rust", "category": "desktop-development"}
 {"name": "NW.js", "files": ["package.nw"], "dirs": [], "language": "JavaScript", "category": "desktop-development"}
 {"name": "CppUnit", "files": ["cppunit.h"], "dirs": [], "language": "C++", "category": "test-framework"}
-{"name": "Boost.Test", "files": ["*.hpp"], "dirs": ["boost/test"], "language": "C++", "category": "test-framework"}
 {"name": "Catch2", "files": ["catch.hpp"], "dirs": [], "language": "C++", "category": "test-framework"}
 {"name": "Doctest", "files": ["doctest.h"], "dirs": [], "language": "C++", "category": "test-framework"}
 {"name": "GTest", "files": ["gtest.h"], "dirs": [], "language": "C++", "category": "test-framework"}
