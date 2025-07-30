@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Utc};
 use anyhow::Result;
 use gix_blame::{BlameEntry, Outcome as BlameOutcome};
+use gix::bstr::ByteSlice;
 
 /// Extended metadata for theseus analysis, wrapping gix-blame types
 #[derive(Debug, Clone)]
@@ -216,7 +217,9 @@ fn run_theseus_analysis(repo_path: &str) -> Result<()> {
     let weekly_commits = collect_weekly_commits(&repo, &config)?;
     println!("Found {} weekly commit snapshots", weekly_commits.len());
     
-    // 3. Process each weekly snapshot
+    // 3. Process each weekly snapshot with tree diffing
+    let mut previous_tree_info: Option<TreeSnapshotInfo> = None;
+    
     for (i, commit) in weekly_commits.iter().enumerate() {
         println!("Processing snapshot {}: {} ({})", 
                  i + 1, 
@@ -225,11 +228,49 @@ fn run_theseus_analysis(repo_path: &str) -> Result<()> {
                      .unwrap_or_else(|| DateTime::from_timestamp(0, 0).unwrap())
                      .format("%Y-%m-%d"));
         
-        // For now, just show we can access the commit
-        // TODO: Implement tree diffing and blame tracking
+        // Get current tree
+        let current_commit = repo.find_commit(commit.id)?;
+        let current_tree = current_commit.tree()?;
+        let current_tree_info = TreeSnapshotInfo {
+            commit_id: commit.id,
+            tree_id: current_tree.id,
+            timestamp: commit.time,
+        };
+        
+        // Diff against previous tree if we have one
+        if let Some(previous_info) = &previous_tree_info {
+            println!("  Diffing against previous snapshot...");
+            let tree_changes = diff_trees(&repo, previous_info, &current_tree_info)?;
+            println!("  Found {} file changes", tree_changes.len());
+            
+            // Process the changes
+            for change in &tree_changes {
+                match &change.change_type {
+                    TreeChangeType::Addition => {
+                        println!("    + Added: {}", change.path.display());
+                    }
+                    TreeChangeType::Deletion => {
+                        println!("    - Deleted: {}", change.path.display());
+                    }
+                    TreeChangeType::Modification => {
+                        println!("    ~ Modified: {}", change.path.display());
+                    }
+                    TreeChangeType::Rename { old_path } => {
+                        println!("    > Renamed: {} -> {}", old_path.display(), change.path.display());
+                    }
+                }
+            }
+            
+            // TODO: For each change, update blame information
+        } else {
+            println!("  First snapshot - establishing baseline");
+            // TODO: Initialize blame information for all files in first tree
+        }
+        
+        previous_tree_info = Some(current_tree_info);
     }
     
-    println!("Analysis completed. Next: implement tree diffing and blame tracking.");
+    println!("Tree diffing completed. Next: implement blame tracking and aggregation.");
     
     Ok(())
 }
@@ -292,4 +333,116 @@ fn collect_weekly_commits(repo: &gix::Repository, config: &TheseusConfig) -> Res
 struct WeeklyCommit {
     id: gix::ObjectId,
     time: gix::date::Time,
+}
+
+/// Represents a tree snapshot for diffing
+#[derive(Debug, Clone)]
+struct TreeSnapshotInfo {
+    commit_id: gix::ObjectId,
+    tree_id: gix::ObjectId,
+    timestamp: gix::date::Time,
+}
+
+/// Represents a change between two trees
+#[derive(Debug, Clone)]
+struct TreeChange {
+    path: PathBuf,
+    change_type: TreeChangeType,
+    old_blob_id: Option<gix::ObjectId>,
+    new_blob_id: Option<gix::ObjectId>,
+}
+
+/// Types of changes that can happen to files between trees
+#[derive(Debug, Clone)]
+enum TreeChangeType {
+    Addition,
+    Deletion,
+    Modification,
+    Rename { old_path: PathBuf },
+}
+
+/// Diff two trees and return the changes
+fn diff_trees(
+    repo: &gix::Repository, 
+    previous: &TreeSnapshotInfo, 
+    current: &TreeSnapshotInfo
+) -> Result<Vec<TreeChange>> {
+    // For now, implement a simple manual diff by collecting all files from both trees
+    // and comparing them. This is less efficient but will work as a starting point.
+    
+    let mut changes = Vec::new();
+    let previous_tree = repo.find_tree(previous.tree_id)?;
+    let current_tree = repo.find_tree(current.tree_id)?;
+    
+    // Collect files from previous tree
+    let mut previous_files = std::collections::HashMap::new();
+    collect_tree_files(&previous_tree, PathBuf::new(), &mut previous_files)?;
+    
+    // Collect files from current tree and detect changes
+    let mut current_files = std::collections::HashMap::new();
+    collect_tree_files(&current_tree, PathBuf::new(), &mut current_files)?;
+    
+    // Find additions and modifications
+    for (path, current_oid) in &current_files {
+        match previous_files.get(path) {
+            None => {
+                // File was added
+                changes.push(TreeChange {
+                    path: path.clone(),
+                    change_type: TreeChangeType::Addition,
+                    old_blob_id: None,
+                    new_blob_id: Some(*current_oid),
+                });
+            }
+            Some(previous_oid) => {
+                if previous_oid != current_oid {
+                    // File was modified
+                    changes.push(TreeChange {
+                        path: path.clone(),
+                        change_type: TreeChangeType::Modification,
+                        old_blob_id: Some(*previous_oid),
+                        new_blob_id: Some(*current_oid),
+                    });
+                }
+                // If they're equal, no change
+            }
+        }
+    }
+    
+    // Find deletions
+    for (path, previous_oid) in &previous_files {
+        if !current_files.contains_key(path) {
+            changes.push(TreeChange {
+                path: path.clone(),
+                change_type: TreeChangeType::Deletion,
+                old_blob_id: Some(*previous_oid),
+                new_blob_id: None,
+            });
+        }
+    }
+    
+    Ok(changes)
+}
+
+/// Recursively collect all files from a tree
+fn collect_tree_files(
+    tree: &gix::Tree,
+    base_path: PathBuf,
+    files: &mut std::collections::HashMap<PathBuf, gix::ObjectId>,
+) -> Result<()> {
+    for entry in tree.iter() {
+        let entry = entry?;
+        let entry_path = base_path.join(entry.filename().to_os_str()?);
+        
+        if entry.mode().is_tree() {
+            // Recursively process subdirectory
+            let subtree = entry.object()?.into_tree();
+            collect_tree_files(&subtree, entry_path, files)?;
+        } else if entry.mode().is_blob() {
+            // Add file to collection
+            files.insert(entry_path, entry.oid().into());
+        }
+        // Skip other entry types (symlinks, etc.) for now
+    }
+    Ok(())
 }
