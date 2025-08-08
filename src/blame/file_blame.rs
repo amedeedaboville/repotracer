@@ -1,4 +1,3 @@
-use chrono::{DateTime, Utc};
 use gix::ObjectId;
 use std::collections::BTreeMap;
 
@@ -15,7 +14,6 @@ where
     pub start_line: LineNumber,
     /// Number of lines in this range
     pub line_count: LineNumber,
-    pub commit_timestamp: DateTime<Utc>,
     /// Cohort identifier (e.g., 2023 for yearly cohorts)
     pub cohort: CohortKey,
 }
@@ -25,14 +23,12 @@ impl<CohortKey: Copy + PartialEq> BlameRange<CohortKey> {
         start_line: LineNumber,
         line_count: LineNumber,
         commit_id: ObjectId,
-        commit_timestamp: DateTime<Utc>,
         cohort: CohortKey,
     ) -> Self {
         Self {
             start_line,
             line_count,
             commit_id,
-            commit_timestamp,
             cohort,
         }
     }
@@ -70,15 +66,10 @@ where
 {
     /// Create a new FileBlame for a file with the given number of lines
     /// Initially, all lines belong to a single commit
-    pub fn new(
-        total_lines: LineNumber,
-        commit_id: ObjectId,
-        commit_timestamp: DateTime<Utc>,
-        cohort: CohortKey,
-    ) -> Self {
+    pub fn new(total_lines: LineNumber, commit_id: ObjectId, cohort: CohortKey) -> Self {
         let mut ranges = BTreeMap::new();
         if total_lines > 0 {
-            let range = BlameRange::new(0, total_lines, commit_id, commit_timestamp, cohort);
+            let range = BlameRange::new(0, total_lines, commit_id, cohort);
             ranges.insert(0, range);
         }
 
@@ -124,7 +115,6 @@ where
         position: LineNumber,
         line_count: LineNumber,
         commit_id: ObjectId,
-        commit_timestamp: DateTime<Utc>,
         cohort: CohortKey,
     ) {
         if line_count == 0 {
@@ -159,15 +149,13 @@ where
                             range.start_line,
                             position - range.start_line,
                             range.commit_id,
-                            range.commit_timestamp,
                             range.cohort,
                         );
                         ranges_to_add.push(before_range);
                     }
 
                     // Add the new inserted lines
-                    let new_range =
-                        BlameRange::new(position, line_count, commit_id, commit_timestamp, cohort);
+                    let new_range = BlameRange::new(position, line_count, commit_id, cohort);
                     ranges_to_add.push(new_range);
 
                     // Add the part after the insertion (shifted)
@@ -176,7 +164,6 @@ where
                             position + line_count,
                             range.end_line() - position,
                             range.commit_id,
-                            range.commit_timestamp,
                             range.cohort,
                         );
                         ranges_to_add.push(after_range);
@@ -192,8 +179,7 @@ where
         // If no ranges were modified (e.g., inserting at the end of the file),
         // we still need to add the new range
         if inserting_at_end {
-            let new_range =
-                BlameRange::new(position, line_count, commit_id, commit_timestamp, cohort);
+            let new_range = BlameRange::new(position, line_count, commit_id, cohort);
             ranges_to_add.push(new_range);
         }
 
@@ -235,7 +221,6 @@ where
                             range.start_line,
                             position - range.start_line,
                             range.commit_id,
-                            range.commit_timestamp,
                             range.cohort,
                         );
                         ranges_to_add.push(before_range);
@@ -247,7 +232,6 @@ where
                             position,
                             range.end_line() - end_position,
                             range.commit_id,
-                            range.commit_timestamp,
                             range.cohort,
                         );
                         ranges_to_add.push(after_range);
@@ -351,20 +335,18 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
 
-    fn create_test_commit() -> (ObjectId, DateTime<Utc>, LineNumber) {
+    fn create_test_commit() -> (ObjectId, u32) {
         (
             ObjectId::from_hex(b"1234567890abcdef1234567890abcdef12345678").unwrap(),
-            Utc.with_ymd_and_hms(2023, 1, 1, 0, 0, 0).unwrap(),
             2023,
         )
     }
 
     #[test]
     fn test_new_file_blame() {
-        let (commit_id, timestamp, cohort) = create_test_commit();
-        let blame = FileBlame::new(10, commit_id, timestamp, cohort);
+        let (commit_id, cohort) = create_test_commit();
+        let blame = FileBlame::new(10, commit_id, cohort);
 
         assert_eq!(blame.total_lines(), 10);
         assert_eq!(blame.range_count(), 1);
@@ -377,16 +359,15 @@ mod tests {
 
     #[test]
     fn test_insert_lines() {
-        let (commit_id, timestamp, cohort) = create_test_commit();
-        let mut blame = FileBlame::new(10, commit_id, timestamp, cohort);
+        let (commit_id, cohort) = create_test_commit();
+        let mut blame = FileBlame::new(10, commit_id, cohort);
 
-        let (new_commit, new_timestamp, new_cohort) = (
+        let (new_commit, new_new_cohort) = (
             ObjectId::from_hex(b"abcdef1234567890abcdef1234567890abcdef12").unwrap(),
-            Utc.with_ymd_and_hms(2023, 2, 1, 0, 0, 0).unwrap(),
             2023,
         );
 
-        blame.insert_lines(5, 3, new_commit, new_timestamp, new_cohort);
+        blame.insert_lines(5, 3, new_commit, new_cohort);
 
         assert_eq!(blame.range_count(), 3);
         assert_eq!(blame.total_lines(), 13);
@@ -401,8 +382,8 @@ mod tests {
 
     #[test]
     fn test_delete_lines() {
-        let (commit_id, timestamp, cohort) = create_test_commit();
-        let mut blame = FileBlame::new(10, commit_id, timestamp, cohort);
+        let (commit_id, cohort) = create_test_commit();
+        let mut blame = FileBlame::new(10, commit_id, cohort);
 
         blame.delete_lines(3, 3);
 
@@ -414,17 +395,16 @@ mod tests {
 
     #[test]
     fn test_cohort_stats() {
-        let (commit_id, timestamp, _) = create_test_commit();
-        let mut blame = FileBlame::new(10, commit_id, timestamp, 2022);
+        let (commit_id, _) = create_test_commit();
+        let mut blame = FileBlame::new(10, commit_id, 2022);
 
         // Add some lines from 2023
-        let (new_commit, new_timestamp, new_cohort) = (
+        let (new_commit, new_cohort) = (
             ObjectId::from_hex(b"abcdef1234567890abcdef1234567890abcdef12").unwrap(),
-            Utc.with_ymd_and_hms(2023, 2, 1, 0, 0, 0).unwrap(),
             2023,
         );
 
-        blame.insert_lines(5, 5, new_commit, new_timestamp, new_cohort);
+        blame.insert_lines(5, 5, new_commit, new_cohort);
 
         let stats = blame.cohort_stats();
         assert_eq!(stats.get(&2022), Some(&10));
@@ -433,8 +413,8 @@ mod tests {
 
     #[test]
     fn test_delete_from_beginning() {
-        let (commit_id, timestamp, cohort) = create_test_commit();
-        let mut blame = FileBlame::new(10, commit_id, timestamp, cohort);
+        let (commit_id, cohort) = create_test_commit();
+        let mut blame = FileBlame::new(10, commit_id, cohort);
 
         // Delete 3 lines from the beginning
         blame.delete_lines(0, 3);
@@ -452,8 +432,8 @@ mod tests {
 
     #[test]
     fn test_delete_from_end() {
-        let (commit_id, timestamp, cohort) = create_test_commit();
-        let mut blame = FileBlame::new(10, commit_id, timestamp, cohort);
+        let (commit_id, cohort) = create_test_commit();
+        let mut blame = FileBlame::new(10, commit_id, cohort);
 
         blame.delete_lines(7, 3);
 
@@ -470,8 +450,8 @@ mod tests {
 
     #[test]
     fn test_delete_all_lines() {
-        let (commit_id, timestamp, cohort) = create_test_commit();
-        let mut blame = FileBlame::new(10, commit_id, timestamp, cohort);
+        let (commit_id, cohort) = create_test_commit();
+        let mut blame = FileBlame::new(10, commit_id, cohort);
 
         blame.delete_lines(0, 10);
 
@@ -483,17 +463,16 @@ mod tests {
 
     #[test]
     fn test_insert_at_beginning() {
-        let (commit_id, timestamp, cohort) = create_test_commit();
-        let mut blame = FileBlame::new(10, commit_id, timestamp, cohort);
+        let (commit_id, cohort) = create_test_commit();
+        let mut blame = FileBlame::new(10, commit_id, cohort);
 
-        let (new_commit, new_timestamp, new_cohort) = (
+        let (new_commit, new_cohort) = (
             ObjectId::from_hex(b"abcdef1234567890abcdef1234567890abcdef12").unwrap(),
-            Utc.with_ymd_and_hms(2023, 2, 1, 0, 0, 0).unwrap(),
             2024,
         );
 
         // Insert 5 lines at the beginning
-        blame.insert_lines(0, 5, new_commit, new_timestamp, new_cohort);
+        blame.insert_lines(0, 5, new_commit, new_cohort);
 
         assert_eq!(blame.total_lines(), 15);
         assert_eq!(blame.range_count(), 2);
@@ -515,17 +494,16 @@ mod tests {
 
     #[test]
     fn test_insert_at_end() {
-        let (commit_id, timestamp, cohort) = create_test_commit();
-        let mut blame = FileBlame::new(10, commit_id, timestamp, cohort);
+        let (commit_id, cohort) = create_test_commit();
+        let mut blame = FileBlame::new(10, commit_id, cohort);
 
-        let (new_commit, new_timestamp, new_cohort) = (
+        let (new_commit, new_cohort) = (
             ObjectId::from_hex(b"abcdef1234567890abcdef1234567890abcdef12").unwrap(),
-            Utc.with_ymd_and_hms(2023, 2, 1, 0, 0, 0).unwrap(),
             2024,
         );
 
         // Insert 5 lines at the end
-        blame.insert_lines(10, 5, new_commit, new_timestamp, new_cohort);
+        blame.insert_lines(10, 5, new_commit, new_cohort);
 
         assert_eq!(blame.total_lines(), 15);
         assert_eq!(blame.range_count(), 2);
@@ -547,17 +525,16 @@ mod tests {
 
     #[test]
     fn test_fused_insert_delete() {
-        let (commit_id, timestamp, cohort) = create_test_commit();
-        let mut blame = FileBlame::new(10, commit_id, timestamp, cohort);
+        let (commit_id, cohort) = create_test_commit();
+        let mut blame = FileBlame::new(10, commit_id, cohort);
 
-        let (new_commit, new_timestamp, new_cohort) = (
+        let (new_commit, new_cohort) = (
             ObjectId::from_hex(b"abcdef1234567890abcdef1234567890abcdef12").unwrap(),
-            Utc.with_ymd_and_hms(2023, 2, 1, 0, 0, 0).unwrap(),
             2024,
         );
 
         // Insert 3 lines at position 5
-        blame.insert_lines(5, 3, new_commit, new_timestamp, new_cohort);
+        blame.insert_lines(5, 3, new_commit, new_cohort);
         // Then delete 2 lines from the inserted section
         blame.delete_lines(6, 2);
 
@@ -569,17 +546,16 @@ mod tests {
 
     #[test]
     fn test_delete_same_beginning_pattern() {
-        let (commit_id, timestamp, cohort) = create_test_commit();
-        let mut blame = FileBlame::new(100, commit_id, timestamp, cohort);
+        let (commit_id, cohort) = create_test_commit();
+        let mut blame = FileBlame::new(100, commit_id, cohort);
 
-        let (new_commit, new_timestamp, new_cohort) = (
+        let (new_commit, new_cohort) = (
             ObjectId::from_hex(b"abcdef1234567890abcdef1234567890abcdef12").unwrap(),
-            Utc.with_ymd_and_hms(2023, 2, 1, 0, 0, 0).unwrap(),
             2024,
         );
 
-        // Insert 5 lines at beginning with different timestamp
-        blame.insert_lines(0, 5, new_commit, new_timestamp, new_cohort);
+        // Insert 5 lines at beginning with different commit
+        blame.insert_lines(0, 5, new_commit, new_cohort);
 
         // Should have 2 ranges: [0-4] with new_cohort, [5-104] with original cohort
         assert_eq!(blame.total_lines(), 105);

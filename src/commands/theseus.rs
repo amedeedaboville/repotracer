@@ -1,15 +1,14 @@
 use crate::blame::FileBlame;
 use crate::collectors::list_in_range::list_commits_with_granularity;
 use crate::collectors::list_in_range::Granularity;
-use crate::collectors::repo_cache_data::RepoCacheData;
 use anyhow::Result;
-use chrono::{DateTime, Utc};
 use gix::bstr::BString;
 use gix::bstr::ByteSlice;
 use gix::diff::object::TreeRefIter;
 use gix::diff::tree_with_rewrites;
 use gix::diff::tree_with_rewrites::Action;
 use gix::diff::tree_with_rewrites::ChangeRef;
+use indicatif::{ProgressBar, ProgressStyle};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -148,10 +147,9 @@ where
         path: &BString,
         total_lines: u32,
         commit_id: gix::ObjectId,
-        commit_timestamp: DateTime<Utc>,
         cohort: CohortKey,
     ) {
-        let file_blame = FileBlame::new(total_lines, commit_id, commit_timestamp, cohort);
+        let file_blame = FileBlame::new(total_lines, commit_id, cohort);
         self.file_blames.insert(path.clone(), file_blame);
     }
 
@@ -181,6 +179,10 @@ where
         self.file_blames.get(path)
     }
 
+    pub fn get_file_blame_mut(&mut self, path: &BString) -> Option<&mut FileBlame<CohortKey>> {
+        self.file_blames.get_mut(path)
+    }
+
     /// Generate cohort statistics across the entire repository
     pub fn repository_cohort_stats(&self) -> HashMap<CohortKey, u64>
     where
@@ -204,6 +206,9 @@ where
             .values()
             .map(|blame| blame.total_lines())
             .sum()
+    }
+    pub fn list_files(&self) -> Vec<&BString> {
+        self.file_blames.keys().collect()
     }
 }
 
@@ -245,16 +250,23 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let weekly_commits = list_commits_with_granularity(&repo, Granularity::Weekly, None, None)?;
     println!("Found {} weekly commit snapshots", weekly_commits.len());
     let mut platform = repo.diff_resource_cache_for_tree_diff()?;
+    let mut platform2 = repo.diff_resource_cache_for_tree_diff()?;
     let mut previous_commit_id: Option<gix::ObjectId> = None;
     let mut previous_tree_info: Option<TreeSnapshotInfo> = None;
     let mut current_tree_info: Option<TreeSnapshotInfo>;
     let mut current_commit_id: Option<gix::ObjectId>;
     let mut current_snapshot = RepositoryBlameSnapshot::new(weekly_commits[0].id);
 
-    for (i, commit) in weekly_commits.iter().enumerate() {
-        // if i > 2 {
-        //     break;
-        // }
+    let progress_bar = ProgressBar::new(weekly_commits.len() as u64);
+    progress_bar.set_style(
+        ProgressStyle::default_bar()
+            .template("[{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})")
+            .unwrap()
+            .progress_chars("=>-"),
+    );
+    progress_bar.set_message("Processing commits");
+
+    for commit in progress_bar.wrap_iter(weekly_commits.iter()) {
         let current_commit = repo.find_commit(commit.id)?;
         current_commit_id = Some(commit.id);
         let current_tree = current_commit.tree()?;
@@ -305,7 +317,6 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                             &BString::from(location.to_str().unwrap()),
                             num_lines as u32,
                             id,
-                            DateTime::from_timestamp(commit.time().unwrap().seconds, 0).unwrap(),
                             cohort,
                         );
                         /*
@@ -321,10 +332,6 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                         entry_mode,
                         ..
                     } => {
-                        if !entry_mode.is_blob() {
-                            return Ok(Action::Continue);
-                        }
-
                         current_snapshot.delete_file(&BString::from(location.to_str().unwrap()));
                         /*
                         println!("  {:?}", change);
@@ -338,16 +345,49 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                         entry_mode,
                         id,
                     } => {
-                        // Only process blobs
-                        if !entry_mode.is_blob() {
-                            return Ok(Action::Continue);
-                        }
+                        if let Some(current_file_blame) =
+                            current_snapshot.get_file_blame_mut(&BString::from(
+                                location
+                                    .to_str()
+                                    .expect("Could not convert location to str"),
+                            ))
+                        {
+                            platform2.set_resource_by_change(change, objects)?;
+                            platform2.set_resource_by_change(change, objects)?;
+                            let outcome = platform2.prepare_diff().expect("Could not prepare diff");
+                            let input = outcome.interned_input();
+                            gix::diff::blob::diff(
+                                gix::diff::blob::Algorithm::Myers,
+                                &input,
+                                |before: std::ops::Range<u32>, after: std::ops::Range<u32>| {
+                                    current_file_blame
+                                        .delete_lines(before.start, before.len() as u32);
+                                    //TODO BIG TODO. This might not be accurate.
+                                    current_file_blame.insert_lines(
+                                        after.start,
+                                        after.len() as u32,
+                                        current_commit.id,
+                                        cohort,
+                                    );
+                                },
+                            );
+                            // let input_for_diff = gix::diff::blob::intern::InternedInput::new(
+                            //     previous_blob.data,
+                            //     current_blob.data,
+                            // );
 
-                        /*
-                        println!("  {:?}", change);
-                         */
+                            /*
+                            println!("  {:?}", change);
+                             */
+                        } else {
+                            // println!(
+                            // "Could not not find blame info for path {:?}, most likely it was moved",
+                            // location
+                            // );
+                        }
                         num_changes_for_commit += 1;
                     }
+
                     ChangeRef::Rewrite {
                         location,
                         source_location,
@@ -360,11 +400,10 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                         relation,
                         copy,
                     } => {
-                        // Skip if this is a tree (directory) rather than a blob (file)
-                        if entry_mode.is_tree() || source_entry_mode.is_tree() {
-                            return Ok(Action::Continue);
-                        }
-
+                        // current_snapshot.rename_file(
+                        //     &BString::from(location.to_str().unwrap()),
+                        //     &BString::from(source_location.to_str().unwrap()),
+                        // )?;
                         /*
                         println!("  {:?}", change);
                          */
