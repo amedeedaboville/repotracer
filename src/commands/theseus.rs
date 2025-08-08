@@ -1,171 +1,114 @@
+use crate::blame::FileBlame;
+use crate::collectors::list_in_range::list_commits_with_granularity;
+use crate::collectors::list_in_range::Granularity;
+use crate::collectors::repo_cache_data::AliasedPath;
+use anyhow::Result;
+use chrono::{DateTime, Utc};
+use gix::bstr::ByteSlice;
+use gix::diff::object::TreeRefIter;
+use gix::diff::tree_with_rewrites;
+use gix::diff::tree_with_rewrites::Action;
+use gix::diff::tree_with_rewrites::ChangeRef;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use chrono::{DateTime, Utc};
-use anyhow::Result;
-use gix_blame::{BlameEntry, Outcome as BlameOutcome};
-use gix::bstr::ByteSlice;
 
-/// Extended metadata for theseus analysis, wrapping gix-blame types
+/*
+Git of theseus in Rust
+The end result is a stacked graph.
+Each "vertical strip" in the graph represents the state of the repo for a particular week.
+
+So we need to get a Vec containing:
+CohortInfo {timestamp, Map<YearCohor, u64>} (or similar)
+For each week, we need to get the last commit in that week, and then diff it against the previous week to build
+a Blame for the entire repo at that commit.
+But we are building up the blame "incrementally" week-over-week, so as to do less work.
+
+So working backwards again, for a particular commit, we need:
+For each path in the repo at that time, a whole "blame". (Which is probably some kind of tree of ranges)
+Let's call that for now:
+
+CommitBlame {
+  commit_id: ObjectId,
+  blames: HashMap<AliasedPath, FileBlame>
+}
+
+To build a CommitBlame, we should take the previous CommitBlame and then edit it based on the diff between the two commits.
+There are four things that can happen to a file between two commits:
+* Added : We create a new FileBlame for the path, with a BlameRange for the entire file.
+* Deleted : We delete the FileBlame entry entirely
+* Modified : We edit the existing FileBlame to update the BlameRange based on the blob diff
+* Renamed : We delete the old FileBlame entry and create a new one in the same place.
+*/
+/*
+We are going to be tracking blame information for every file in the repo as we go
+along the weekly commits.
+
+For each commit, we are going to tree diff it with its previous (parent) commit.
+For each entry in the tree diff, it can be either:
+* Added
+* Deleted
+* Modified
+* Renamed
+
+For each commit, we are going to make a bag of what each of these changes does to the
+FullRepoBlame. So each commit will have a vec of BlameEntryDiff.
+A file added will have each line in that BlameEntryDiff being an addition from that commit.
+A deleted filed will have each line in that BlameEntryDiff being a deletion from that commit.
+
+We'll be able to do this commit diffing in parallel, building a full Vec of these Vec<BlameEntryDiff>s.
+
+Then, at the end we can aggregate these to build a CommitFullBlame for each commit.
+Then for each CommitFullBlame, we can filter that down to just the cohort information to build our theseus graph.
+
+So we need two kinds of data (and possibly diff vs aggregated versions):
+
+For a single commit, it's going to have a vec of "diffs", which are going to be BlameEntryDiff.
+That's going to need to know which file, (original and new path), and then it's going to need a list of BlameRanges.
+
+So for each commit we're building a Vec<BlameEntryDiff>, which is mostly the results of the tree diff between it and its parent.
+
+Then, for the accumulating stage,
+ */
+
+// As if we had run git blame on every file in the repo at a given point in time
+/*
 #[derive(Debug, Clone)]
-pub struct TheseusBlameEntry {
-    pub entry: BlameEntry,
-    pub cohort: String, // year or custom format (e.g., "2023", "2023-Q1")
-    pub timestamp: Option<DateTime<Utc>>, // We'll need to look up commit info separately
+pub struct FullRepoBlameForCommit {
+    pub commit_oid: ObjectId,
+    pub blames: HashMap<AliasedPath, TheseusBlameEntry>,
+}
+//For this
+#[derive(Debug, Clone)]
+pub struct SingleFileBlame {
+    pub blames: Vec<TheseusBlameEntry>,
 }
 
 impl TheseusBlameEntry {
     pub fn new(entry: BlameEntry, cohort: String, timestamp: Option<DateTime<Utc>>) -> Self {
-        Self { entry, cohort, timestamp }
+        Self {
+            entry,
+            cohort,
+            timestamp,
+        }
     }
-    
+
     pub fn line_count(&self) -> usize {
         self.entry.len.get() as usize
     }
-    
+
     pub fn commit_id_string(&self) -> String {
         self.entry.commit_id.to_string()
     }
-    
+
     pub fn start_line(&self) -> u32 {
         self.entry.start_in_blamed_file
     }
-    
+
     pub fn end_line(&self) -> u32 {
         self.entry.start_in_blamed_file + self.entry.len.get()
     }
 }
-
-/// Tracks blame information for a single file using gix-blame
-#[derive(Debug, Clone)]
-pub struct FileBlameInfo {
-    pub path: PathBuf,
-    pub entries: Vec<TheseusBlameEntry>,
-}
-
-impl FileBlameInfo {
-    pub fn new(path: PathBuf) -> Self {
-        Self {
-            path,
-            entries: Vec::new(),
-        }
-    }
-    
-    pub fn from_blame_outcome(path: PathBuf, outcome: BlameOutcome, _cohort_format: &str) -> Self {
-        // For now, we'll create entries without timestamp lookup - this will be improved later
-        let entries = outcome
-            .entries
-            .into_iter()
-            .map(|entry| {
-                // We'll need to implement commit timestamp lookup later
-                let cohort = "unknown".to_string(); // Placeholder
-                TheseusBlameEntry::new(entry, cohort, None)
-            })
-            .collect();
-        
-        Self { path, entries }
-    }
-    
-    pub fn add_entry(&mut self, entry: TheseusBlameEntry) {
-        self.entries.push(entry);
-    }
-    
-    pub fn total_lines(&self) -> usize {
-        self.entries.iter().map(|e| e.line_count()).sum()
-    }
-    
-    pub fn lines_by_cohort(&self) -> HashMap<String, usize> {
-        let mut cohort_lines = HashMap::new();
-        for entry in &self.entries {
-            *cohort_lines.entry(entry.cohort.clone()).or_insert(0) += entry.line_count();
-        }  
-        cohort_lines
-    }
-    
-    pub fn lines_by_author(&self) -> HashMap<String, usize> {
-        let mut author_lines = HashMap::new();
-        for entry in &self.entries {
-            let author = entry.commit_id_string(); // Simplified - use commit ID as author for now
-            *author_lines.entry(author).or_insert(0) += entry.line_count();
-        }
-        author_lines
-    }
-}
-
-/// Aggregates blame information for an entire tree/commit
-#[derive(Debug, Clone)]
-pub struct TreeBlameInfo {
-    pub files: HashMap<PathBuf, FileBlameInfo>,
-    pub timestamp: DateTime<Utc>,
-}
-
-impl TreeBlameInfo {
-    pub fn new(timestamp: DateTime<Utc>) -> Self {
-        Self {
-            files: HashMap::new(),
-            timestamp,
-        }
-    }
-    
-    pub fn add_file(&mut self, file_info: FileBlameInfo) {
-        self.files.insert(file_info.path.clone(), file_info);
-    }
-    
-    pub fn total_lines(&self) -> usize {
-        self.files.values().map(|f| f.total_lines()).sum()
-    }
-    
-    pub fn lines_by_cohort(&self) -> HashMap<String, usize> {
-        let mut total_cohort_lines = HashMap::new();
-        for file in self.files.values() {
-            for (cohort, lines) in file.lines_by_cohort() {
-                *total_cohort_lines.entry(cohort).or_insert(0) += lines;
-            }
-        }
-        total_cohort_lines
-    }
-}
-
-/// Represents changes to blame information between two states
-#[derive(Debug, Clone)]
-pub struct BlameInfoDiff {
-    pub added_entries: Vec<TheseusBlameEntry>,
-    pub removed_entries: Vec<TheseusBlameEntry>,
-    pub file_path: PathBuf,
-}
-
-impl BlameInfoDiff {
-    pub fn new(file_path: PathBuf) -> Self {
-        Self {
-            added_entries: Vec::new(),
-            removed_entries: Vec::new(),
-            file_path,
-        }
-    }
-    
-    pub fn add_entry(&mut self, entry: TheseusBlameEntry) {
-        self.added_entries.push(entry);
-    }
-    
-    pub fn remove_entry(&mut self, entry: TheseusBlameEntry) {
-        self.removed_entries.push(entry);
-    }
-    
-    pub fn net_lines_by_cohort(&self) -> HashMap<String, i64> {
-        let mut cohort_changes = HashMap::new();
-        
-        // Add positive changes
-        for entry in &self.added_entries {
-            *cohort_changes.entry(entry.cohort.clone()).or_insert(0) += entry.line_count() as i64;
-        }
-        
-        // Subtract removed changes
-        for entry in &self.removed_entries {
-            *cohort_changes.entry(entry.cohort.clone()).or_insert(0) -= entry.line_count() as i64;
-        }
-        
-        cohort_changes
-    }
-}
+*/
 
 /// Main theseus analysis configuration
 #[derive(Debug, Clone)]
@@ -173,6 +116,98 @@ pub struct TheseusConfig {
     pub cohort_format: String, // e.g., "%Y" for yearly cohorts
     pub interval_days: u64,    // granularity in days (7 for weekly)
     pub branch: String,        // branch to analyze
+}
+
+/// Represents blame information for the entire repository at a specific commit
+/// This is inspired by hercules' approach but structured for theseus analysis
+#[derive(Debug, Clone)]
+pub struct RepositoryBlameSnapshot<CohortKey>
+where
+    CohortKey: Copy + PartialEq,
+{
+    pub commit_id: gix::ObjectId,
+    /// Map from file path to its blame information
+    pub file_blames: HashMap<AliasedPath, FileBlame<CohortKey>>,
+}
+
+impl<CohortKey> RepositoryBlameSnapshot<CohortKey>
+where
+    CohortKey: Copy + PartialEq,
+{
+    pub fn new(commit_id: gix::ObjectId) -> Self {
+        Self {
+            commit_id,
+            file_blames: HashMap::new(),
+        }
+    }
+
+    /// Add a new file with initial blame information
+    pub fn add_file(
+        &mut self,
+        path: AliasedPath,
+        total_lines: u32,
+        commit_id: gix::ObjectId,
+        commit_timestamp: DateTime<Utc>,
+        cohort: CohortKey,
+    ) {
+        let file_blame = FileBlame::new(total_lines, commit_id, commit_timestamp, cohort);
+        self.file_blames.insert(path, file_blame);
+    }
+
+    /// Remove a file from the blame tracking
+    pub fn delete_file(&mut self, path: &AliasedPath) -> Option<FileBlame<CohortKey>> {
+        self.file_blames.remove(path)
+    }
+
+    /// Rename a file (move blame information from old path to new path)
+    pub fn rename_file(
+        &mut self,
+        old_path: &AliasedPath,
+        new_path: AliasedPath,
+    ) -> Result<(), String> {
+        let file_blame = self
+            .file_blames
+            .remove(old_path)
+            .ok_or_else(|| format!("File not found for rename: {:?}", old_path))?;
+        self.file_blames.insert(new_path, file_blame);
+        Ok(())
+    }
+
+    /// Modify an existing file by updating its blame information
+    /// This would typically involve applying line-level diffs
+    pub fn modify_file(&mut self, path: &AliasedPath) -> Option<&mut FileBlame<CohortKey>> {
+        self.file_blames.get_mut(path)
+    }
+
+    /// Get blame information for a specific file
+    pub fn get_file_blame(&self, path: &AliasedPath) -> Option<&FileBlame<CohortKey>> {
+        self.file_blames.get(path)
+    }
+
+    /// Generate cohort statistics across the entire repository
+    pub fn repository_cohort_stats(&self) -> HashMap<CohortKey, u64>
+    where
+        CohortKey: Eq + std::hash::Hash,
+    {
+        let mut total_stats = HashMap::new();
+
+        for file_blame in self.file_blames.values() {
+            let file_stats = file_blame.cohort_stats();
+            for (cohort, line_count) in file_stats {
+                *total_stats.entry(cohort).or_insert(0) += line_count;
+            }
+        }
+
+        total_stats
+    }
+
+    /// Get total lines across all files
+    pub fn total_repository_lines(&self) -> u32 {
+        self.file_blames
+            .values()
+            .map(|blame| blame.total_lines())
+            .sum()
+    }
 }
 
 impl Default for TheseusConfig {
@@ -188,151 +223,108 @@ impl Default for TheseusConfig {
 pub fn theseus_command(repo_path: &str) {
     println!("Starting Theseus analysis...");
     println!("Repository path: {}", repo_path);
-    
+
     // Verify the path exists
     if !Path::new(repo_path).exists() {
         eprintln!("Error: Repository path does not exist or is not accessible.");
         return;
     }
-    
-    match run_theseus_analysis(repo_path) {
-        Ok(_) => println!("Theseus analysis completed successfully!"),
+
+    match run_theseus(repo_path) {
+        Ok(_) => println!("Theseus completed successfully!"),
         Err(e) => eprintln!("Error running Theseus analysis: {}", e),
     }
 }
 
-fn run_theseus_analysis(repo_path: &str) -> Result<()> {
+fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let config = TheseusConfig::default();
-    
+
     println!("Configuration:");
     println!("  Cohort format: {}", config.cohort_format);
     println!("  Interval: {} days", config.interval_days);
     println!("  Branch: {}", config.branch);
-    
-    // 1. Open repository with gix
+
     let repo = gix::open(repo_path)?;
-    println!("Opened repository: {}", repo_path);
-    
-    // 2. Walk commits at weekly intervals
-    let weekly_commits = collect_weekly_commits(&repo, &config)?;
+    let weekly_commits = list_commits_with_granularity(&repo, Granularity::Weekly, None, None)?;
     println!("Found {} weekly commit snapshots", weekly_commits.len());
-    
-    // 3. Process each weekly snapshot with tree diffing
+
+    let mut platform = repo.diff_resource_cache_for_tree_diff()?;
+    let mut previous_commit_id: Option<gix::ObjectId> = None;
     let mut previous_tree_info: Option<TreeSnapshotInfo> = None;
-    
+    let mut current_tree_info: Option<TreeSnapshotInfo>;
+    let mut current_commit_id: Option<gix::ObjectId>;
+
     for (i, commit) in weekly_commits.iter().enumerate() {
-        println!("Processing snapshot {}: {} ({})", 
-                 i + 1, 
-                 commit.id.to_string(), 
-                 DateTime::from_timestamp(commit.time.seconds, 0)
-                     .unwrap_or_else(|| DateTime::from_timestamp(0, 0).unwrap())
-                     .format("%Y-%m-%d"));
-        
-        // Get current tree
+        if i > 2 {
+            break;
+        }
         let current_commit = repo.find_commit(commit.id)?;
+        current_commit_id = Some(commit.id);
         let current_tree = current_commit.tree()?;
-        let current_tree_info = TreeSnapshotInfo {
+        current_tree_info = Some(TreeSnapshotInfo {
             commit_id: commit.id,
-            tree_id: current_tree.id,
-            timestamp: commit.time,
-        };
-        
-        // Diff against previous tree if we have one
-        if let Some(previous_info) = &previous_tree_info {
-            println!("  Diffing against previous snapshot...");
-            let tree_changes = diff_trees(&repo, previous_info, &current_tree_info)?;
-            println!("  Found {} file changes", tree_changes.len());
-            
-            // Process the changes
-            for change in &tree_changes {
-                match &change.change_type {
-                    TreeChangeType::Addition => {
-                        println!("    + Added: {}", change.path.display());
-                    }
-                    TreeChangeType::Deletion => {
-                        println!("    - Deleted: {}", change.path.display());
-                    }
-                    TreeChangeType::Modification => {
-                        println!("    ~ Modified: {}", change.path.display());
-                    }
-                    TreeChangeType::Rename { old_path } => {
-                        println!("    > Renamed: {} -> {}", old_path.display(), change.path.display());
-                    }
-                }
-            }
-            
-            // TODO: For each change, update blame information
+            tree_id: current_tree.id().into(),
+        });
+        print!(
+            "{}: Processing diff {:?} - {:?}",
+            i + 1,
+            previous_commit_id,
+            current_commit_id
+        );
+
+        let previous_tree = if let Some(previous_info) = &previous_tree_info {
+            Some(repo.find_tree(previous_info.tree_id)?)
         } else {
-            println!("  First snapshot - establishing baseline");
-            // TODO: Initialize blame information for all files in first tree
+            None
+        };
+
+        let mut tree_diff_state = gix::diff::tree::State::default();
+        let mut objects = &repo.objects;
+        let mut num_changes_for_commit = 0;
+        let for_each =
+            |change: ChangeRef<'_>| -> Result<Action, Box<dyn std::error::Error + Send + Sync>> {
+                println!("  {:?}", change);
+                num_changes_for_commit += 1;
+                Ok(Action::Continue)
+            };
+        let options = gix::diff::tree_with_rewrites::Options {
+            location: None,
+            rewrites: Some(gix::diff::Rewrites::default()),
+        };
+
+        // Create TreeRefIter for previous tree (or empty iterator if None)
+        let previous_tree_iter = if let Some(ref tree) = previous_tree {
+            TreeRefIter::from_bytes(&tree.data)
+        } else {
+            TreeRefIter::from_bytes(&[]) // Empty tree iterator for the first commit
+        };
+
+        // Create TreeRefIter for current tree
+        let current_tree_iter = TreeRefIter::from_bytes(&current_tree.data);
+
+        let tree_changes = tree_with_rewrites(
+            previous_tree_iter,
+            current_tree_iter,
+            &mut platform,
+            &mut tree_diff_state,
+            &mut objects,
+            for_each,
+            options,
+        );
+
+        if tree_changes.is_err() {
+            println!("Error in tree changes {}", commit.id.to_string());
+            continue;
         }
-        
-        previous_tree_info = Some(current_tree_info);
+        println!(" num changes for commit: {} ", num_changes_for_commit,);
+
+        previous_tree_info = current_tree_info;
+        previous_commit_id = current_commit_id;
     }
-    
+
     println!("Tree diffing completed. Next: implement blame tracking and aggregation.");
-    
+
     Ok(())
-}
-
-/// Collects commits at weekly intervals
-fn collect_weekly_commits(repo: &gix::Repository, config: &TheseusConfig) -> Result<Vec<WeeklyCommit>> {
-    // Try to find the specified branch, fall back to HEAD
-    let mut reference = repo.find_reference(&config.branch)
-        .or_else(|_| repo.find_reference("main"))
-        .or_else(|_| repo.find_reference("master"))
-        .or_else(|_| {
-            match repo.head_ref()? {
-                Some(head_ref) => Ok(head_ref),
-                None => Err(anyhow::anyhow!("No HEAD reference found")),
-            }
-        })?;
-    
-    let commit_id = reference.peel_to_id_in_place()?;
-    let mut weekly_commits = Vec::new();
-    let mut last_timestamp: Option<i64> = None;
-    let interval_seconds = config.interval_days * 24 * 60 * 60;
-    
-    // Walk commits from newest to oldest
-    for commit_info in repo.rev_walk([commit_id]).all()? {
-        let commit_info = commit_info?;
-        let commit_id = commit_info.id;
-        let commit = repo.find_commit(commit_id)?;
-        let commit_time = commit.time()?;
-        
-        // Check if this commit is at least interval_days apart from the last one
-        match last_timestamp {
-            None => {
-                // First commit, always include
-                weekly_commits.push(WeeklyCommit {
-                    id: commit_id,
-                    time: commit_time,
-                });
-                last_timestamp = Some(commit_time.seconds);
-            }
-            Some(last_time) => {
-                if last_time - commit_time.seconds >= interval_seconds as i64 {
-                    weekly_commits.push(WeeklyCommit {
-                        id: commit_id,
-                        time: commit_time,
-                    });
-                    last_timestamp = Some(commit_time.seconds);
-                }
-            }
-        }
-    }
-    
-    // Reverse to get chronological order (oldest first)
-    weekly_commits.reverse();
-    
-    Ok(weekly_commits)
-}
-
-/// Represents a commit at a weekly interval
-#[derive(Debug, Clone)]
-struct WeeklyCommit {
-    id: gix::ObjectId,
-    time: gix::date::Time,
 }
 
 /// Represents a tree snapshot for diffing
@@ -340,7 +332,6 @@ struct WeeklyCommit {
 struct TreeSnapshotInfo {
     commit_id: gix::ObjectId,
     tree_id: gix::ObjectId,
-    timestamp: gix::date::Time,
 }
 
 /// Represents a change between two trees
@@ -363,25 +354,25 @@ enum TreeChangeType {
 
 /// Diff two trees and return the changes
 fn diff_trees(
-    repo: &gix::Repository, 
-    previous: &TreeSnapshotInfo, 
-    current: &TreeSnapshotInfo
+    repo: &gix::Repository,
+    previous: &TreeSnapshotInfo,
+    current: &TreeSnapshotInfo,
 ) -> Result<Vec<TreeChange>> {
     // For now, implement a simple manual diff by collecting all files from both trees
     // and comparing them. This is less efficient but will work as a starting point.
-    
+
     let mut changes = Vec::new();
     let previous_tree = repo.find_tree(previous.tree_id)?;
     let current_tree = repo.find_tree(current.tree_id)?;
-    
+
     // Collect files from previous tree
     let mut previous_files = std::collections::HashMap::new();
     collect_tree_files(&previous_tree, PathBuf::new(), &mut previous_files)?;
-    
+
     // Collect files from current tree and detect changes
     let mut current_files = std::collections::HashMap::new();
     collect_tree_files(&current_tree, PathBuf::new(), &mut current_files)?;
-    
+
     // Find additions and modifications
     for (path, current_oid) in &current_files {
         match previous_files.get(path) {
@@ -408,7 +399,7 @@ fn diff_trees(
             }
         }
     }
-    
+
     // Find deletions
     for (path, previous_oid) in &previous_files {
         if !current_files.contains_key(path) {
@@ -420,7 +411,7 @@ fn diff_trees(
             });
         }
     }
-    
+
     Ok(changes)
 }
 
@@ -433,7 +424,7 @@ fn collect_tree_files(
     for entry in tree.iter() {
         let entry = entry?;
         let entry_path = base_path.join(entry.filename().to_os_str()?);
-        
+
         if entry.mode().is_tree() {
             // Recursively process subdirectory
             let subtree = entry.object()?.into_tree();

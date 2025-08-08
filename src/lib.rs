@@ -26,6 +26,8 @@ pub mod collectors {
     pub mod repo_cache_data;
 }
 
+pub mod blame;
+
 pub mod config;
 pub mod repo;
 pub mod stat;
