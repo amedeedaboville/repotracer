@@ -1,9 +1,10 @@
 use crate::blame::FileBlame;
 use crate::collectors::list_in_range::list_commits_with_granularity;
 use crate::collectors::list_in_range::Granularity;
-use crate::collectors::repo_cache_data::AliasedPath;
+use crate::collectors::repo_cache_data::RepoCacheData;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
+use gix::bstr::BString;
 use gix::bstr::ByteSlice;
 use gix::diff::object::TreeRefIter;
 use gix::diff::tree_with_rewrites;
@@ -127,7 +128,7 @@ where
 {
     pub commit_id: gix::ObjectId,
     /// Map from file path to its blame information
-    pub file_blames: HashMap<AliasedPath, FileBlame<CohortKey>>,
+    pub file_blames: HashMap<BString, FileBlame<CohortKey>>,
 }
 
 impl<CohortKey> RepositoryBlameSnapshot<CohortKey>
@@ -144,43 +145,39 @@ where
     /// Add a new file with initial blame information
     pub fn add_file(
         &mut self,
-        path: AliasedPath,
+        path: &BString,
         total_lines: u32,
         commit_id: gix::ObjectId,
         commit_timestamp: DateTime<Utc>,
         cohort: CohortKey,
     ) {
         let file_blame = FileBlame::new(total_lines, commit_id, commit_timestamp, cohort);
-        self.file_blames.insert(path, file_blame);
+        self.file_blames.insert(path.clone(), file_blame);
     }
 
     /// Remove a file from the blame tracking
-    pub fn delete_file(&mut self, path: &AliasedPath) -> Option<FileBlame<CohortKey>> {
+    pub fn delete_file(&mut self, path: &BString) -> Option<FileBlame<CohortKey>> {
         self.file_blames.remove(path)
     }
 
     /// Rename a file (move blame information from old path to new path)
-    pub fn rename_file(
-        &mut self,
-        old_path: &AliasedPath,
-        new_path: AliasedPath,
-    ) -> Result<(), String> {
+    pub fn rename_file(&mut self, old_path: &BString, new_path: &BString) -> Result<(), String> {
         let file_blame = self
             .file_blames
             .remove(old_path)
             .ok_or_else(|| format!("File not found for rename: {:?}", old_path))?;
-        self.file_blames.insert(new_path, file_blame);
+        self.file_blames.insert(new_path.clone(), file_blame);
         Ok(())
     }
 
     /// Modify an existing file by updating its blame information
     /// This would typically involve applying line-level diffs
-    pub fn modify_file(&mut self, path: &AliasedPath) -> Option<&mut FileBlame<CohortKey>> {
+    pub fn modify_file(&mut self, path: &BString) -> Option<&mut FileBlame<CohortKey>> {
         self.file_blames.get_mut(path)
     }
 
     /// Get blame information for a specific file
-    pub fn get_file_blame(&self, path: &AliasedPath) -> Option<&FileBlame<CohortKey>> {
+    pub fn get_file_blame(&self, path: &BString) -> Option<&FileBlame<CohortKey>> {
         self.file_blames.get(path)
     }
 
@@ -247,17 +244,17 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let repo = gix::open(repo_path)?;
     let weekly_commits = list_commits_with_granularity(&repo, Granularity::Weekly, None, None)?;
     println!("Found {} weekly commit snapshots", weekly_commits.len());
-
     let mut platform = repo.diff_resource_cache_for_tree_diff()?;
     let mut previous_commit_id: Option<gix::ObjectId> = None;
     let mut previous_tree_info: Option<TreeSnapshotInfo> = None;
     let mut current_tree_info: Option<TreeSnapshotInfo>;
     let mut current_commit_id: Option<gix::ObjectId>;
+    let mut current_snapshot = RepositoryBlameSnapshot::new(weekly_commits[0].id);
 
     for (i, commit) in weekly_commits.iter().enumerate() {
-        if i > 2 {
-            break;
-        }
+        // if i > 2 {
+        //     break;
+        // }
         let current_commit = repo.find_commit(commit.id)?;
         current_commit_id = Some(commit.id);
         let current_tree = current_commit.tree()?;
@@ -265,12 +262,14 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             commit_id: commit.id,
             tree_id: current_tree.id().into(),
         });
+        /*
         print!(
             "{}: Processing diff {:?} - {:?}",
             i + 1,
             previous_commit_id,
             current_commit_id
         );
+        */
 
         let previous_tree = if let Some(previous_info) = &previous_tree_info {
             Some(repo.find_tree(previous_info.tree_id)?)
@@ -281,14 +280,101 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         let mut tree_diff_state = gix::diff::tree::State::default();
         let mut objects = &repo.objects;
         let mut num_changes_for_commit = 0;
+        let cohort: u32 = commit
+            .time()
+            .unwrap()
+            .format(gix::date::time::CustomFormat::new("%Y"))
+            .parse()
+            .expect("Could not parse year of commit");
         let for_each =
             |change: ChangeRef<'_>| -> Result<Action, Box<dyn std::error::Error + Send + Sync>> {
-                println!("  {:?}", change);
-                num_changes_for_commit += 1;
+                if !change.entry_mode().is_blob() {
+                    return Ok(Action::Continue);
+                }
+                match change {
+                    ChangeRef::Addition {
+                        location,
+                        entry_mode,
+                        id,
+                        ..
+                    } => {
+                        let blob = repo.find_blob(id)?;
+                        let content = &blob.data;
+                        let num_lines = content.lines().count();
+                        current_snapshot.add_file(
+                            &BString::from(location.to_str().unwrap()),
+                            num_lines as u32,
+                            id,
+                            DateTime::from_timestamp(commit.time().unwrap().seconds, 0).unwrap(),
+                            cohort,
+                        );
+                        /*
+                        println!(
+                            "  {:?} (path id {:?}) {} {:?}, (cohort {:?}, num lines {:?})",
+                            location, path_idx, id, relation, cohort, num_lines
+                        );
+                        */
+                        num_changes_for_commit += 1;
+                    }
+                    ChangeRef::Deletion {
+                        location,
+                        entry_mode,
+                        ..
+                    } => {
+                        if !entry_mode.is_blob() {
+                            return Ok(Action::Continue);
+                        }
+
+                        current_snapshot.delete_file(&BString::from(location.to_str().unwrap()));
+                        /*
+                        println!("  {:?}", change);
+                         */
+                        num_changes_for_commit += 1;
+                    }
+                    ChangeRef::Modification {
+                        location,
+                        previous_entry_mode,
+                        previous_id,
+                        entry_mode,
+                        id,
+                    } => {
+                        // Only process blobs
+                        if !entry_mode.is_blob() {
+                            return Ok(Action::Continue);
+                        }
+
+                        /*
+                        println!("  {:?}", change);
+                         */
+                        num_changes_for_commit += 1;
+                    }
+                    ChangeRef::Rewrite {
+                        location,
+                        source_location,
+                        source_entry_mode,
+                        source_relation,
+                        source_id,
+                        diff,
+                        entry_mode,
+                        id,
+                        relation,
+                        copy,
+                    } => {
+                        // Skip if this is a tree (directory) rather than a blob (file)
+                        if entry_mode.is_tree() || source_entry_mode.is_tree() {
+                            return Ok(Action::Continue);
+                        }
+
+                        /*
+                        println!("  {:?}", change);
+                         */
+                        num_changes_for_commit += 1;
+                    }
+                }
                 Ok(Action::Continue)
             };
         let options = gix::diff::tree_with_rewrites::Options {
-            location: None,
+            location: Some(gix::diff::tree::recorder::Location::Path),
             rewrites: Some(gix::diff::Rewrites::default()),
         };
 
@@ -314,15 +400,18 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
 
         if tree_changes.is_err() {
             println!("Error in tree changes {}", commit.id.to_string());
+            println!("  {:?}", tree_changes.err().unwrap());
             continue;
         }
         println!(" num changes for commit: {} ", num_changes_for_commit,);
 
         previous_tree_info = current_tree_info;
         previous_commit_id = current_commit_id;
+        println!(
+            "Current snapshot: {:?}",
+            current_snapshot.repository_cohort_stats()
+        );
     }
-
-    println!("Tree diffing completed. Next: implement blame tracking and aggregation.");
 
     Ok(())
 }

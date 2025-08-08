@@ -9,14 +9,14 @@ pub struct BlameRange<CohortKey>
 where
     CohortKey: Copy + PartialEq,
 {
+    /// Commit that introduced these lines
+    pub commit_id: ObjectId,
     /// Starting line number (0-based)
     pub start_line: LineNumber,
     /// Number of lines in this range
     pub line_count: LineNumber,
-    /// Commit that introduced these lines
-    pub commit_id: ObjectId,
     pub commit_timestamp: DateTime<Utc>,
-    /// Cohort identifier (e.g., "2023" for yearly cohorts)
+    /// Cohort identifier (e.g., 2023 for yearly cohorts)
     pub cohort: CohortKey,
 }
 
