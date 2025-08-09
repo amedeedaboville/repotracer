@@ -107,25 +107,38 @@ where
         line_count: LineNumber,
         cohort: CohortKey,
     ) {
+        self.insert_lines_without_merge(position, line_count, cohort);
+        self.merge_adjacent_ranges();
+    }
+
+    pub fn insert_lines_without_merge(
+        &mut self,
+        position: LineNumber,
+        line_count: LineNumber,
+        cohort: CohortKey,
+    ) {
         if line_count == 0 {
             return;
         }
 
-        // Find the range that contains the insertion position
         let mut ranges_to_modify = Vec::new();
         let mut ranges_to_add = Vec::new();
 
         // Collect ranges that need modification
-        for (&start_line, range) in &self.ranges {
+        // First, check if there's a range that contains the insertion position
+        if let Some((&start_line, range)) = self.ranges.range(..=position).next_back() {
             if range.contains_line(position) {
-                ranges_to_modify.push(start_line);
-            } else if start_line >= position {
                 ranges_to_modify.push(start_line);
             }
         }
 
-        // If no ranges need modification (e.g., inserting at the end of the file),
-        // we still need to add the new range
+        // Then collect all ranges that start at or after the insertion position
+        ranges_to_modify.extend(
+            self.ranges
+                .range(position..)
+                .map(|(&start_line, _)| start_line),
+        );
+
         let inserting_at_end = ranges_to_modify.is_empty();
 
         // Process the modifications
@@ -176,11 +189,15 @@ where
         }
 
         self.total_lines += line_count;
-        self.merge_adjacent_ranges();
     }
 
     /// Update the blame information when lines are deleted
     pub fn delete_lines(&mut self, position: u32, line_count: u32) {
+        self.delete_lines_without_merge(position, line_count);
+        self.merge_adjacent_ranges();
+    }
+
+    pub fn delete_lines_without_merge(&mut self, position: u32, line_count: u32) {
         if line_count == 0 || position >= self.total_lines {
             return;
         }
@@ -190,13 +207,23 @@ where
         let mut ranges_to_add = Vec::new();
 
         // Collect ranges that are affected by the deletion
-        for (&start_line, range) in &self.ranges {
-            if range.start_line < end_position && range.end_line() > position {
-                ranges_to_modify.push(start_line);
-            } else if range.start_line >= end_position {
-                ranges_to_modify.push(start_line);
-            }
-        }
+        // Find ranges that overlap with the deletion region [position, end_position)
+        ranges_to_modify.extend(self.ranges.range(..end_position).filter_map(
+            |(&start_line, range)| {
+                if range.start_line < end_position && range.end_line() > position {
+                    Some(start_line)
+                } else {
+                    None
+                }
+            },
+        ));
+
+        // Add ranges that start at or after end_position (these just need shifting)
+        ranges_to_modify.extend(
+            self.ranges
+                .range(end_position..)
+                .map(|(&start_line, _)| start_line),
+        );
 
         // Process the modifications
         for start_line in ranges_to_modify {
@@ -236,12 +263,11 @@ where
         }
 
         self.total_lines -= line_count;
-        self.merge_adjacent_ranges();
     }
 
     /// Merge adjacent ranges that have the same blame information
     /// This is an optimization to reduce memory usage
-    fn merge_adjacent_ranges(&mut self) {
+    pub fn merge_adjacent_ranges(&mut self) {
         let mut new_ranges = BTreeMap::new();
         let mut current_range: Option<BlameRange<CohortKey>> = None;
 
@@ -252,18 +278,14 @@ where
                 }
                 Some(current) => {
                     if current.end_line() == range.start_line && current.cohort == range.cohort {
-                        // Merge with current range
                         current.line_count += range.line_count;
                     } else {
-                        // Finalize current range and start new one
                         new_ranges.insert(current.start_line, *current);
                         current_range = Some(range);
                     }
                 }
             }
         }
-
-        // Don't forget the last range
         if let Some(range) = current_range {
             new_ranges.insert(range.start_line, range);
         }
@@ -276,7 +298,6 @@ where
         self.ranges.values()
     }
 
-    /// Get cohort statistics for this file
     pub fn cohort_stats(&self) -> std::collections::HashMap<CohortKey, u64>
     where
         CohortKey: Eq + std::hash::Hash,
@@ -288,7 +309,6 @@ where
         stats
     }
 
-    /// Validate the integrity of the blame ranges
     pub fn validate(&self) -> Result<(), String> {
         let mut expected_line = 0;
 
@@ -373,13 +393,8 @@ mod tests {
 
     #[test]
     fn test_cohort_stats() {
-        let cohort = create_test_cohort();
         let mut blame = FileBlame::new(10, 2022);
-
-        // Add some lines from 2023
-        let new_cohort = 2023;
-
-        blame.insert_lines(5, 5, new_cohort);
+        blame.insert_lines(5, 5, 2023);
 
         let stats = blame.cohort_stats();
         assert_eq!(stats.get(&2022), Some(&10));
@@ -388,10 +403,7 @@ mod tests {
 
     #[test]
     fn test_delete_from_beginning() {
-        let cohort = create_test_cohort();
-        let mut blame = FileBlame::new(10, cohort);
-
-        // Delete 3 lines from the beginning
+        let mut blame = FileBlame::new(10, 2022);
         blame.delete_lines(0, 3);
 
         assert_eq!(blame.total_lines(), 7);
@@ -400,15 +412,14 @@ mod tests {
         let range = blame.blame_for_line(0).unwrap();
         assert_eq!(range.start_line, 0);
         assert_eq!(range.line_count, 7);
-        assert_eq!(range.cohort, cohort);
+        assert_eq!(range.cohort, 2022);
 
         blame.validate().unwrap();
     }
 
     #[test]
     fn test_delete_from_end() {
-        let cohort = create_test_cohort();
-        let mut blame = FileBlame::new(10, cohort);
+        let mut blame = FileBlame::new(10, 2022);
 
         blame.delete_lines(7, 3);
 
@@ -416,7 +427,7 @@ mod tests {
         assert_eq!(blame.total_lines(), 7);
 
         let range = blame.blame_for_line(6).unwrap();
-        assert_eq!(range.cohort, cohort);
+        assert_eq!(range.cohort, 2022);
         assert_eq!(range.start_line, 0);
         assert_eq!(range.line_count, 7);
 
@@ -425,8 +436,7 @@ mod tests {
 
     #[test]
     fn test_delete_all_lines() {
-        let cohort = create_test_cohort();
-        let mut blame = FileBlame::new(10, cohort);
+        let mut blame = FileBlame::new(10, 2022);
 
         blame.delete_lines(0, 10);
 
@@ -438,13 +448,9 @@ mod tests {
 
     #[test]
     fn test_insert_at_beginning() {
-        let cohort = create_test_cohort();
-        let mut blame = FileBlame::new(10, cohort);
+        let mut blame = FileBlame::new(10, 2022);
 
-        let new_cohort = 2024;
-
-        // Insert 5 lines at the beginning
-        blame.insert_lines(0, 5, new_cohort);
+        blame.insert_lines(0, 5, 2024);
 
         assert_eq!(blame.total_lines(), 15);
         assert_eq!(blame.range_count(), 2);
@@ -453,26 +459,22 @@ mod tests {
         let range = blame.blame_for_line(0).unwrap();
         assert_eq!(range.start_line, 0);
         assert_eq!(range.line_count, 5);
-        assert_eq!(range.cohort, new_cohort);
+        assert_eq!(range.cohort, 2024);
 
         // Check second range (original lines)
         let range = blame.blame_for_line(5).unwrap();
         assert_eq!(range.start_line, 5);
         assert_eq!(range.line_count, 10);
-        assert_eq!(range.cohort, cohort);
+        assert_eq!(range.cohort, 2022);
 
         blame.validate().unwrap();
     }
 
     #[test]
     fn test_insert_at_end() {
-        let cohort = create_test_cohort();
-        let mut blame = FileBlame::new(10, cohort);
+        let mut blame = FileBlame::new(10, 2022);
 
-        let new_cohort = 2024;
-
-        // Insert 5 lines at the end
-        blame.insert_lines(10, 5, new_cohort);
+        blame.insert_lines(10, 5, 2024);
 
         assert_eq!(blame.total_lines(), 15);
         assert_eq!(blame.range_count(), 2);
@@ -481,26 +483,22 @@ mod tests {
         let range = blame.blame_for_line(0).unwrap();
         assert_eq!(range.start_line, 0);
         assert_eq!(range.line_count, 10);
-        assert_eq!(range.cohort, cohort);
+        assert_eq!(range.cohort, 2022);
 
         // Check second range (new lines)
         let range = blame.blame_for_line(10).unwrap();
         assert_eq!(range.start_line, 10);
         assert_eq!(range.line_count, 5);
-        assert_eq!(range.cohort, new_cohort);
+        assert_eq!(range.cohort, 2024);
 
         blame.validate().unwrap();
     }
 
     #[test]
     fn test_fused_insert_delete() {
-        let cohort = create_test_cohort();
-        let mut blame = FileBlame::new(10, cohort);
+        let mut blame = FileBlame::new(10, 2022);
 
-        let new_cohort = 2024;
-
-        // Insert 3 lines at position 5
-        blame.insert_lines(5, 3, new_cohort);
+        blame.insert_lines(5, 3, 2024);
         // Then delete 2 lines from the inserted section
         blame.delete_lines(6, 2);
 
@@ -512,13 +510,9 @@ mod tests {
 
     #[test]
     fn test_delete_same_beginning_pattern() {
-        let cohort = create_test_cohort();
-        let mut blame = FileBlame::new(100, cohort);
+        let mut blame = FileBlame::new(100, 2022);
 
-        let new_cohort = 2024;
-
-        // Insert 5 lines at beginning with different cohort
-        blame.insert_lines(0, 5, new_cohort);
+        blame.insert_lines(0, 5, 2024);
 
         // Should have 2 ranges: [0-4] with new_cohort, [5-104] with original cohort
         assert_eq!(blame.total_lines(), 105);
@@ -534,7 +528,7 @@ mod tests {
         let range = blame.blame_for_line(0).unwrap();
         assert_eq!(range.start_line, 0);
         assert_eq!(range.line_count, 100);
-        assert_eq!(range.cohort, cohort);
+        assert_eq!(range.cohort, 2022);
 
         blame.validate().unwrap();
     }

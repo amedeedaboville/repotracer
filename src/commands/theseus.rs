@@ -1,7 +1,10 @@
 use crate::blame::FileBlame;
 use crate::collectors::list_in_range::list_commits_with_granularity;
 use crate::collectors::list_in_range::Granularity;
+use ahash::AHashMap;
 use anyhow::Result;
+use std::collections::HashMap;
+
 use gix::bstr::BString;
 use gix::bstr::ByteSlice;
 use gix::diff::object::TreeRefIter;
@@ -10,108 +13,22 @@ use gix::diff::tree_with_rewrites::Action;
 use gix::diff::tree_with_rewrites::ChangeRef;
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::time::Instant;
+use thread_local::ThreadLocal;
 
-/*
-Git of theseus in Rust
-The end result is a stacked graph.
-Each "vertical strip" in the graph represents the state of the repo for a particular week.
-
-So we need to get a Vec containing:
-CohortInfo {timestamp, Map<YearCohor, u64>} (or similar)
-For each week, we need to get the last commit in that week, and then diff it against the previous week to build
-a Blame for the entire repo at that commit.
-But we are building up the blame "incrementally" week-over-week, so as to do less work.
-
-So working backwards again, for a particular commit, we need:
-For each path in the repo at that time, a whole "blame". (Which is probably some kind of tree of ranges)
-Let's call that for now:
-
-CommitBlame {
-  commit_id: ObjectId,
-  blames: HashMap<AliasedPath, FileBlame>
+#[derive(Debug, Default)]
+struct ActionApplicationTimes {
+    add_file_duration: std::time::Duration,
+    delete_file_duration: std::time::Duration,
+    apply_line_diffs_duration: std::time::Duration,
+    rename_file_duration: std::time::Duration,
+    add_file_count: u32,
+    delete_file_count: u32,
+    apply_line_diffs_count: u32,
+    rename_file_count: u32,
 }
 
-To build a CommitBlame, we should take the previous CommitBlame and then edit it based on the diff between the two commits.
-There are four things that can happen to a file between two commits:
-* Added : We create a new FileBlame for the path, with a BlameRange for the entire file.
-* Deleted : We delete the FileBlame entry entirely
-* Modified : We edit the existing FileBlame to update the BlameRange based on the blob diff
-* Renamed : We delete the old FileBlame entry and create a new one in the same place.
-*/
-/*
-We are going to be tracking blame information for every file in the repo as we go
-along the weekly commits.
-
-For each commit, we are going to tree diff it with its previous (parent) commit.
-For each entry in the tree diff, it can be either:
-* Added
-* Deleted
-* Modified
-* Renamed
-
-For each commit, we are going to make a bag of what each of these changes does to the
-FullRepoBlame. So each commit will have a vec of BlameEntryDiff.
-A file added will have each line in that BlameEntryDiff being an addition from that commit.
-A deleted filed will have each line in that BlameEntryDiff being a deletion from that commit.
-
-We'll be able to do this commit diffing in parallel, building a full Vec of these Vec<BlameEntryDiff>s.
-
-Then, at the end we can aggregate these to build a CommitFullBlame for each commit.
-Then for each CommitFullBlame, we can filter that down to just the cohort information to build our theseus graph.
-
-So we need two kinds of data (and possibly diff vs aggregated versions):
-
-For a single commit, it's going to have a vec of "diffs", which are going to be BlameEntryDiff.
-That's going to need to know which file, (original and new path), and then it's going to need a list of BlameRanges.
-
-So for each commit we're building a Vec<BlameEntryDiff>, which is mostly the results of the tree diff between it and its parent.
-
-Then, for the accumulating stage,
- */
-
-// As if we had run git blame on every file in the repo at a given point in time
-/*
-#[derive(Debug, Clone)]
-pub struct FullRepoBlameForCommit {
-    pub commit_oid: ObjectId,
-    pub blames: HashMap<AliasedPath, TheseusBlameEntry>,
-}
-//For this
-#[derive(Debug, Clone)]
-pub struct SingleFileBlame {
-    pub blames: Vec<TheseusBlameEntry>,
-}
-
-impl TheseusBlameEntry {
-    pub fn new(entry: BlameEntry, cohort: String, timestamp: Option<DateTime<Utc>>) -> Self {
-        Self {
-            entry,
-            cohort,
-            timestamp,
-        }
-    }
-
-    pub fn line_count(&self) -> usize {
-        self.entry.len.get() as usize
-    }
-
-    pub fn commit_id_string(&self) -> String {
-        self.entry.commit_id.to_string()
-    }
-
-    pub fn start_line(&self) -> u32 {
-        self.entry.start_in_blamed_file
-    }
-
-    pub fn end_line(&self) -> u32 {
-        self.entry.start_in_blamed_file + self.entry.len.get()
-    }
-}
-*/
-
-/// Main theseus analysis configuration
 #[derive(Debug, Clone)]
 pub struct TheseusConfig {
     pub cohort_format: String, // e.g., "%Y" for yearly cohorts
@@ -120,15 +37,13 @@ pub struct TheseusConfig {
 }
 
 /// Represents blame information for the entire repository at a specific commit
-/// This is inspired by hercules' approach but structured for theseus analysis
 #[derive(Debug, Clone)]
 pub struct RepositoryBlameSnapshot<CohortKey>
 where
     CohortKey: Copy + PartialEq,
 {
     pub commit_id: gix::ObjectId,
-    /// Map from file path to its blame information
-    pub file_blames: HashMap<BString, FileBlame<CohortKey>>,
+    pub file_blames: AHashMap<BString, FileBlame<CohortKey>>,
 }
 
 impl<CohortKey> RepositoryBlameSnapshot<CohortKey>
@@ -138,22 +53,19 @@ where
     pub fn new(commit_id: gix::ObjectId) -> Self {
         Self {
             commit_id,
-            file_blames: HashMap::new(),
+            file_blames: AHashMap::new(),
         }
     }
 
-    /// Add a new file with initial blame information
     pub fn add_file(&mut self, path: &BString, total_lines: u32, cohort: CohortKey) {
         let file_blame = FileBlame::new(total_lines, cohort);
         self.file_blames.insert(path.clone(), file_blame);
     }
 
-    /// Remove a file from the blame tracking
     pub fn delete_file(&mut self, path: &BString) -> Option<FileBlame<CohortKey>> {
         self.file_blames.remove(path)
     }
 
-    /// Rename a file (move blame information from old path to new path)
     pub fn rename_file(&mut self, old_path: &BString, new_path: &BString) -> Result<(), String> {
         let file_blame = self
             .file_blames
@@ -163,36 +75,28 @@ where
         Ok(())
     }
 
-    /// Modify an existing file by updating its blame information
-    /// This would typically involve applying line-level diffs
-    pub fn modify_file(&mut self, path: &BString) -> Option<&mut FileBlame<CohortKey>> {
-        self.file_blames.get_mut(path)
-    }
-
-    /// Get blame information for a specific file
-    pub fn get_file_blame(&self, path: &BString) -> Option<&FileBlame<CohortKey>> {
-        self.file_blames.get(path)
-    }
-
     pub fn get_file_blame_mut(&mut self, path: &BString) -> Option<&mut FileBlame<CohortKey>> {
         self.file_blames.get_mut(path)
     }
 
-    /// Generate cohort statistics across the entire repository
-    pub fn repository_cohort_stats(&self) -> HashMap<CohortKey, u64>
+    pub fn repository_cohort_stats(&self) -> AHashMap<CohortKey, u64>
     where
-        CohortKey: Eq + std::hash::Hash,
+        CohortKey: Eq + std::hash::Hash + Send + Sync,
     {
-        let mut total_stats = HashMap::new();
-
-        for file_blame in self.file_blames.values() {
-            let file_stats = file_blame.cohort_stats();
-            for (cohort, line_count) in file_stats {
-                *total_stats.entry(cohort).or_insert(0) += line_count;
-            }
-        }
-
-        total_stats
+        self.file_blames
+            .par_iter()
+            .map(|(_, file_blame)| file_blame.cohort_stats())
+            .reduce(
+                || HashMap::new(),
+                |mut acc, file_stats| {
+                    for (cohort, line_count) in file_stats {
+                        *acc.entry(cohort).or_insert(0) += line_count;
+                    }
+                    acc
+                },
+            )
+            .into_iter()
+            .collect()
     }
 
     /// Get total lines across all files
@@ -205,25 +109,106 @@ where
     pub fn list_files(&self) -> Vec<&BString> {
         self.file_blames.keys().collect()
     }
+
+    /// Apply a SnapshotAction to this repository snapshot
+    pub fn apply_action(&mut self, action: SnapshotAction<CohortKey>) -> Result<(), String> {
+        match action {
+            SnapshotAction::AddFile {
+                location,
+                total_lines,
+                cohort,
+            } => {
+                self.add_file(&location, total_lines, cohort);
+            }
+            SnapshotAction::DeleteFile { location } => {
+                self.delete_file(&location);
+            }
+            SnapshotAction::ApplyLineDiffs {
+                location,
+                line_diffs,
+            } => {
+                if let Some(file_blame) = self.get_file_blame_mut(&location) {
+                    // Sort line_diffs by before_range.start in descending order
+                    // This ensures we process changes from bottom to top, maintaining correctness
+                    // of line positions and improving performance
+                    let mut sorted_line_diffs = line_diffs;
+                    sorted_line_diffs
+                        .sort_by_key(|(before_range, _, _)| std::cmp::Reverse(before_range.start));
+
+                    for (before_range, after_range, cohort) in sorted_line_diffs {
+                        file_blame.delete_lines_without_merge(
+                            before_range.start,
+                            before_range.len() as u32,
+                        );
+                        file_blame.insert_lines_without_merge(
+                            after_range.start,
+                            after_range.len() as u32,
+                            cohort,
+                        );
+                    }
+                    file_blame.merge_adjacent_ranges();
+                } else {
+                    return Err(format!(
+                        "Could not find blame info for path {:?}, most likely it was moved",
+                        location
+                    ));
+                }
+            }
+            SnapshotAction::RenameFile {
+                source_location,
+                location,
+            } => {
+                self.rename_file(&source_location, &location)?;
+            }
+        }
+        Ok(())
+    }
 }
 
-pub enum SnapshotDiff {
+pub enum SnapshotDiff<CohortKey>
+where
+    CohortKey: Copy + PartialEq,
+{
     Addition {
         location: BString,
-        cohort: u32,
+        cohort: CohortKey,
         oid: gix::ObjectId,
     },
     Deletion {
         location: BString,
     },
     Modification {
-        cohort: u32,
+        cohort: CohortKey,
         id: gix::ObjectId,
         previous_id: gix::ObjectId,
         location: BString,
-        // previous_location: Bstring,
     },
     Rewrite {
+        source_location: BString,
+        location: BString,
+    },
+}
+
+/// Represents an action to be applied to a RepositoryBlameSnapshot
+/// after parallel processing of git diffs
+#[derive(Debug, Clone)]
+pub enum SnapshotAction<CohortKey>
+where
+    CohortKey: Copy + PartialEq,
+{
+    AddFile {
+        location: BString,
+        total_lines: u32,
+        cohort: CohortKey,
+    },
+    DeleteFile {
+        location: BString,
+    },
+    ApplyLineDiffs {
+        location: BString,
+        line_diffs: Vec<(std::ops::Range<u32>, std::ops::Range<u32>, CohortKey)>, // (before, after, cohort)
+    },
+    RenameFile {
         source_location: BString,
         location: BString,
     },
@@ -275,7 +260,7 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let progress_bar = ProgressBar::new(weekly_commits.len() as u64);
     progress_bar.set_style(
         ProgressStyle::default_bar()
-            .template("[{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})")
+            .template("[{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta_precise}) {msg}")
             .unwrap()
             .progress_chars("=>-"),
     );
@@ -286,7 +271,7 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         current_commit_id = Some(commit.id);
         current_tree = current_commit.tree()?;
         current_tree_id = Some(current_tree.id().into());
-        let previous_tree = if let Some(previous_tree_id) = previous_tree_id {
+        previous_tree = if let Some(previous_tree_id) = previous_tree_id {
             Some(repo.find_tree(previous_tree_id)?)
         } else {
             None
@@ -295,59 +280,48 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         platform2.clear_resource_cache_keep_allocation();
         let mut tree_diff_state = gix::diff::tree::State::default();
         let mut objects = &repo.objects;
-        let mut num_changes_for_commit = 0;
         let cohort: u32 = commit
             .time()
             .unwrap()
             .format(gix::date::time::CustomFormat::new("%Y"))
             .parse()
             .expect("Could not parse year of commit");
-        let mut workTodo: Vec<SnapshotDiff> = Vec::new();
+        let mut work_todo: Vec<SnapshotDiff<u32>> = Vec::new();
         let for_each =
             |change: ChangeRef<'_>| -> Result<Action, Box<dyn std::error::Error + Send + Sync>> {
                 if !change.entry_mode().is_blob() {
                     return Ok(Action::Continue);
                 }
                 let work_to_push = match change {
-                    ChangeRef::Addition {
-                        location,
-                        entry_mode,
-                        id,
-                        ..
-                    } => SnapshotDiff::Addition {
-                        location: BString::from(location.to_str().unwrap()),
+                    ChangeRef::Addition { location, id, .. } => SnapshotDiff::Addition {
+                        location: location.to_owned(),
                         cohort,
                         oid: id,
                     },
-                    ChangeRef::Deletion {
-                        location,
-                        entry_mode,
-                        ..
-                    } => SnapshotDiff::Deletion {
-                        location: BString::from(location.to_str().unwrap()),
+                    ChangeRef::Deletion { location, .. } => SnapshotDiff::Deletion {
+                        location: location.to_owned(),
                     },
                     ChangeRef::Modification {
                         location,
-                        previous_entry_mode,
                         previous_id,
-                        entry_mode,
                         id,
+                        ..
                     } => SnapshotDiff::Modification {
                         cohort,
                         id,
                         previous_id,
-                        location: BString::from(location.to_str().unwrap()),
+                        location: location.to_owned(),
                     },
                     ChangeRef::Rewrite {
                         location,
                         source_location,
                         ..
                     } => SnapshotDiff::Rewrite {
-                        source_location: BString::from(source_location.to_str().unwrap()),
-                        location: BString::from(location.to_str().unwrap()),
+                        source_location: source_location.to_owned(),
+                        location: location.to_owned(),
                     },
                 };
-                workTodo.push(work_to_push);
+                work_todo.push(work_to_push);
                 Ok(Action::Continue)
             };
         let options = gix::diff::tree_with_rewrites::Options {
@@ -368,99 +342,218 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             for_each,
             options,
         );
-        println!("number of changes for commit: {:?}", workTodo.len());
-        workTodo.iter().for_each(|change| match change {
-            SnapshotDiff::Addition {
-                location,
-                cohort,
-                oid,
-            } => {
-                // println!("Addition: {:?}", path);
-                let blob = repo.find_blob(*oid).expect("Could not find blob");
-                let content = &blob.data;
-                let num_lines = content.lines().count();
-                current_snapshot.add_file(
-                    &BString::from(location.to_str().unwrap()),
-                    num_lines as u32,
-                    *cohort,
-                );
-            }
-            SnapshotDiff::Deletion { location } => {
-                // println!("Deletion: {:?}", path);
-                current_snapshot.delete_file(&BString::from(location.to_str().unwrap()));
-            }
-            SnapshotDiff::Modification {
-                cohort,
-                id,
-                previous_id,
-                location,
-            } => {
-                // if let Some(current_file_blame) =
-                //     current_snapshot.get_file_blame_mut(&BString::from(
-                //         location
-                //             .to_str()
-                //             .expect("Could not convert location to str"),
-                //     ))
-                // {
-                // let input = outcome.interned_input();
-                // gix::diff::blob::diff(
-                //     gix::diff::blob::Algorithm::Myers,
-                //     &input,
-                //     |before: std::ops::Range<u32>, after: std::ops::Range<u32>| {
-                //         current_file_blame
-                //             .delete_lines(before.start, before.len() as u32);
-                //         //TODO BIG TODO. This might not be accurate.
-                //         current_file_blame.insert_lines(
-                //             after.start,
-                //             after.len() as u32,
-                //             cohort,
-                //         );
-                //     },
-                // );
-                // let input_for_diff = gix::diff::blob::intern::InternedInput::new(
-                //     previous_blob.data,
-                //     current_blob.data,
-                // );
+        // progress_bar.set_message(format!(
+        //     "number of changes for commit: {:?} {:?}",
+        //     commit
+        //         .time()
+        //         .unwrap()
+        //         .format(gix::date::time::CustomFormat::new("%Y-%m-%d")),
+        //     work_todo.len(),
+        // ));
 
-                /*
-                println!("  {:?}", change);
-                 */
-                // } else {
-                // println!(
-                // "Could not not find blame info for path {:?}, most likely it was moved",
-                // location
-                // );
-                // }
-            }
-            SnapshotDiff::Rewrite {
-                source_location,
-                location,
-            } => {
-                match current_snapshot.rename_file(
-                    &BString::from(source_location.to_str().unwrap()),
-                    &BString::from(location.to_str().unwrap()),
-                ) {
-                    Ok(_) => {}
-                    Err(e) => {
-                        println!("Error renaming file: {}", e);
+        // Process changes in parallel to create SnapshotActions
+        // Create thread-local storage for repository and diff platform
+        let safe_repo = repo.clone().into_sync();
+        let repo_tl = ThreadLocal::new();
+        let platform_tl = ThreadLocal::new();
+
+        let par_iter_start = Instant::now();
+        let snapshot_actions: Result<Vec<SnapshotAction<u32>>, _> = work_todo
+            .par_iter()
+            .map(
+                |change| -> Result<SnapshotAction<u32>, Box<dyn std::error::Error + Send + Sync>> {
+                    // Get thread-local repository and platform (reused per thread)
+                    let thread_repo = repo_tl.get_or(|| safe_repo.clone().to_thread_local());
+                    let thread_platform = platform_tl.get_or(|| {
+                        std::cell::RefCell::new(
+                            thread_repo.diff_resource_cache_for_tree_diff().unwrap(),
+                        )
+                    });
+
+                    match change {
+                        SnapshotDiff::Addition {
+                            location,
+                            cohort,
+                            oid,
+                        } => {
+                            let blob = thread_repo.find_blob(*oid)?;
+                            let content = &blob.data;
+                            let num_lines = content.lines().count();
+                            Ok(SnapshotAction::AddFile {
+                                location: location.clone(),
+                                total_lines: num_lines as u32,
+                                cohort: *cohort,
+                            })
+                        }
+                        SnapshotDiff::Deletion { location } => Ok(SnapshotAction::DeleteFile {
+                            location: location.clone(),
+                        }),
+                        SnapshotDiff::Modification {
+                            cohort,
+                            id,
+                            previous_id,
+                            location,
+                        } => {
+                            let mut line_diffs = Vec::new();
+                            let mut platform_borrow = thread_platform.borrow_mut();
+
+                            platform_borrow.set_resource(
+                                *previous_id,
+                                gix::object::tree::EntryKind::Blob,
+                                location.as_ref(),
+                                gix::diff::blob::ResourceKind::OldOrSource,
+                                &thread_repo.objects,
+                            )?;
+                            platform_borrow.set_resource(
+                                *id,
+                                gix::object::tree::EntryKind::Blob,
+                                location.as_ref(),
+                                gix::diff::blob::ResourceKind::NewOrDestination,
+                                &thread_repo.objects,
+                            )?;
+
+                            let outcome = platform_borrow.prepare_diff()?;
+                            let input = outcome.interned_input();
+                            gix::diff::blob::diff(
+                                gix::diff::blob::Algorithm::Myers,
+                                &input,
+                                |before: std::ops::Range<u32>, after: std::ops::Range<u32>| {
+                                    line_diffs.push((before, after, *cohort));
+                                },
+                            );
+
+                            Ok(SnapshotAction::ApplyLineDiffs {
+                                location: location.clone(),
+                                line_diffs,
+                            })
+                        }
+                        SnapshotDiff::Rewrite {
+                            source_location,
+                            location,
+                        } => Ok(SnapshotAction::RenameFile {
+                            source_location: source_location.clone(),
+                            location: location.clone(),
+                        }),
                     }
+                },
+            )
+            .collect();
+        let par_iter_duration = par_iter_start.elapsed();
+        if par_iter_duration.as_millis() > 1000 {
+            println!(
+                "Par_iter processing took: {:.2} ms",
+                par_iter_duration.as_secs_f64() * 1000.0
+            );
+        }
+
+        let snapshot_actions = match snapshot_actions {
+            Ok(actions) => actions,
+            Err(e) => {
+                println!("Error processing changes in parallel: {}", e);
+                continue;
+            }
+        };
+
+        let apply_actions_start = Instant::now();
+        let mut timing_stats = ActionApplicationTimes::default();
+
+        for action in snapshot_actions {
+            let action_start = Instant::now();
+            match &action {
+                SnapshotAction::AddFile { .. } => {
+                    timing_stats.add_file_count += 1;
+                    if let Err(e) = current_snapshot.apply_action(action) {
+                        println!("Error applying snapshot action: {}", e);
+                    }
+                    timing_stats.add_file_duration += action_start.elapsed();
+                }
+                SnapshotAction::DeleteFile { .. } => {
+                    timing_stats.delete_file_count += 1;
+                    if let Err(e) = current_snapshot.apply_action(action) {
+                        println!("Error applying snapshot action: {}", e);
+                    }
+                    timing_stats.delete_file_duration += action_start.elapsed();
+                }
+                SnapshotAction::ApplyLineDiffs { .. } => {
+                    timing_stats.apply_line_diffs_count += 1;
+                    if let Err(e) = current_snapshot.apply_action(action) {
+                        println!("Error applying snapshot action: {}", e);
+                    }
+                    timing_stats.apply_line_diffs_duration += action_start.elapsed();
+                }
+                SnapshotAction::RenameFile { .. } => {
+                    timing_stats.rename_file_count += 1;
+                    if let Err(e) = current_snapshot.apply_action(action) {
+                        println!("Error applying snapshot action: {}", e);
+                    }
+                    timing_stats.rename_file_duration += action_start.elapsed();
                 }
             }
-        });
+        }
+        let apply_actions_duration = apply_actions_start.elapsed();
+
+        if apply_actions_duration.as_millis() > 1000 {
+            println!(
+                "Applying snapshot actions took: {:.2} ms",
+                apply_actions_duration.as_secs_f64() * 1000.0
+            );
+            println!(
+                "  AddFile: {:.2} ms ({} actions, avg: {:.1} μs/action)",
+                timing_stats.add_file_duration.as_secs_f64() * 1000.0,
+                timing_stats.add_file_count,
+                if timing_stats.add_file_count > 0 {
+                    timing_stats.add_file_duration.as_secs_f64() * 1_000_000.0
+                        / timing_stats.add_file_count as f64
+                } else {
+                    0.0
+                }
+            );
+            println!(
+                "  DeleteFile: {:.2} ms ({} actions, avg: {:.1} μs/action)",
+                timing_stats.delete_file_duration.as_secs_f64() * 1000.0,
+                timing_stats.delete_file_count,
+                if timing_stats.delete_file_count > 0 {
+                    timing_stats.delete_file_duration.as_secs_f64() * 1_000_000.0
+                        / timing_stats.delete_file_count as f64
+                } else {
+                    0.0
+                }
+            );
+            println!(
+                "  ApplyLineDiffs: {:.2} ms ({} actions, avg: {:.1} μs/action)",
+                timing_stats.apply_line_diffs_duration.as_secs_f64() * 1000.0,
+                timing_stats.apply_line_diffs_count,
+                if timing_stats.apply_line_diffs_count > 0 {
+                    timing_stats.apply_line_diffs_duration.as_secs_f64() * 1_000_000.0
+                        / timing_stats.apply_line_diffs_count as f64
+                } else {
+                    0.0
+                }
+            );
+            println!(
+                "  RenameFile: {:.2} ms ({} actions, avg: {:.1} μs/action)",
+                timing_stats.rename_file_duration.as_secs_f64() * 1000.0,
+                timing_stats.rename_file_count,
+                if timing_stats.rename_file_count > 0 {
+                    timing_stats.rename_file_duration.as_secs_f64() * 1_000_000.0
+                        / timing_stats.rename_file_count as f64
+                } else {
+                    0.0
+                }
+            );
+        }
 
         if tree_changes.is_err() {
             println!("Error in tree changes {}", commit.id.to_string());
             println!("  {:?}", tree_changes.err().unwrap());
             continue;
         }
-        println!(" num changes for commit: {} ", num_changes_for_commit,);
-
         previous_tree_id = current_tree_id;
         previous_commit_id = current_commit_id;
-        progress_bar.send_message(format!(
-            "Current snapshot: {:?}",
-            current_snapshot.repository_cohort_stats()
-        ));
+        // progress_bar.set_message(format!(
+        //     "Current snapshot: {:?}",
+        //     current_snapshot.repository_cohort_stats()
+        // ));
     }
 
     Ok(())
