@@ -1,17 +1,14 @@
 use std::collections::BTreeMap;
 
 type LineNumber = u32;
-/// Represents blame information for a single line range in a file
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BlameRange<CohortKey>
 where
     CohortKey: Copy + PartialEq,
 {
-    /// Starting line number (0-based)
     pub start_line: LineNumber,
-    /// Number of lines in this range
     pub line_count: LineNumber,
-    /// Cohort identifier (e.g., 2023 for yearly cohorts)
     pub cohort: CohortKey,
 }
 
@@ -24,14 +21,8 @@ impl<CohortKey: Copy + PartialEq> BlameRange<CohortKey> {
         }
     }
 
-    /// Get the ending line number (exclusive)
     pub fn end_line(&self) -> LineNumber {
         self.start_line + self.line_count
-    }
-
-    /// Check if this range overlaps with another range
-    pub fn overlaps_with(&self, other: &BlameRange<CohortKey>) -> bool {
-        self.start_line < other.end_line() && other.start_line < self.end_line()
     }
 
     pub fn contains_line(&self, line: LineNumber) -> bool {
@@ -39,15 +30,14 @@ impl<CohortKey: Copy + PartialEq> BlameRange<CohortKey> {
     }
 }
 
+/// FileBlame stores change-points: a mapping from starting line to cohort.
+/// The end of each interval is implicit: the next key, or `total_lines` for the last one.
 #[derive(Debug, Clone)]
 pub struct FileBlame<CohortKey>
 where
     CohortKey: Copy + PartialEq,
 {
-    /// Map from start_line to BlameRange
-    /// BTreeMap provides O(log n) lookups and maintains sorted order
-    ranges: BTreeMap<LineNumber, BlameRange<CohortKey>>,
-    /// Total number of lines in the file
+    change_points: BTreeMap<LineNumber, CohortKey>,
     total_lines: LineNumber,
 }
 
@@ -55,25 +45,20 @@ impl<CohortKey> FileBlame<CohortKey>
 where
     CohortKey: Copy + PartialEq,
 {
-    /// Create a new FileBlame for a file with the given number of lines
-    /// Initially, all lines belong to a single cohort
     pub fn new(total_lines: LineNumber, cohort: CohortKey) -> Self {
-        let mut ranges = BTreeMap::new();
+        let mut change_points = BTreeMap::new();
         if total_lines > 0 {
-            let range = BlameRange::new(0, total_lines, cohort);
-            ranges.insert(0, range);
+            change_points.insert(0, cohort);
         }
-
         Self {
-            ranges,
+            change_points,
             total_lines,
         }
     }
 
-    /// Create an empty FileBlame
     pub fn empty() -> Self {
         Self {
-            ranges: BTreeMap::new(),
+            change_points: BTreeMap::new(),
             total_lines: 0,
         }
     }
@@ -83,24 +68,37 @@ where
     }
 
     pub fn range_count(&self) -> usize {
-        self.ranges.len()
+        self.change_points.len()
     }
 
-    pub fn blame_for_line(&self, line: LineNumber) -> Option<&BlameRange<CohortKey>> {
-        // Find the range with the largest start_line <= line
-        self.ranges
+    fn cohort_at_index(&self, index: LineNumber) -> Option<CohortKey> {
+        if index >= self.total_lines {
+            return None;
+        }
+        self.change_points
+            .range(..=index)
+            .next_back()
+            .map(|(_, cohort)| *cohort)
+    }
+
+    pub fn blame_for_line(&self, line: LineNumber) -> Option<BlameRange<CohortKey>> {
+        if line >= self.total_lines {
+            return None;
+        }
+        let (&start, &cohort) = self
+            .change_points
             .range(..=line)
             .next_back()
-            .and_then(|(_, range)| {
-                if range.contains_line(line) {
-                    Some(range)
-                } else {
-                    None
-                }
-            })
+            .expect("there must be a change-point before any valid line");
+        let next_end = self
+            .change_points
+            .range((start + 1)..)
+            .next()
+            .map(|(&k, _)| k)
+            .unwrap_or(self.total_lines);
+        Some(BlameRange::new(start, next_end - start, cohort))
     }
 
-    /// Update the blame information when lines are inserted
     pub fn insert_lines(
         &mut self,
         position: LineNumber,
@@ -113,85 +111,65 @@ where
 
     pub fn insert_lines_without_merge(
         &mut self,
-        position: LineNumber,
+        mut position: LineNumber,
         line_count: LineNumber,
         cohort: CohortKey,
     ) {
         if line_count == 0 {
             return;
         }
-
-        let mut ranges_to_modify = Vec::new();
-        let mut ranges_to_add = Vec::new();
-
-        // Collect ranges that need modification
-        // First, check if there's a range that contains the insertion position
-        if let Some((&start_line, range)) = self.ranges.range(..=position).next_back() {
-            if range.contains_line(position) {
-                ranges_to_modify.push(start_line);
-            }
+        if position > self.total_lines {
+            position = self.total_lines;
         }
 
-        // Then collect all ranges that start at or after the insertion position
-        ranges_to_modify.extend(
-            self.ranges
-                .range(position..)
-                .map(|(&start_line, _)| start_line),
-        );
+        let old_at_pos = if position < self.total_lines {
+            self.cohort_at_index(position)
+        } else {
+            self.change_points.iter().next_back().map(|(_, &v)| v)
+        };
 
-        let inserting_at_end = ranges_to_modify.is_empty();
+        // Split tail at position to avoid remove/insert churn
+        let tail = self.change_points.split_off(&position); // keys >= position
+        let mut new_tail: BTreeMap<LineNumber, CohortKey> = BTreeMap::new();
+        for (k, v) in tail.into_iter() {
+            new_tail.insert(k + line_count, v);
+        }
 
-        // Process the modifications
-        for start_line in ranges_to_modify {
-            if let Some(mut range) = self.ranges.remove(&start_line) {
-                if range.contains_line(position) {
-                    // Split this range
-                    if range.start_line < position {
-                        // Keep the part before the insertion
-                        let before_range = BlameRange::new(
-                            range.start_line,
-                            position - range.start_line,
-                            range.cohort,
-                        );
-                        ranges_to_add.push(before_range);
-                    }
-
-                    // Add the new inserted lines
-                    let new_range = BlameRange::new(position, line_count, cohort);
-                    ranges_to_add.push(new_range);
-
-                    // Add the part after the insertion (shifted)
-                    if position < range.end_line() {
-                        let after_range = BlameRange::new(
-                            position + line_count,
-                            range.end_line() - position,
-                            range.cohort,
-                        );
-                        ranges_to_add.push(after_range);
-                    }
-                } else {
-                    // Just shift this range
-                    range.start_line += line_count;
-                    ranges_to_add.push(range);
+        // If the existing cohort at position already equals the new cohort, we only need to shift the tail
+        match old_at_pos {
+            Some(old) if old == cohort => {
+                // nothing to insert at position or resume; the existing segment extends
+            }
+            Some(old) => {
+                // Insert new cohort at position
+                self.change_points.insert(position, cohort);
+                // Restore previous cohort after the inserted block if needed
+                let resume_pos = position + line_count;
+                // Check whether the first key in new_tail already resumes with the same cohort
+                let already_resumes = new_tail
+                    .range(resume_pos..=resume_pos)
+                    .next()
+                    .map(|(_, &v)| v == old)
+                    .unwrap_or(false);
+                if !already_resumes {
+                    self.change_points.insert(resume_pos, old);
+                }
+            }
+            None => {
+                // inserting at end on empty file or brand new tail
+                // Only add a position change-point if last cohort differs
+                if self.change_points.iter().next_back().map(|(_, &v)| v) != Some(cohort) {
+                    self.change_points.insert(position, cohort);
                 }
             }
         }
 
-        // If no ranges were modified (e.g., inserting at the end of the file),
-        // we still need to add the new range
-        if inserting_at_end {
-            let new_range = BlameRange::new(position, line_count, cohort);
-            ranges_to_add.push(new_range);
-        }
-
-        for range in ranges_to_add {
-            self.ranges.insert(range.start_line, range);
-        }
+        // Append shifted tail back
+        self.change_points.append(&mut new_tail);
 
         self.total_lines += line_count;
     }
 
-    /// Update the blame information when lines are deleted
     pub fn delete_lines(&mut self, position: u32, line_count: u32) {
         self.delete_lines_without_merge(position, line_count);
         self.merge_adjacent_ranges();
@@ -201,101 +179,101 @@ where
         if line_count == 0 || position >= self.total_lines {
             return;
         }
-
         let end_position = std::cmp::min(position + line_count, self.total_lines);
-        let mut ranges_to_modify = Vec::new();
-        let mut ranges_to_add = Vec::new();
+        if end_position == position {
+            return;
+        }
+        let delta = end_position - position;
 
-        // Collect ranges that are affected by the deletion
-        // Find ranges that overlap with the deletion region [position, end_position)
-        ranges_to_modify.extend(self.ranges.range(..end_position).filter_map(
-            |(&start_line, range)| {
-                if range.start_line < end_position && range.end_line() > position {
-                    Some(start_line)
-                } else {
-                    None
-                }
-            },
-        ));
+        // Cohort at end_position (becomes the cohort at `position` after deletion)
+        let after_end = if end_position < self.total_lines {
+            self.cohort_at_index(end_position)
+        } else {
+            None
+        };
 
-        // Add ranges that start at or after end_position (these just need shifting)
-        ranges_to_modify.extend(
-            self.ranges
-                .range(end_position..)
-                .map(|(&start_line, _)| start_line),
-        );
+        // Fast path: delete to end
+        if end_position == self.total_lines {
+            // Remove [position, end)
+            let _mid = self.change_points.split_off(&position);
+            // If nothing remains, we are done
+            self.total_lines -= delta;
+            return;
+        }
 
-        // Process the modifications
-        for start_line in ranges_to_modify {
-            if let Some(mut range) = self.ranges.remove(&start_line) {
-                if range.start_line < end_position && range.end_line() > position {
-                    // This range is affected by the deletion
-                    if range.start_line < position {
-                        // Keep the part before the deletion
-                        let before_range = BlameRange::new(
-                            range.start_line,
-                            position - range.start_line,
-                            range.cohort,
-                        );
-                        ranges_to_add.push(before_range);
+        // Split tail >= end_position
+        let tail = self.change_points.split_off(&end_position); // keys >= end
+                                                                // Remove middle [position, end)
+        let _mid = self.change_points.split_off(&position); // drop mid keys
+
+        // Shift tail by -delta
+        let mut new_tail: BTreeMap<LineNumber, CohortKey> = BTreeMap::new();
+        for (k, v) in tail.into_iter() {
+            new_tail.insert(k - delta, v);
+        }
+
+        // Append shifted tail back
+        self.change_points.append(&mut new_tail);
+
+        // Ensure cohort at `position` matches `after_end` (avoid redundant keys)
+        let new_total = self.total_lines - delta;
+        if position < new_total {
+            if let Some(v) = after_end {
+                let current = self.cohort_at_index(position);
+                if current != Some(v) {
+                    // Also avoid inserting if the immediately previous key already has v
+                    let prev_same = self
+                        .change_points
+                        .range(..=position)
+                        .next_back()
+                        .map(|(_, &pv)| pv == v)
+                        .unwrap_or(false);
+                    if !prev_same {
+                        self.change_points.insert(position, v);
                     }
-
-                    if range.end_line() > end_position {
-                        // Keep the part after the deletion (shifted)
-                        let after_range = BlameRange::new(
-                            position,
-                            range.end_line() - end_position,
-                            range.cohort,
-                        );
-                        ranges_to_add.push(after_range);
-                    }
-                } else if range.start_line >= end_position {
-                    // Just shift this range
-                    range.start_line -= line_count;
-                    ranges_to_add.push(range);
                 }
             }
+        } else if position == 0 && new_total == 0 {
+            self.change_points.clear();
         }
 
-        // Add all the modified ranges
-        for range in ranges_to_add {
-            self.ranges.insert(range.start_line, range);
-        }
-
-        self.total_lines -= line_count;
+        self.total_lines = new_total;
     }
 
-    /// Merge adjacent ranges that have the same blame information
-    /// This is an optimization to reduce memory usage
     pub fn merge_adjacent_ranges(&mut self) {
-        let mut new_ranges = BTreeMap::new();
-        let mut current_range: Option<BlameRange<CohortKey>> = None;
-
-        for (_, range) in std::mem::take(&mut self.ranges) {
-            match &mut current_range {
-                None => {
-                    current_range = Some(range);
-                }
-                Some(current) => {
-                    if current.end_line() == range.start_line && current.cohort == range.cohort {
-                        current.line_count += range.line_count;
-                    } else {
-                        new_ranges.insert(current.start_line, *current);
-                        current_range = Some(range);
-                    }
+        if self.change_points.is_empty() {
+            return;
+        }
+        let mut prev_value: Option<CohortKey> = None;
+        let mut keys_to_remove: Vec<LineNumber> = Vec::new();
+        for (&k, &v) in self.change_points.iter() {
+            if let Some(prev) = prev_value {
+                if prev == v {
+                    keys_to_remove.push(k);
                 }
             }
+            prev_value = Some(v);
         }
-        if let Some(range) = current_range {
-            new_ranges.insert(range.start_line, range);
+        for k in keys_to_remove {
+            self.change_points.remove(&k);
         }
-
-        self.ranges = new_ranges;
     }
 
     /// Get an iterator over all blame ranges
-    pub fn ranges(&self) -> impl Iterator<Item = &BlameRange<CohortKey>> {
-        self.ranges.values()
+    pub fn ranges(&self) -> impl Iterator<Item = BlameRange<CohortKey>> + '_ {
+        let mut iter = self.change_points.iter().peekable();
+        std::iter::from_fn(move || {
+            if let Some((&start, &cohort)) = iter.next() {
+                let end = if let Some((next_start, _)) = iter.peek() {
+                    **next_start
+                } else {
+                    self.total_lines
+                };
+                Some(BlameRange::new(start, end - start, cohort))
+            } else {
+                None
+            }
+        })
     }
 
     pub fn cohort_stats(&self) -> std::collections::HashMap<CohortKey, u64>
@@ -310,34 +288,33 @@ where
     }
 
     pub fn validate(&self) -> Result<(), String> {
-        let mut expected_line = 0;
-
-        for range in self.ranges() {
-            if range.start_line != expected_line {
-                return Err(format!(
-                    "Gap or overlap detected: expected line {}, found range starting at {}",
-                    expected_line, range.start_line
-                ));
+        if self.total_lines == 0 {
+            if !self.change_points.is_empty() {
+                return Err("Change-points must be empty when total_lines == 0".to_string());
             }
-            if range.line_count == 0 {
-                return Err("Found range with zero line count".to_string());
+            return Ok(());
+        }
+        // First key must be 0
+        match self.change_points.keys().next() {
+            Some(&k) if k == 0 => {}
+            _ => return Err("The first change-point must be at line 0".to_string()),
+        }
+        // Keys must be strictly increasing and strictly less than total_lines
+        let mut prev_key: Option<LineNumber> = None;
+        for &k in self.change_points.keys() {
+            if k >= self.total_lines {
+                return Err("Change-point key must be < total_lines".to_string());
             }
-            expected_line = range.end_line();
+            if let Some(prev) = prev_key {
+                if k <= prev {
+                    return Err("Change-point keys must be strictly increasing".to_string());
+                }
+            }
+            prev_key = Some(k);
         }
-
-        if expected_line != self.total_lines {
-            return Err(format!(
-                "Total lines mismatch: ranges cover {} lines but file has {} lines",
-                expected_line, self.total_lines
-            ));
-        }
-
         Ok(())
     }
 
-    /// Apply a series of line diffs to this FileBlame
-    /// The line diffs should be in the format: (before_range, after_range, cohort)
-    /// This method processes them in reverse order to maintain correctness and performance
     pub fn apply_line_diffs(
         &mut self,
         line_diffs: Vec<(std::ops::Range<u32>, std::ops::Range<u32>, CohortKey)>,
@@ -345,20 +322,107 @@ where
         if line_diffs.is_empty() {
             return;
         }
+        // Bulk-apply: rebuild change-points in a single pass for speed
+        let mut diffs = line_diffs;
+        diffs.sort_by_key(|(before, _, _)| before.start);
 
-        // Sort line_diffs by before_range.start in descending order
-        // This ensures we process changes from bottom to top, maintaining correctness
-        // of line positions and improving performance
-        let mut sorted_line_diffs = line_diffs;
-        sorted_line_diffs.sort_by_key(|(before_range, _, _)| std::cmp::Reverse(before_range.start));
+        let old_total = self.total_lines;
+        let mut new_change_points: BTreeMap<LineNumber, CohortKey> = BTreeMap::new();
+        let mut cp_iter = self.change_points.iter().peekable();
+        let mut offset: i64 = 0;
 
-        for (before_range, after_range, cohort) in sorted_line_diffs {
-            self.delete_lines_without_merge(before_range.start, before_range.len() as u32);
-            self.insert_lines_without_merge(after_range.start, after_range.len() as u32, cohort);
+        // Helper to push a change point only if cohort changes
+        let push_cp = |pos: u32, cohort: CohortKey, map: &mut BTreeMap<u32, CohortKey>| {
+            if let Some((_, &last_v)) = map.last_key_value() {
+                if last_v == cohort {
+                    return;
+                }
+            }
+            map.insert(pos, cohort);
+        };
+
+        for (before, after, cohort) in diffs.into_iter() {
+            let b0 = before.start;
+            let b1 = before.end;
+            let alen = after.len() as u32;
+            let blen = b1 - b0;
+            let delta = alen as i64 - blen as i64;
+
+            // 1) Emit unaffected change-points before b0, shifted by current offset
+            while let Some((&k, &v)) = cp_iter.peek().copied() {
+                if k < b0 {
+                    let new_k = (k as i64 + offset) as u32;
+                    push_cp(new_k, v, &mut new_change_points);
+                    cp_iter.next();
+                } else {
+                    break;
+                }
+            }
+
+            // 2) Insert the new block's cohort at b0 if any insertion
+            if alen > 0 {
+                let ins_pos_new = (b0 as i64 + offset) as u32;
+                push_cp(ins_pos_new, cohort, &mut new_change_points);
+            }
+
+            // 3) Skip original change-points that lie within [b0, b1)
+            while let Some((&k, _)) = cp_iter.peek().copied() {
+                if k < b1 {
+                    cp_iter.next();
+                } else {
+                    break;
+                }
+            }
+
+            // 4) Resume cohort after the block, if there is a file after b1
+            if b1 < old_total {
+                if let Some(resume_cohort) = self.cohort_at_index(b1) {
+                    let resume_pos_new = (b0 as i64 + alen as i64 + offset) as u32;
+                    push_cp(resume_pos_new, resume_cohort, &mut new_change_points);
+                }
+            }
+
+            // 5) Update offset
+            offset += delta;
         }
 
-        // Merge adjacent ranges once at the end for efficiency
+        // Emit the remaining original change-points after the last hunk, shifted by final offset
+        while let Some((k, v)) = cp_iter.next() {
+            let new_k = (*k as i64 + offset) as u32;
+            push_cp(new_k, *v, &mut new_change_points);
+        }
+
+        // Update structure
+        let new_total = (old_total as i64 + offset) as u32;
+        self.change_points = new_change_points;
+        self.total_lines = new_total;
         self.merge_adjacent_ranges();
+    }
+
+    pub fn update(&mut self, position: u32, insert_len: u32, delete_len: u32, cohort: CohortKey) {
+        self.update_without_merge(position, insert_len, delete_len, cohort);
+        self.merge_adjacent_ranges();
+    }
+
+    /// Same as `update`, but defers merging of adjacent ranges for batch efficiency.
+    pub fn update_without_merge(
+        &mut self,
+        position: u32,
+        insert_len: u32,
+        delete_len: u32,
+        cohort: CohortKey,
+    ) {
+        if insert_len == 0 && delete_len == 0 {
+            return;
+        }
+
+        if delete_len > 0 {
+            self.delete_lines_without_merge(position, delete_len);
+        }
+
+        if insert_len > 0 {
+            self.insert_lines_without_merge(position, insert_len, cohort);
+        }
     }
 }
 

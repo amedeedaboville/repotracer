@@ -11,6 +11,7 @@ use gix::diff::object::TreeRefIter;
 use gix::diff::tree_with_rewrites;
 use gix::diff::tree_with_rewrites::Action;
 use gix::diff::tree_with_rewrites::ChangeRef;
+use gix::object::tree;
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use std::path::Path;
@@ -125,10 +126,16 @@ where
             }
             SnapshotAction::ApplyLineDiffs {
                 location,
-                updated_file_blame,
+                line_diffs,
             } => {
-                // Simply replace the FileBlame - the expensive computation was done in parallel
-                self.file_blames.insert(location, updated_file_blame);
+                if let Some(file_blame) = self.get_file_blame_mut(&location) {
+                    file_blame.apply_line_diffs(line_diffs);
+                } else {
+                    return Err(format!(
+                        "Could not find blame info for path {:?}, most likely it was moved",
+                        location
+                    ));
+                }
             }
             SnapshotAction::RenameFile {
                 source_location,
@@ -158,6 +165,8 @@ where
         id: gix::ObjectId,
         previous_id: gix::ObjectId,
         location: BString,
+        previous_mode: tree::EntryMode,
+        new_mode: tree::EntryMode,
     },
     Rewrite {
         source_location: BString,
@@ -182,7 +191,7 @@ where
     },
     ApplyLineDiffs {
         location: BString,
-        updated_file_blame: FileBlame<CohortKey>, // Changed from line_diffs to processed FileBlame
+        line_diffs: Vec<(std::ops::Range<u32>, std::ops::Range<u32>, CohortKey)>, // (before, after, cohort)
     },
     RenameFile {
         source_location: BString,
@@ -225,8 +234,8 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     println!("Found {} weekly commit snapshots", weekly_commits.len());
     let mut platform = repo.diff_resource_cache_for_tree_diff()?;
     let mut platform2 = repo.diff_resource_cache_for_tree_diff()?;
-    let mut previous_commit_id: Option<gix::ObjectId> = None;
-    let mut previous_tree: Option<gix::Tree> = None;
+    let mut _previous_commit_id: Option<gix::ObjectId> = None;
+    let mut _previous_tree: Option<gix::Tree> = None;
     let mut previous_tree_id: Option<gix::ObjectId> = None;
     let mut current_commit_id: Option<gix::ObjectId>;
     let mut current_tree: gix::Tree;
@@ -247,7 +256,7 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         current_commit_id = Some(commit.id);
         current_tree = current_commit.tree()?;
         current_tree_id = Some(current_tree.id().into());
-        previous_tree = if let Some(previous_tree_id) = previous_tree_id {
+        _previous_tree = if let Some(previous_tree_id) = previous_tree_id {
             Some(repo.find_tree(previous_tree_id)?)
         } else {
             None
@@ -279,7 +288,9 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                     },
                     ChangeRef::Modification {
                         location,
+                        previous_entry_mode,
                         previous_id,
+                        entry_mode,
                         id,
                         ..
                     } => SnapshotDiff::Modification {
@@ -287,6 +298,8 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                         id,
                         previous_id,
                         location: location.to_owned(),
+                        previous_mode: previous_entry_mode,
+                        new_mode: entry_mode,
                     },
                     ChangeRef::Rewrite {
                         location,
@@ -306,7 +319,7 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         };
 
         let previous_tree_iter =
-            TreeRefIter::from_bytes(previous_tree.as_ref().map_or(&[], |tree| &tree.data));
+            TreeRefIter::from_bytes(_previous_tree.as_ref().map_or(&[], |tree| &tree.data));
         let current_tree_iter = TreeRefIter::from_bytes(&current_tree.data);
 
         let tree_changes = tree_with_rewrites(
@@ -333,10 +346,6 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         let repo_tl = ThreadLocal::new();
         let platform_tl = ThreadLocal::new();
 
-        // Before the parallel processing, create a snapshot of current file_blames
-        let current_file_blames = current_snapshot.file_blames.clone();
-
-        let par_iter_start = Instant::now();
         let snapshot_actions: Result<Vec<SnapshotAction<u32>>, _> = work_todo
             .par_iter()
             .map(
@@ -372,9 +381,29 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                             id,
                             previous_id,
                             location,
+                            previous_mode,
+                            new_mode,
                         } => {
                             let mut line_diffs = Vec::new();
                             let mut platform_borrow = thread_platform.borrow_mut();
+
+                            // If file type changed, treat as delete+add to avoid line-diff corner cases
+                            if previous_mode != new_mode {
+                                let old_blob = thread_repo.find_blob(*previous_id)?;
+                                let new_blob = thread_repo.find_blob(*id)?;
+                                let old_lines = old_blob.data.lines().count() as u32;
+                                let new_lines = new_blob.data.lines().count() as u32;
+                                if old_lines > 0 {
+                                    line_diffs.push((0..old_lines, 0..0, *cohort));
+                                }
+                                if new_lines > 0 {
+                                    line_diffs.push((0..0, 0..new_lines, *cohort));
+                                }
+                                return Ok(SnapshotAction::ApplyLineDiffs {
+                                    location: location.clone(),
+                                    line_diffs,
+                                });
+                            }
 
                             platform_borrow.set_resource(
                                 *previous_id,
@@ -401,17 +430,9 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                                 },
                             );
 
-                            // Clone the current FileBlame and apply the diffs
-                            let mut updated_file_blame = current_file_blames
-                                .get(location)
-                                .cloned()
-                                .unwrap_or_else(|| FileBlame::empty());
-
-                            updated_file_blame.apply_line_diffs(line_diffs);
-
                             Ok(SnapshotAction::ApplyLineDiffs {
                                 location: location.clone(),
-                                updated_file_blame,
+                                line_diffs,
                             })
                         }
                         SnapshotDiff::Rewrite {
@@ -425,13 +446,6 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                 },
             )
             .collect();
-        let par_iter_duration = par_iter_start.elapsed();
-        if par_iter_duration.as_millis() > 1000 {
-            println!(
-                "Par_iter processing took: {:.2} ms",
-                par_iter_duration.as_secs_f64() * 1000.0
-            );
-        }
 
         let snapshot_actions = match snapshot_actions {
             Ok(actions) => actions,
@@ -441,93 +455,42 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             }
         };
 
-        let apply_actions_start = Instant::now();
+        // Apply actions in dependency-safe order within this commit:
+        // 1) Renames, 2) Additions, 3) Modifications, 4) Deletions
         let mut timing_stats = ActionApplicationTimes::default();
+        let mut rename_actions = Vec::new();
+        let mut add_actions = Vec::new();
+        let mut modify_actions = Vec::new();
+        let mut delete_actions = Vec::new();
 
         for action in snapshot_actions {
-            let action_start = Instant::now();
             match &action {
-                SnapshotAction::AddFile { .. } => {
-                    timing_stats.add_file_count += 1;
-                    if let Err(e) = current_snapshot.apply_action(action) {
-                        println!("Error applying snapshot action: {}", e);
-                    }
-                    timing_stats.add_file_duration += action_start.elapsed();
-                }
-                SnapshotAction::DeleteFile { .. } => {
-                    timing_stats.delete_file_count += 1;
-                    if let Err(e) = current_snapshot.apply_action(action) {
-                        println!("Error applying snapshot action: {}", e);
-                    }
-                    timing_stats.delete_file_duration += action_start.elapsed();
-                }
-                SnapshotAction::ApplyLineDiffs { .. } => {
-                    timing_stats.apply_line_diffs_count += 1;
-                    if let Err(e) = current_snapshot.apply_action(action) {
-                        println!("Error applying snapshot action: {}", e);
-                    }
-                    timing_stats.apply_line_diffs_duration += action_start.elapsed();
-                }
-                SnapshotAction::RenameFile { .. } => {
-                    timing_stats.rename_file_count += 1;
-                    if let Err(e) = current_snapshot.apply_action(action) {
-                        println!("Error applying snapshot action: {}", e);
-                    }
-                    timing_stats.rename_file_duration += action_start.elapsed();
-                }
+                SnapshotAction::RenameFile { .. } => rename_actions.push(action),
+                SnapshotAction::AddFile { .. } => add_actions.push(action),
+                SnapshotAction::ApplyLineDiffs { .. } => modify_actions.push(action),
+                SnapshotAction::DeleteFile { .. } => delete_actions.push(action),
             }
         }
-        let apply_actions_duration = apply_actions_start.elapsed();
 
-        if apply_actions_duration.as_millis() > 1000 {
-            println!(
-                "Applying snapshot actions took: {:.2} ms",
-                apply_actions_duration.as_secs_f64() * 1000.0
-            );
-            println!(
-                "  AddFile: {:.2} ms ({} actions, avg: {:.1} μs/action)",
-                timing_stats.add_file_duration.as_secs_f64() * 1000.0,
-                timing_stats.add_file_count,
-                if timing_stats.add_file_count > 0 {
-                    timing_stats.add_file_duration.as_secs_f64() * 1_000_000.0
-                        / timing_stats.add_file_count as f64
-                } else {
-                    0.0
-                }
-            );
-            println!(
-                "  DeleteFile: {:.2} ms ({} actions, avg: {:.1} μs/action)",
-                timing_stats.delete_file_duration.as_secs_f64() * 1000.0,
-                timing_stats.delete_file_count,
-                if timing_stats.delete_file_count > 0 {
-                    timing_stats.delete_file_duration.as_secs_f64() * 1_000_000.0
-                        / timing_stats.delete_file_count as f64
-                } else {
-                    0.0
-                }
-            );
-            println!(
-                "  ApplyLineDiffs: {:.2} ms ({} actions, avg: {:.1} μs/action)",
-                timing_stats.apply_line_diffs_duration.as_secs_f64() * 1000.0,
-                timing_stats.apply_line_diffs_count,
-                if timing_stats.apply_line_diffs_count > 0 {
-                    timing_stats.apply_line_diffs_duration.as_secs_f64() * 1_000_000.0
-                        / timing_stats.apply_line_diffs_count as f64
-                } else {
-                    0.0
-                }
-            );
-            println!(
-                "  RenameFile: {:.2} ms ({} actions, avg: {:.1} μs/action)",
-                timing_stats.rename_file_duration.as_secs_f64() * 1000.0,
-                timing_stats.rename_file_count,
-                if timing_stats.rename_file_count > 0 {
-                    timing_stats.rename_file_duration.as_secs_f64() * 1_000_000.0
-                        / timing_stats.rename_file_count as f64
-                } else {
-                    0.0
-                }
-            );
+        for a in rename_actions {
+            if let Err(e) = current_snapshot.apply_action(a) {
+                println!("Error applying rename action: {}", e);
+            }
+        }
+        for a in add_actions {
+            if let Err(e) = current_snapshot.apply_action(a) {
+                println!("Error applying add action: {}", e);
+            }
+        }
+        for a in modify_actions {
+            if let Err(e) = current_snapshot.apply_action(a) {
+                println!("Error applying modify action: {}", e);
+            }
+        }
+        for a in delete_actions {
+            if let Err(e) = current_snapshot.apply_action(a) {
+                println!("Error applying delete action: {}", e);
+            }
         }
 
         if tree_changes.is_err() {
@@ -536,7 +499,7 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             continue;
         }
         previous_tree_id = current_tree_id;
-        previous_commit_id = current_commit_id;
+        _previous_commit_id = current_commit_id;
         // progress_bar.set_message(format!(
         //     "Current snapshot: {:?}",
         //     current_snapshot.repository_cohort_stats()
