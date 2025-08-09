@@ -125,34 +125,10 @@ where
             }
             SnapshotAction::ApplyLineDiffs {
                 location,
-                line_diffs,
+                updated_file_blame,
             } => {
-                if let Some(file_blame) = self.get_file_blame_mut(&location) {
-                    // Sort line_diffs by before_range.start in descending order
-                    // This ensures we process changes from bottom to top, maintaining correctness
-                    // of line positions and improving performance
-                    let mut sorted_line_diffs = line_diffs;
-                    sorted_line_diffs
-                        .sort_by_key(|(before_range, _, _)| std::cmp::Reverse(before_range.start));
-
-                    for (before_range, after_range, cohort) in sorted_line_diffs {
-                        file_blame.delete_lines_without_merge(
-                            before_range.start,
-                            before_range.len() as u32,
-                        );
-                        file_blame.insert_lines_without_merge(
-                            after_range.start,
-                            after_range.len() as u32,
-                            cohort,
-                        );
-                    }
-                    file_blame.merge_adjacent_ranges();
-                } else {
-                    return Err(format!(
-                        "Could not find blame info for path {:?}, most likely it was moved",
-                        location
-                    ));
-                }
+                // Simply replace the FileBlame - the expensive computation was done in parallel
+                self.file_blames.insert(location, updated_file_blame);
             }
             SnapshotAction::RenameFile {
                 source_location,
@@ -206,7 +182,7 @@ where
     },
     ApplyLineDiffs {
         location: BString,
-        line_diffs: Vec<(std::ops::Range<u32>, std::ops::Range<u32>, CohortKey)>, // (before, after, cohort)
+        updated_file_blame: FileBlame<CohortKey>, // Changed from line_diffs to processed FileBlame
     },
     RenameFile {
         source_location: BString,
@@ -357,6 +333,9 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         let repo_tl = ThreadLocal::new();
         let platform_tl = ThreadLocal::new();
 
+        // Before the parallel processing, create a snapshot of current file_blames
+        let current_file_blames = current_snapshot.file_blames.clone();
+
         let par_iter_start = Instant::now();
         let snapshot_actions: Result<Vec<SnapshotAction<u32>>, _> = work_todo
             .par_iter()
@@ -422,9 +401,17 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                                 },
                             );
 
+                            // Clone the current FileBlame and apply the diffs
+                            let mut updated_file_blame = current_file_blames
+                                .get(location)
+                                .cloned()
+                                .unwrap_or_else(|| FileBlame::empty());
+
+                            updated_file_blame.apply_line_diffs(line_diffs);
+
                             Ok(SnapshotAction::ApplyLineDiffs {
                                 location: location.clone(),
-                                line_diffs,
+                                updated_file_blame,
                             })
                         }
                         SnapshotDiff::Rewrite {

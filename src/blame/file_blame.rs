@@ -334,6 +334,32 @@ where
 
         Ok(())
     }
+
+    /// Apply a series of line diffs to this FileBlame
+    /// The line diffs should be in the format: (before_range, after_range, cohort)
+    /// This method processes them in reverse order to maintain correctness and performance
+    pub fn apply_line_diffs(
+        &mut self,
+        line_diffs: Vec<(std::ops::Range<u32>, std::ops::Range<u32>, CohortKey)>,
+    ) {
+        if line_diffs.is_empty() {
+            return;
+        }
+
+        // Sort line_diffs by before_range.start in descending order
+        // This ensures we process changes from bottom to top, maintaining correctness
+        // of line positions and improving performance
+        let mut sorted_line_diffs = line_diffs;
+        sorted_line_diffs.sort_by_key(|(before_range, _, _)| std::cmp::Reverse(before_range.start));
+
+        for (before_range, after_range, cohort) in sorted_line_diffs {
+            self.delete_lines_without_merge(before_range.start, before_range.len() as u32);
+            self.insert_lines_without_merge(after_range.start, after_range.len() as u32, cohort);
+        }
+
+        // Merge adjacent ranges once at the end for efficiency
+        self.merge_adjacent_ranges();
+    }
 }
 
 #[cfg(test)]
