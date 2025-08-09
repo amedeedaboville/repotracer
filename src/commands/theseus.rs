@@ -9,6 +9,7 @@ use gix::diff::tree_with_rewrites;
 use gix::diff::tree_with_rewrites::Action;
 use gix::diff::tree_with_rewrites::ChangeRef;
 use indicatif::{ProgressBar, ProgressStyle};
+use rayon::prelude::*;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -142,14 +143,8 @@ where
     }
 
     /// Add a new file with initial blame information
-    pub fn add_file(
-        &mut self,
-        path: &BString,
-        total_lines: u32,
-        commit_id: gix::ObjectId,
-        cohort: CohortKey,
-    ) {
-        let file_blame = FileBlame::new(total_lines, commit_id, cohort);
+    pub fn add_file(&mut self, path: &BString, total_lines: u32, cohort: CohortKey) {
+        let file_blame = FileBlame::new(total_lines, cohort);
         self.file_blames.insert(path.clone(), file_blame);
     }
 
@@ -212,6 +207,27 @@ where
     }
 }
 
+pub enum SnapshotDiff {
+    Addition {
+        location: BString,
+        cohort: u32,
+        oid: gix::ObjectId,
+    },
+    Deletion {
+        location: BString,
+    },
+    Modification {
+        cohort: u32,
+        id: gix::ObjectId,
+        previous_id: gix::ObjectId,
+        location: BString,
+        // previous_location: Bstring,
+    },
+    Rewrite {
+        source_location: BString,
+        location: BString,
+    },
+}
 impl Default for TheseusConfig {
     fn default() -> Self {
         Self {
@@ -223,9 +239,6 @@ impl Default for TheseusConfig {
 }
 
 pub fn theseus_command(repo_path: &str) {
-    println!("Starting Theseus analysis...");
-    println!("Repository path: {}", repo_path);
-
     // Verify the path exists
     if !Path::new(repo_path).exists() {
         eprintln!("Error: Repository path does not exist or is not accessible.");
@@ -252,10 +265,12 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let mut platform = repo.diff_resource_cache_for_tree_diff()?;
     let mut platform2 = repo.diff_resource_cache_for_tree_diff()?;
     let mut previous_commit_id: Option<gix::ObjectId> = None;
-    let mut previous_tree_info: Option<TreeSnapshotInfo> = None;
-    let mut current_tree_info: Option<TreeSnapshotInfo>;
+    let mut previous_tree: Option<gix::Tree> = None;
+    let mut previous_tree_id: Option<gix::ObjectId> = None;
     let mut current_commit_id: Option<gix::ObjectId>;
-    let mut current_snapshot = RepositoryBlameSnapshot::new(weekly_commits[0].id);
+    let mut current_tree: gix::Tree;
+    let mut current_tree_id: Option<gix::ObjectId>;
+    let mut current_snapshot = RepositoryBlameSnapshot::<u32>::new(weekly_commits[0].id);
 
     let progress_bar = ProgressBar::new(weekly_commits.len() as u64);
     progress_bar.set_style(
@@ -269,26 +284,15 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     for commit in progress_bar.wrap_iter(weekly_commits.iter()) {
         let current_commit = repo.find_commit(commit.id)?;
         current_commit_id = Some(commit.id);
-        let current_tree = current_commit.tree()?;
-        current_tree_info = Some(TreeSnapshotInfo {
-            commit_id: commit.id,
-            tree_id: current_tree.id().into(),
-        });
-        /*
-        print!(
-            "{}: Processing diff {:?} - {:?}",
-            i + 1,
-            previous_commit_id,
-            current_commit_id
-        );
-        */
-
-        let previous_tree = if let Some(previous_info) = &previous_tree_info {
-            Some(repo.find_tree(previous_info.tree_id)?)
+        current_tree = current_commit.tree()?;
+        current_tree_id = Some(current_tree.id().into());
+        let previous_tree = if let Some(previous_tree_id) = previous_tree_id {
+            Some(repo.find_tree(previous_tree_id)?)
         } else {
             None
         };
 
+        platform2.clear_resource_cache_keep_allocation();
         let mut tree_diff_state = gix::diff::tree::State::default();
         let mut objects = &repo.objects;
         let mut num_changes_for_commit = 0;
@@ -298,118 +302,52 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             .format(gix::date::time::CustomFormat::new("%Y"))
             .parse()
             .expect("Could not parse year of commit");
+        let mut workTodo: Vec<SnapshotDiff> = Vec::new();
         let for_each =
             |change: ChangeRef<'_>| -> Result<Action, Box<dyn std::error::Error + Send + Sync>> {
                 if !change.entry_mode().is_blob() {
                     return Ok(Action::Continue);
                 }
-                match change {
+                let work_to_push = match change {
                     ChangeRef::Addition {
                         location,
                         entry_mode,
                         id,
                         ..
-                    } => {
-                        let blob = repo.find_blob(id)?;
-                        let content = &blob.data;
-                        let num_lines = content.lines().count();
-                        current_snapshot.add_file(
-                            &BString::from(location.to_str().unwrap()),
-                            num_lines as u32,
-                            id,
-                            cohort,
-                        );
-                        /*
-                        println!(
-                            "  {:?} (path id {:?}) {} {:?}, (cohort {:?}, num lines {:?})",
-                            location, path_idx, id, relation, cohort, num_lines
-                        );
-                        */
-                        num_changes_for_commit += 1;
-                    }
+                    } => SnapshotDiff::Addition {
+                        location: BString::from(location.to_str().unwrap()),
+                        cohort,
+                        oid: id,
+                    },
                     ChangeRef::Deletion {
                         location,
                         entry_mode,
                         ..
-                    } => {
-                        current_snapshot.delete_file(&BString::from(location.to_str().unwrap()));
-                        /*
-                        println!("  {:?}", change);
-                         */
-                        num_changes_for_commit += 1;
-                    }
+                    } => SnapshotDiff::Deletion {
+                        location: BString::from(location.to_str().unwrap()),
+                    },
                     ChangeRef::Modification {
                         location,
                         previous_entry_mode,
                         previous_id,
                         entry_mode,
                         id,
-                    } => {
-                        if let Some(current_file_blame) =
-                            current_snapshot.get_file_blame_mut(&BString::from(
-                                location
-                                    .to_str()
-                                    .expect("Could not convert location to str"),
-                            ))
-                        {
-                            platform2.set_resource_by_change(change, objects)?;
-                            platform2.set_resource_by_change(change, objects)?;
-                            let outcome = platform2.prepare_diff().expect("Could not prepare diff");
-                            let input = outcome.interned_input();
-                            gix::diff::blob::diff(
-                                gix::diff::blob::Algorithm::Myers,
-                                &input,
-                                |before: std::ops::Range<u32>, after: std::ops::Range<u32>| {
-                                    current_file_blame
-                                        .delete_lines(before.start, before.len() as u32);
-                                    //TODO BIG TODO. This might not be accurate.
-                                    current_file_blame.insert_lines(
-                                        after.start,
-                                        after.len() as u32,
-                                        current_commit.id,
-                                        cohort,
-                                    );
-                                },
-                            );
-                            // let input_for_diff = gix::diff::blob::intern::InternedInput::new(
-                            //     previous_blob.data,
-                            //     current_blob.data,
-                            // );
-
-                            /*
-                            println!("  {:?}", change);
-                             */
-                        } else {
-                            // println!(
-                            // "Could not not find blame info for path {:?}, most likely it was moved",
-                            // location
-                            // );
-                        }
-                        num_changes_for_commit += 1;
-                    }
-
+                    } => SnapshotDiff::Modification {
+                        cohort,
+                        id,
+                        previous_id,
+                        location: BString::from(location.to_str().unwrap()),
+                    },
                     ChangeRef::Rewrite {
                         location,
                         source_location,
-                        source_entry_mode,
-                        source_relation,
-                        source_id,
-                        diff,
-                        entry_mode,
-                        id,
-                        relation,
-                        copy,
-                    } => {
-                        // current_snapshot.rename_file(
-                        //     &BString::from(location.to_str().unwrap()),
-                        //     &BString::from(source_location.to_str().unwrap()),
-                        // )?;
-                        /*
-                        println!("  {:?}", change);
-                         */
-                        num_changes_for_commit += 1;
-                    }
-                }
+                        ..
+                    } => SnapshotDiff::Rewrite {
+                        source_location: BString::from(source_location.to_str().unwrap()),
+                        location: BString::from(location.to_str().unwrap()),
+                    },
+                };
+                workTodo.push(work_to_push);
                 Ok(Action::Continue)
             };
         let options = gix::diff::tree_with_rewrites::Options {
@@ -417,14 +355,8 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             rewrites: Some(gix::diff::Rewrites::default()),
         };
 
-        // Create TreeRefIter for previous tree (or empty iterator if None)
-        let previous_tree_iter = if let Some(ref tree) = previous_tree {
-            TreeRefIter::from_bytes(&tree.data)
-        } else {
-            TreeRefIter::from_bytes(&[]) // Empty tree iterator for the first commit
-        };
-
-        // Create TreeRefIter for current tree
+        let previous_tree_iter =
+            TreeRefIter::from_bytes(previous_tree.as_ref().map_or(&[], |tree| &tree.data));
         let current_tree_iter = TreeRefIter::from_bytes(&current_tree.data);
 
         let tree_changes = tree_with_rewrites(
@@ -436,6 +368,85 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             for_each,
             options,
         );
+        println!("number of changes for commit: {:?}", workTodo.len());
+        workTodo.iter().for_each(|change| match change {
+            SnapshotDiff::Addition {
+                location,
+                cohort,
+                oid,
+            } => {
+                // println!("Addition: {:?}", path);
+                let blob = repo.find_blob(*oid).expect("Could not find blob");
+                let content = &blob.data;
+                let num_lines = content.lines().count();
+                current_snapshot.add_file(
+                    &BString::from(location.to_str().unwrap()),
+                    num_lines as u32,
+                    *cohort,
+                );
+            }
+            SnapshotDiff::Deletion { location } => {
+                // println!("Deletion: {:?}", path);
+                current_snapshot.delete_file(&BString::from(location.to_str().unwrap()));
+            }
+            SnapshotDiff::Modification {
+                cohort,
+                id,
+                previous_id,
+                location,
+            } => {
+                // if let Some(current_file_blame) =
+                //     current_snapshot.get_file_blame_mut(&BString::from(
+                //         location
+                //             .to_str()
+                //             .expect("Could not convert location to str"),
+                //     ))
+                // {
+                // let input = outcome.interned_input();
+                // gix::diff::blob::diff(
+                //     gix::diff::blob::Algorithm::Myers,
+                //     &input,
+                //     |before: std::ops::Range<u32>, after: std::ops::Range<u32>| {
+                //         current_file_blame
+                //             .delete_lines(before.start, before.len() as u32);
+                //         //TODO BIG TODO. This might not be accurate.
+                //         current_file_blame.insert_lines(
+                //             after.start,
+                //             after.len() as u32,
+                //             cohort,
+                //         );
+                //     },
+                // );
+                // let input_for_diff = gix::diff::blob::intern::InternedInput::new(
+                //     previous_blob.data,
+                //     current_blob.data,
+                // );
+
+                /*
+                println!("  {:?}", change);
+                 */
+                // } else {
+                // println!(
+                // "Could not not find blame info for path {:?}, most likely it was moved",
+                // location
+                // );
+                // }
+            }
+            SnapshotDiff::Rewrite {
+                source_location,
+                location,
+            } => {
+                match current_snapshot.rename_file(
+                    &BString::from(source_location.to_str().unwrap()),
+                    &BString::from(location.to_str().unwrap()),
+                ) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        println!("Error renaming file: {}", e);
+                    }
+                }
+            }
+        });
 
         if tree_changes.is_err() {
             println!("Error in tree changes {}", commit.id.to_string());
@@ -444,124 +455,13 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         }
         println!(" num changes for commit: {} ", num_changes_for_commit,);
 
-        previous_tree_info = current_tree_info;
+        previous_tree_id = current_tree_id;
         previous_commit_id = current_commit_id;
-        println!(
+        progress_bar.send_message(format!(
             "Current snapshot: {:?}",
             current_snapshot.repository_cohort_stats()
-        );
+        ));
     }
 
-    Ok(())
-}
-
-/// Represents a tree snapshot for diffing
-#[derive(Debug, Clone)]
-struct TreeSnapshotInfo {
-    commit_id: gix::ObjectId,
-    tree_id: gix::ObjectId,
-}
-
-/// Represents a change between two trees
-#[derive(Debug, Clone)]
-struct TreeChange {
-    path: PathBuf,
-    change_type: TreeChangeType,
-    old_blob_id: Option<gix::ObjectId>,
-    new_blob_id: Option<gix::ObjectId>,
-}
-
-/// Types of changes that can happen to files between trees
-#[derive(Debug, Clone)]
-enum TreeChangeType {
-    Addition,
-    Deletion,
-    Modification,
-    Rename { old_path: PathBuf },
-}
-
-/// Diff two trees and return the changes
-fn diff_trees(
-    repo: &gix::Repository,
-    previous: &TreeSnapshotInfo,
-    current: &TreeSnapshotInfo,
-) -> Result<Vec<TreeChange>> {
-    // For now, implement a simple manual diff by collecting all files from both trees
-    // and comparing them. This is less efficient but will work as a starting point.
-
-    let mut changes = Vec::new();
-    let previous_tree = repo.find_tree(previous.tree_id)?;
-    let current_tree = repo.find_tree(current.tree_id)?;
-
-    // Collect files from previous tree
-    let mut previous_files = std::collections::HashMap::new();
-    collect_tree_files(&previous_tree, PathBuf::new(), &mut previous_files)?;
-
-    // Collect files from current tree and detect changes
-    let mut current_files = std::collections::HashMap::new();
-    collect_tree_files(&current_tree, PathBuf::new(), &mut current_files)?;
-
-    // Find additions and modifications
-    for (path, current_oid) in &current_files {
-        match previous_files.get(path) {
-            None => {
-                // File was added
-                changes.push(TreeChange {
-                    path: path.clone(),
-                    change_type: TreeChangeType::Addition,
-                    old_blob_id: None,
-                    new_blob_id: Some(*current_oid),
-                });
-            }
-            Some(previous_oid) => {
-                if previous_oid != current_oid {
-                    // File was modified
-                    changes.push(TreeChange {
-                        path: path.clone(),
-                        change_type: TreeChangeType::Modification,
-                        old_blob_id: Some(*previous_oid),
-                        new_blob_id: Some(*current_oid),
-                    });
-                }
-                // If they're equal, no change
-            }
-        }
-    }
-
-    // Find deletions
-    for (path, previous_oid) in &previous_files {
-        if !current_files.contains_key(path) {
-            changes.push(TreeChange {
-                path: path.clone(),
-                change_type: TreeChangeType::Deletion,
-                old_blob_id: Some(*previous_oid),
-                new_blob_id: None,
-            });
-        }
-    }
-
-    Ok(changes)
-}
-
-/// Recursively collect all files from a tree
-fn collect_tree_files(
-    tree: &gix::Tree,
-    base_path: PathBuf,
-    files: &mut std::collections::HashMap<PathBuf, gix::ObjectId>,
-) -> Result<()> {
-    for entry in tree.iter() {
-        let entry = entry?;
-        let entry_path = base_path.join(entry.filename().to_os_str()?);
-
-        if entry.mode().is_tree() {
-            // Recursively process subdirectory
-            let subtree = entry.object()?.into_tree();
-            collect_tree_files(&subtree, entry_path, files)?;
-        } else if entry.mode().is_blob() {
-            // Add file to collection
-            files.insert(entry_path, entry.oid().into());
-        }
-        // Skip other entry types (symlinks, etc.) for now
-    }
     Ok(())
 }
