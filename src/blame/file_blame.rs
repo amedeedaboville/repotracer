@@ -1,18 +1,24 @@
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    fmt::{Debug, Display},
+};
 
 type LineNumber = u32;
+
+pub trait Keyable: Copy + PartialEq + Display + Debug {}
+impl<T: Copy + PartialEq + Display + Debug> Keyable for T {}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BlameRange<CohortKey>
 where
-    CohortKey: Copy + PartialEq,
+    CohortKey: Keyable,
 {
     pub start_line: LineNumber,
     pub line_count: LineNumber,
     pub cohort: CohortKey,
 }
 
-impl<CohortKey: Copy + PartialEq> BlameRange<CohortKey> {
+impl<CohortKey: Keyable> BlameRange<CohortKey> {
     pub fn new(start_line: LineNumber, line_count: LineNumber, cohort: CohortKey) -> Self {
         Self {
             start_line,
@@ -20,31 +26,17 @@ impl<CohortKey: Copy + PartialEq> BlameRange<CohortKey> {
             cohort,
         }
     }
-
-    pub fn end_line(&self) -> LineNumber {
-        self.start_line + self.line_count
-    }
-
-    pub fn contains_line(&self, line: LineNumber) -> bool {
-        line >= self.start_line && line < self.end_line()
-    }
 }
 
 /// FileBlame stores change-points: a mapping from starting line to cohort.
 /// The end of each interval is implicit: the next key, or `total_lines` for the last one.
 #[derive(Debug, Clone)]
-pub struct FileBlame<CohortKey>
-where
-    CohortKey: Copy + PartialEq,
-{
+pub struct FileBlame<CohortKey: Keyable> {
     change_points: BTreeMap<LineNumber, CohortKey>,
     total_lines: LineNumber,
 }
 
-impl<CohortKey> FileBlame<CohortKey>
-where
-    CohortKey: Copy + PartialEq,
-{
+impl<CohortKey: Keyable> FileBlame<CohortKey> {
     pub fn new(total_lines: LineNumber, cohort: CohortKey) -> Self {
         let mut change_points = BTreeMap::new();
         if total_lines > 0 {
@@ -53,13 +45,6 @@ where
         Self {
             change_points,
             total_lines,
-        }
-    }
-
-    pub fn empty() -> Self {
-        Self {
-            change_points: BTreeMap::new(),
-            total_lines: 0,
         }
     }
 
@@ -121,6 +106,7 @@ where
         if position > self.total_lines {
             position = self.total_lines;
         }
+        let old_total = self.total_lines;
 
         let old_at_pos = if position < self.total_lines {
             self.cohort_at_index(position)
@@ -145,14 +131,19 @@ where
                 self.change_points.insert(position, cohort);
                 // Restore previous cohort after the inserted block if needed
                 let resume_pos = position + line_count;
-                // Check whether the first key in new_tail already resumes with the same cohort
-                let already_resumes = new_tail
-                    .range(resume_pos..=resume_pos)
-                    .next()
-                    .map(|(_, &v)| v == old)
-                    .unwrap_or(false);
-                if !already_resumes {
-                    self.change_points.insert(resume_pos, old);
+                // Only resume if insertion is not strictly at the end of the file.
+                // If we insert at EOF, there is no content to resume, and adding a
+                // change-point at new total_lines would be invalid.
+                if position < old_total {
+                    // Check whether the first key in new_tail already resumes with the same cohort
+                    let already_resumes = new_tail
+                        .range(resume_pos..=resume_pos)
+                        .next()
+                        .map(|(_, &v)| v == old)
+                        .unwrap_or(false);
+                    if !already_resumes {
+                        self.change_points.insert(resume_pos, old);
+                    }
                 }
             }
             None => {
@@ -269,6 +260,12 @@ where
                 } else {
                     self.total_lines
                 };
+                if end < start {
+                    panic!(
+                        "start is after end for range: {}, end: {}. next start: {:?}, total lines: {}",
+                        start, end, iter.peek().map(|(k, _)| *k), self.total_lines
+                    );
+                }
                 Some(BlameRange::new(start, end - start, cohort))
             } else {
                 None
@@ -323,7 +320,7 @@ where
             return;
         }
         // Bulk-apply: rebuild change-points in a single pass for speed
-        let mut diffs = line_diffs;
+        let mut diffs = line_diffs.clone();
         diffs.sort_by_key(|(before, _, _)| before.start);
 
         let old_total = self.total_lines;
@@ -397,6 +394,31 @@ where
         self.change_points = new_change_points;
         self.total_lines = new_total;
         self.merge_adjacent_ranges();
+        // Drop any change-points that erroneously landed at or beyond new total
+        // (can happen if a resume position coincides with the final end after deletions)
+        if self.total_lines > 0 {
+            let mut to_remove: Vec<LineNumber> = Vec::new();
+            for &k in self.change_points.keys() {
+                if k >= self.total_lines {
+                    to_remove.push(k);
+                }
+            }
+            for k in to_remove {
+                self.change_points.remove(&k);
+            }
+        } else {
+            self.change_points.clear();
+        }
+        self.validate().expect(
+            format!(
+                "invalid blame after applying line diffs: {:?}.\n old total: {:?}.\n offset: {:?}.\n line diffs: {:?}",
+                self.total_lines(),
+                old_total,
+                offset.abs(),
+                line_diffs
+            )
+            .as_str(),
+        );
     }
 
     pub fn update(&mut self, position: u32, insert_len: u32, delete_len: u32, cohort: CohortKey) {
@@ -527,19 +549,16 @@ mod tests {
     #[test]
     fn test_delete_all_lines() {
         let mut blame = FileBlame::new(10, 2022);
-
         blame.delete_lines(0, 10);
 
         assert_eq!(blame.range_count(), 0);
         assert_eq!(blame.total_lines(), 0);
-
         blame.validate().unwrap();
     }
 
     #[test]
     fn test_insert_at_beginning() {
         let mut blame = FileBlame::new(10, 2022);
-
         blame.insert_lines(0, 5, 2024);
 
         assert_eq!(blame.total_lines(), 15);
@@ -563,7 +582,6 @@ mod tests {
     #[test]
     fn test_insert_at_end() {
         let mut blame = FileBlame::new(10, 2022);
-
         blame.insert_lines(10, 5, 2024);
 
         assert_eq!(blame.total_lines(), 15);
@@ -620,6 +638,98 @@ mod tests {
         assert_eq!(range.line_count, 100);
         assert_eq!(range.cohort, 2022);
 
+        blame.validate().unwrap();
+    }
+
+    #[test]
+    fn test_apply_line_diffs_equal_length_hunks_near_end() {
+        let mut blame = FileBlame::new(160, 2000);
+
+        // multiple replacement hunks (alen == blen) near the end; total_lines must stay unchanged
+        let diffs = vec![
+            (46..49, 46..49, 2006),
+            (65..66, 65..66, 2006),
+            (92..95, 92..95, 2006),
+            (99..100, 99..100, 2006),
+            (104..105, 104..105, 2006),
+            (106..107, 106..107, 2006),
+            (109..110, 109..110, 2006),
+            (111..113, 111..113, 2006),
+            (138..145, 138..145, 2006),
+            (146..149, 146..149, 2006),
+            (153..154, 153..154, 2006),
+        ];
+
+        let old_total = blame.total_lines();
+        blame.apply_line_diffs(diffs);
+        assert_eq!(blame.total_lines(), old_total);
+        blame.validate().unwrap();
+    }
+
+    #[test]
+    fn test_apply_line_diffs_insertion_then_deletion_tail() {
+        let mut blame = FileBlame::new(200, 1999);
+
+        // Insert 5 lines at position 50
+        let diffs_insert = vec![(50..50, 50..55, 2001)];
+        blame.apply_line_diffs(diffs_insert);
+        assert_eq!(blame.total_lines(), 205);
+        blame.validate().unwrap();
+
+        // Now delete last 10 lines (from position 195..205 -> 195..195)
+        let diffs_delete_tail = vec![(195..205, 195..195, 2002)];
+        blame.apply_line_diffs(diffs_delete_tail);
+        assert_eq!(blame.total_lines(), 195);
+        blame.validate().unwrap();
+    }
+
+    #[test]
+    fn test_apply_line_diffs_mid_deletion_creates_resume_before_end() {
+        let mut blame = FileBlame::new(120, 2010);
+
+        // Create a second cohort mid-file to ensure resume logic chooses correct cohort
+        blame.insert_lines(60, 0, 2011); // no-op insert but ensures cohort boundary at 60
+        blame.insert_lines(60, 1, 2011); // actually insert 1 line to create a split
+        blame.delete_lines(60, 1); // revert split while keeping internal structure exercised
+
+        // Delete lines in the middle: 40..50
+        let diffs_delete_mid = vec![(40..50, 40..40, 2012)];
+        let old_total = blame.total_lines();
+        blame.apply_line_diffs(diffs_delete_mid);
+        assert_eq!(blame.total_lines(), old_total - 10);
+        // No change-point should be at or beyond total_lines
+        blame.validate().unwrap();
+    }
+
+    #[test]
+    fn test_apply_line_diffs_insertion_and_followup_replacements() {
+        let mut blame = FileBlame::new(150, 2015);
+
+        // Insert 4 lines at 20
+        let diffs_insert = vec![(20..20, 20..24, 2016)];
+        blame.apply_line_diffs(diffs_insert);
+        assert_eq!(blame.total_lines(), 154);
+
+        // Follow with multiple equal-length replacements later in the file
+        let diffs_replace = vec![(100..102, 100..102, 2017), (150..151, 150..151, 2017)];
+        let old_total = blame.total_lines();
+        blame.apply_line_diffs(diffs_replace);
+        assert_eq!(blame.total_lines(), old_total);
+        blame.validate().unwrap();
+    }
+
+    #[test]
+    fn test_apply_line_diffs_resume_would_land_at_final_end() {
+        // Earlier hunk resumes at position X, later hunk deletes tail starting at X,
+        // so final total becomes exactly X. Resume at X must not be inserted.
+        let mut blame = FileBlame::new(100, 1);
+
+        // Hunk 1: equal-length replacement 90..95 -> 90..95 (delta 0)
+        // Hunk 2: delete tail 95..100 -> 95..95 (delta -5)
+        let diffs = vec![(90..95, 90..95, 2), (95..100, 95..95, 3)];
+        blame.apply_line_diffs(diffs);
+        assert_eq!(blame.total_lines(), 95);
+        // Ensure no change-point at or beyond 95
         blame.validate().unwrap();
     }
 }
