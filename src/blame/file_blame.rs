@@ -1,12 +1,13 @@
 use std::{
     collections::BTreeMap,
     fmt::{Debug, Display},
+    hash::Hash,
 };
 
 type LineNumber = u32;
 
-pub trait Keyable: Copy + PartialEq + Display + Debug {}
-impl<T: Copy + PartialEq + Display + Debug> Keyable for T {}
+pub trait Keyable: Copy + PartialEq + Display + Debug + Eq + Hash {}
+impl<T: Copy + PartialEq + Display + Debug + Eq + Hash> Keyable for T {}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BlameRange<CohortKey>
@@ -66,7 +67,7 @@ impl<CohortKey: Keyable> FileBlame<CohortKey> {
             .map(|(_, cohort)| *cohort)
     }
 
-    pub fn blame_for_line(&self, line: LineNumber) -> Option<BlameRange<CohortKey>> {
+    pub fn blame_for_line(&self, line: LineNumber) -> Option<(LineNumber, LineNumber, CohortKey)> {
         if line >= self.total_lines {
             return None;
         }
@@ -81,154 +82,7 @@ impl<CohortKey: Keyable> FileBlame<CohortKey> {
             .next()
             .map(|(&k, _)| k)
             .unwrap_or(self.total_lines);
-        Some(BlameRange::new(start, next_end - start, cohort))
-    }
-
-    pub fn insert_lines(
-        &mut self,
-        position: LineNumber,
-        line_count: LineNumber,
-        cohort: CohortKey,
-    ) {
-        self.insert_lines_without_merge(position, line_count, cohort);
-        self.merge_adjacent_ranges();
-    }
-
-    pub fn insert_lines_without_merge(
-        &mut self,
-        mut position: LineNumber,
-        line_count: LineNumber,
-        cohort: CohortKey,
-    ) {
-        if line_count == 0 {
-            return;
-        }
-        if position > self.total_lines {
-            position = self.total_lines;
-        }
-        let old_total = self.total_lines;
-
-        let old_at_pos = if position < self.total_lines {
-            self.cohort_at_index(position)
-        } else {
-            self.change_points.iter().next_back().map(|(_, &v)| v)
-        };
-
-        // Split tail at position to avoid remove/insert churn
-        let tail = self.change_points.split_off(&position); // keys >= position
-        let mut new_tail: BTreeMap<LineNumber, CohortKey> = BTreeMap::new();
-        for (k, v) in tail.into_iter() {
-            new_tail.insert(k + line_count, v);
-        }
-
-        // If the existing cohort at position already equals the new cohort, we only need to shift the tail
-        match old_at_pos {
-            Some(old) if old == cohort => {
-                // nothing to insert at position or resume; the existing segment extends
-            }
-            Some(old) => {
-                // Insert new cohort at position
-                self.change_points.insert(position, cohort);
-                // Restore previous cohort after the inserted block if needed
-                let resume_pos = position + line_count;
-                // Only resume if insertion is not strictly at the end of the file.
-                // If we insert at EOF, there is no content to resume, and adding a
-                // change-point at new total_lines would be invalid.
-                if position < old_total {
-                    // Check whether the first key in new_tail already resumes with the same cohort
-                    let already_resumes = new_tail
-                        .range(resume_pos..=resume_pos)
-                        .next()
-                        .map(|(_, &v)| v == old)
-                        .unwrap_or(false);
-                    if !already_resumes {
-                        self.change_points.insert(resume_pos, old);
-                    }
-                }
-            }
-            None => {
-                // inserting at end on empty file or brand new tail
-                // Only add a position change-point if last cohort differs
-                if self.change_points.iter().next_back().map(|(_, &v)| v) != Some(cohort) {
-                    self.change_points.insert(position, cohort);
-                }
-            }
-        }
-
-        // Append shifted tail back
-        self.change_points.append(&mut new_tail);
-
-        self.total_lines += line_count;
-    }
-
-    pub fn delete_lines(&mut self, position: u32, line_count: u32) {
-        self.delete_lines_without_merge(position, line_count);
-        self.merge_adjacent_ranges();
-    }
-
-    pub fn delete_lines_without_merge(&mut self, position: u32, line_count: u32) {
-        if line_count == 0 || position >= self.total_lines {
-            return;
-        }
-        let end_position = std::cmp::min(position + line_count, self.total_lines);
-        if end_position == position {
-            return;
-        }
-        let delta = end_position - position;
-
-        // Cohort at end_position (becomes the cohort at `position` after deletion)
-        let after_end = if end_position < self.total_lines {
-            self.cohort_at_index(end_position)
-        } else {
-            None
-        };
-
-        // Fast path: delete to end
-        if end_position == self.total_lines {
-            // Remove [position, end)
-            let _mid = self.change_points.split_off(&position);
-            // If nothing remains, we are done
-            self.total_lines -= delta;
-            return;
-        }
-
-        // Split tail >= end_position
-        let tail = self.change_points.split_off(&end_position); // keys >= end
-                                                                // Remove middle [position, end)
-        let _mid = self.change_points.split_off(&position); // drop mid keys
-
-        // Shift tail by -delta
-        let mut new_tail: BTreeMap<LineNumber, CohortKey> = BTreeMap::new();
-        for (k, v) in tail.into_iter() {
-            new_tail.insert(k - delta, v);
-        }
-
-        // Append shifted tail back
-        self.change_points.append(&mut new_tail);
-
-        // Ensure cohort at `position` matches `after_end` (avoid redundant keys)
-        let new_total = self.total_lines - delta;
-        if position < new_total {
-            if let Some(v) = after_end {
-                let current = self.cohort_at_index(position);
-                if current != Some(v) {
-                    // Also avoid inserting if the immediately previous key already has v
-                    let prev_same = self
-                        .change_points
-                        .range(..=position)
-                        .next_back()
-                        .map(|(_, &pv)| pv == v)
-                        .unwrap_or(false);
-                    if !prev_same {
-                        self.change_points.insert(position, v);
-                    }
-                }
-            }
-        } else if position == 0 && new_total == 0 {
-            self.change_points.clear();
-        }
-
-        self.total_lines = new_total;
+        Some((start, next_end - start, cohort))
     }
 
     pub fn merge_adjacent_ranges(&mut self) {
@@ -250,8 +104,8 @@ impl<CohortKey: Keyable> FileBlame<CohortKey> {
         }
     }
 
-    /// Get an iterator over all blame ranges
-    pub fn ranges(&self) -> impl Iterator<Item = BlameRange<CohortKey>> + '_ {
+    /// Get an iterator over ranges as (start_line, end_line, cohort)
+    pub fn ranges(&self) -> impl Iterator<Item = (LineNumber, LineNumber, CohortKey)> + '_ {
         let mut iter = self.change_points.iter().peekable();
         std::iter::from_fn(move || {
             if let Some((&start, &cohort)) = iter.next() {
@@ -266,20 +120,17 @@ impl<CohortKey: Keyable> FileBlame<CohortKey> {
                         start, end, iter.peek().map(|(k, _)| *k), self.total_lines
                     );
                 }
-                Some(BlameRange::new(start, end - start, cohort))
+                Some((start, end, cohort))
             } else {
                 None
             }
         })
     }
 
-    pub fn cohort_stats(&self) -> std::collections::HashMap<CohortKey, u64>
-    where
-        CohortKey: Eq + std::hash::Hash,
-    {
+    pub fn cohort_stats(&self) -> std::collections::HashMap<CohortKey, u64> {
         let mut stats = std::collections::HashMap::new();
-        for range in self.ranges() {
-            *stats.entry(range.cohort).or_insert(0) += range.line_count as u64;
+        for (start, end, cohort) in self.ranges() {
+            *stats.entry(cohort).or_insert(0) += (end - start) as u64;
         }
         stats
     }
@@ -293,25 +144,34 @@ impl<CohortKey: Keyable> FileBlame<CohortKey> {
         }
         // First key must be 0
         match self.change_points.keys().next() {
-            Some(&k) if k == 0 => {}
+            Some(&key) if key == 0 => {}
             _ => return Err("The first change-point must be at line 0".to_string()),
         }
         // Keys must be strictly increasing and strictly less than total_lines
         let mut prev_key: Option<LineNumber> = None;
-        for &k in self.change_points.keys() {
-            if k >= self.total_lines {
+        for &key in self.change_points.keys() {
+            if key >= self.total_lines {
                 return Err("Change-point key must be < total_lines".to_string());
             }
             if let Some(prev) = prev_key {
-                if k <= prev {
+                if key <= prev {
                     return Err("Change-point keys must be strictly increasing".to_string());
                 }
             }
-            prev_key = Some(k);
+            prev_key = Some(key);
         }
         Ok(())
     }
 
+    // The main, and most important method in this file.
+    // It applies a vector of line diffs to the file blame.
+    // The diffs are given as a vector of tuples, where each tuple contains:
+    // - A range of lines to delete
+    // - A range of lines to insert
+    // - The cohort to apply to the lines in the range after the diff
+    // The diffs are applied in order, from bottom to top.
+    //
+    // We have property tests against a reference implementation to validate correctness.
     pub fn apply_line_diffs(
         &mut self,
         line_diffs: Vec<(std::ops::Range<u32>, std::ops::Range<u32>, CohortKey)>,
@@ -319,7 +179,6 @@ impl<CohortKey: Keyable> FileBlame<CohortKey> {
         if line_diffs.is_empty() {
             return;
         }
-        // Bulk-apply: rebuild change-points in a single pass for speed
         let mut diffs = line_diffs.clone();
         diffs.sort_by_key(|(before, _, _)| before.start);
 
@@ -328,10 +187,10 @@ impl<CohortKey: Keyable> FileBlame<CohortKey> {
         let mut cp_iter = self.change_points.iter().peekable();
         let mut offset: i64 = 0;
 
-        // Helper to push a change point only if cohort changes
+        // Push change-point only if cohort changed from the last emitted
         let push_cp = |pos: u32, cohort: CohortKey, map: &mut BTreeMap<u32, CohortKey>| {
-            if let Some((_, &last_v)) = map.last_key_value() {
-                if last_v == cohort {
+            if let Some((_, &last_cohort)) = map.last_key_value() {
+                if last_cohort == cohort {
                     return;
                 }
             }
@@ -339,62 +198,72 @@ impl<CohortKey: Keyable> FileBlame<CohortKey> {
         };
 
         for (before, after, cohort) in diffs.into_iter() {
-            let b0 = before.start;
-            let b1 = before.end;
-            let alen = after.len() as u32;
-            let blen = b1 - b0;
-            let delta = alen as i64 - blen as i64;
+            let before_start = before.start;
+            let before_end = before.end;
+            let before_len = before_end - before_start;
+            let after_len = after.len() as u32;
+            let delta = after_len as i64 - before_len as i64;
 
             // 1) Emit unaffected change-points before b0, shifted by current offset
-            while let Some((&k, &v)) = cp_iter.peek().copied() {
-                if k < b0 {
-                    let new_k = (k as i64 + offset) as u32;
-                    push_cp(new_k, v, &mut new_change_points);
+            while let Some((&line, &line_cohort)) = cp_iter.peek().copied() {
+                if line < before_start {
+                    push_cp(
+                        (line as i64 + offset) as LineNumber,
+                        line_cohort,
+                        &mut new_change_points,
+                    );
                     cp_iter.next();
                 } else {
                     break;
                 }
             }
 
-            // 2) Insert the new block's cohort at b0 if any insertion
-            if alen > 0 {
-                let ins_pos_new = (b0 as i64 + offset) as u32;
-                push_cp(ins_pos_new, cohort, &mut new_change_points);
+            // 2) Insert the new block's cohort at before_start if any insertion
+            if after_len > 0 {
+                push_cp(
+                    (before_start as i64 + offset) as LineNumber,
+                    cohort,
+                    &mut new_change_points,
+                );
             }
 
-            // 3) Skip original change-points that lie within [b0, b1)
-            while let Some((&k, _)) = cp_iter.peek().copied() {
-                if k < b1 {
+            // 3) Skip original change-points that lie within [before_start, before_end)
+            while let Some((&line, _)) = cp_iter.peek().copied() {
+                if line < before_end {
                     cp_iter.next();
                 } else {
                     break;
                 }
             }
 
-            // 4) Resume cohort after the block, if there is a file after b1
-            if b1 < old_total {
-                if let Some(resume_cohort) = self.cohort_at_index(b1) {
-                    let resume_pos_new = (b0 as i64 + alen as i64 + offset) as u32;
-                    push_cp(resume_pos_new, resume_cohort, &mut new_change_points);
+            // 4) Resume cohort after the block, if there is a file after before_end
+            if before_end < old_total {
+                if let Some(resume_cohort) = self.cohort_at_index(before_end) {
+                    push_cp(
+                        (before_start as i64 + after_len as i64 + offset) as LineNumber,
+                        resume_cohort,
+                        &mut new_change_points,
+                    );
                 }
             }
 
-            // 5) Update offset
             offset += delta;
         }
 
         // Emit the remaining original change-points after the last hunk, shifted by final offset
-        while let Some((k, v)) = cp_iter.next() {
-            let new_k = (*k as i64 + offset) as u32;
-            push_cp(new_k, *v, &mut new_change_points);
+        while let Some((&line, &line_cohort)) = cp_iter.next() {
+            push_cp(
+                (line as i64 + offset) as LineNumber,
+                line_cohort,
+                &mut new_change_points,
+            );
         }
 
-        // Update structure
         let new_total = (old_total as i64 + offset) as u32;
         self.change_points = new_change_points;
         self.total_lines = new_total;
         self.merge_adjacent_ranges();
-        // Drop any change-points that erroneously landed at or beyond new total
+        // Drop any change-points that landed at or beyond new total
         // (can happen if a resume position coincides with the final end after deletions)
         if self.total_lines > 0 {
             let mut to_remove: Vec<LineNumber> = Vec::new();
@@ -420,93 +289,19 @@ impl<CohortKey: Keyable> FileBlame<CohortKey> {
             .as_str(),
         );
     }
-
-    pub fn update(&mut self, position: u32, insert_len: u32, delete_len: u32, cohort: CohortKey) {
-        self.update_without_merge(position, insert_len, delete_len, cohort);
-        self.merge_adjacent_ranges();
-    }
-
-    /// Same as `update`, but defers merging of adjacent ranges for batch efficiency.
-    pub fn update_without_merge(
-        &mut self,
-        position: u32,
-        insert_len: u32,
-        delete_len: u32,
-        cohort: CohortKey,
-    ) {
-        if insert_len == 0 && delete_len == 0 {
-            return;
-        }
-
-        if delete_len > 0 {
-            self.delete_lines_without_merge(position, delete_len);
-        }
-
-        if insert_len > 0 {
-            self.insert_lines_without_merge(position, insert_len, cohort);
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
-    fn create_test_cohort() -> u32 {
-        2023
-    }
-
-    #[test]
-    fn test_new_file_blame() {
-        let cohort = create_test_cohort();
-        let blame = FileBlame::new(10, cohort);
-
-        assert_eq!(blame.total_lines(), 10);
-        assert_eq!(blame.range_count(), 1);
-
-        let range = blame.blame_for_line(5).unwrap();
-        assert_eq!(range.start_line, 0);
-        assert_eq!(range.line_count, 10);
-        assert_eq!(range.cohort, cohort);
-    }
-
-    #[test]
-    fn test_insert_lines() {
-        let cohort = create_test_cohort();
-        let mut blame = FileBlame::new(10, cohort);
-
-        let new_cohort = 2024;
-
-        blame.insert_lines(5, 3, new_cohort);
-
-        assert_eq!(blame.range_count(), 3);
-        assert_eq!(blame.total_lines(), 13);
-
-        assert_eq!(blame.blame_for_line(4).unwrap().cohort, cohort);
-        assert_eq!(blame.blame_for_line(5).unwrap().cohort, new_cohort);
-        assert_eq!(blame.blame_for_line(7).unwrap().cohort, new_cohort);
-        assert_eq!(blame.blame_for_line(8).unwrap().cohort, cohort);
-
-        blame.validate().unwrap();
-    }
-
-    #[test]
-    fn test_delete_lines() {
-        let cohort = create_test_cohort();
-        let mut blame = FileBlame::new(10, cohort);
-
-        blame.delete_lines(3, 3);
-
-        assert_eq!(blame.range_count(), 1);
-        assert_eq!(blame.total_lines(), 7);
-
-        blame.validate().unwrap();
-    }
-
+    // A few hand-written tests. There are not very principled, I trust the PBT
+    // implemented against the reference implementation to be more thorough.
     #[test]
     fn test_cohort_stats() {
-        let mut blame = FileBlame::new(10, 2022);
-        blame.insert_lines(5, 5, 2023);
+        let mut blame = FileBlame::new(0, 2022);
+        blame.apply_line_diffs(vec![(0..0, 0..10, 2022), (0..0, 5..10, 2023)]);
 
         let stats = blame.cohort_stats();
         assert_eq!(stats.get(&2022), Some(&10));
@@ -514,138 +309,10 @@ mod tests {
     }
 
     #[test]
-    fn test_delete_from_beginning() {
-        let mut blame = FileBlame::new(10, 2022);
-        blame.delete_lines(0, 3);
-
-        assert_eq!(blame.total_lines(), 7);
-        assert_eq!(blame.range_count(), 1);
-
-        let range = blame.blame_for_line(0).unwrap();
-        assert_eq!(range.start_line, 0);
-        assert_eq!(range.line_count, 7);
-        assert_eq!(range.cohort, 2022);
-
-        blame.validate().unwrap();
-    }
-
-    #[test]
-    fn test_delete_from_end() {
-        let mut blame = FileBlame::new(10, 2022);
-
-        blame.delete_lines(7, 3);
-
-        assert_eq!(blame.range_count(), 1);
-        assert_eq!(blame.total_lines(), 7);
-
-        let range = blame.blame_for_line(6).unwrap();
-        assert_eq!(range.cohort, 2022);
-        assert_eq!(range.start_line, 0);
-        assert_eq!(range.line_count, 7);
-
-        blame.validate().unwrap();
-    }
-
-    #[test]
-    fn test_delete_all_lines() {
-        let mut blame = FileBlame::new(10, 2022);
-        blame.delete_lines(0, 10);
-
-        assert_eq!(blame.range_count(), 0);
-        assert_eq!(blame.total_lines(), 0);
-        blame.validate().unwrap();
-    }
-
-    #[test]
-    fn test_insert_at_beginning() {
-        let mut blame = FileBlame::new(10, 2022);
-        blame.insert_lines(0, 5, 2024);
-
-        assert_eq!(blame.total_lines(), 15);
-        assert_eq!(blame.range_count(), 2);
-
-        // Check first range (new lines)
-        let range = blame.blame_for_line(0).unwrap();
-        assert_eq!(range.start_line, 0);
-        assert_eq!(range.line_count, 5);
-        assert_eq!(range.cohort, 2024);
-
-        // Check second range (original lines)
-        let range = blame.blame_for_line(5).unwrap();
-        assert_eq!(range.start_line, 5);
-        assert_eq!(range.line_count, 10);
-        assert_eq!(range.cohort, 2022);
-
-        blame.validate().unwrap();
-    }
-
-    #[test]
-    fn test_insert_at_end() {
-        let mut blame = FileBlame::new(10, 2022);
-        blame.insert_lines(10, 5, 2024);
-
-        assert_eq!(blame.total_lines(), 15);
-        assert_eq!(blame.range_count(), 2);
-
-        // Check first range (original lines)
-        let range = blame.blame_for_line(0).unwrap();
-        assert_eq!(range.start_line, 0);
-        assert_eq!(range.line_count, 10);
-        assert_eq!(range.cohort, 2022);
-
-        // Check second range (new lines)
-        let range = blame.blame_for_line(10).unwrap();
-        assert_eq!(range.start_line, 10);
-        assert_eq!(range.line_count, 5);
-        assert_eq!(range.cohort, 2024);
-
-        blame.validate().unwrap();
-    }
-
-    #[test]
-    fn test_fused_insert_delete() {
-        let mut blame = FileBlame::new(10, 2022);
-
-        blame.insert_lines(5, 3, 2024);
-        // Then delete 2 lines from the inserted section
-        blame.delete_lines(6, 2);
-
-        assert_eq!(blame.total_lines(), 11);
-        assert_eq!(blame.range_count(), 3);
-
-        blame.validate().unwrap();
-    }
-
-    #[test]
-    fn test_delete_same_beginning_pattern() {
-        let mut blame = FileBlame::new(100, 2022);
-
-        blame.insert_lines(0, 5, 2024);
-
-        // Should have 2 ranges: [0-4] with new_cohort, [5-104] with original cohort
-        assert_eq!(blame.total_lines(), 105);
-        assert_eq!(blame.range_count(), 2);
-
-        // Delete the 5 inserted lines from beginning
-        blame.delete_lines(0, 5);
-
-        // Should merge back to single range since remaining lines have same metadata
-        assert_eq!(blame.total_lines(), 100);
-        assert_eq!(blame.range_count(), 1);
-
-        let range = blame.blame_for_line(0).unwrap();
-        assert_eq!(range.start_line, 0);
-        assert_eq!(range.line_count, 100);
-        assert_eq!(range.cohort, 2022);
-
-        blame.validate().unwrap();
-    }
-
-    #[test]
     fn test_apply_line_diffs_equal_length_hunks_near_end() {
         let mut blame = FileBlame::new(160, 2000);
 
-        // multiple replacement hunks (alen == blen) near the end; total_lines must stay unchanged
+        // Multiple replacements near the end; total_lines must stay unchanged
         let diffs = vec![
             (46..49, 46..49, 2006),
             (65..66, 65..66, 2006),
@@ -669,67 +336,177 @@ mod tests {
     #[test]
     fn test_apply_line_diffs_insertion_then_deletion_tail() {
         let mut blame = FileBlame::new(200, 1999);
-
         // Insert 5 lines at position 50
-        let diffs_insert = vec![(50..50, 50..55, 2001)];
-        blame.apply_line_diffs(diffs_insert);
+        blame.apply_line_diffs(vec![(50..50, 50..55, 2001)]);
         assert_eq!(blame.total_lines(), 205);
         blame.validate().unwrap();
-
         // Now delete last 10 lines (from position 195..205 -> 195..195)
-        let diffs_delete_tail = vec![(195..205, 195..195, 2002)];
-        blame.apply_line_diffs(diffs_delete_tail);
+        blame.apply_line_diffs(vec![(195..205, 195..195, 2002)]);
         assert_eq!(blame.total_lines(), 195);
-        blame.validate().unwrap();
-    }
-
-    #[test]
-    fn test_apply_line_diffs_mid_deletion_creates_resume_before_end() {
-        let mut blame = FileBlame::new(120, 2010);
-
-        // Create a second cohort mid-file to ensure resume logic chooses correct cohort
-        blame.insert_lines(60, 0, 2011); // no-op insert but ensures cohort boundary at 60
-        blame.insert_lines(60, 1, 2011); // actually insert 1 line to create a split
-        blame.delete_lines(60, 1); // revert split while keeping internal structure exercised
-
-        // Delete lines in the middle: 40..50
-        let diffs_delete_mid = vec![(40..50, 40..40, 2012)];
-        let old_total = blame.total_lines();
-        blame.apply_line_diffs(diffs_delete_mid);
-        assert_eq!(blame.total_lines(), old_total - 10);
-        // No change-point should be at or beyond total_lines
         blame.validate().unwrap();
     }
 
     #[test]
     fn test_apply_line_diffs_insertion_and_followup_replacements() {
         let mut blame = FileBlame::new(150, 2015);
-
         // Insert 4 lines at 20
-        let diffs_insert = vec![(20..20, 20..24, 2016)];
-        blame.apply_line_diffs(diffs_insert);
+        blame.apply_line_diffs(vec![(20..20, 20..24, 2016)]);
         assert_eq!(blame.total_lines(), 154);
-
-        // Follow with multiple equal-length replacements later in the file
-        let diffs_replace = vec![(100..102, 100..102, 2017), (150..151, 150..151, 2017)];
+        // Multiple replacements later in the file
         let old_total = blame.total_lines();
-        blame.apply_line_diffs(diffs_replace);
+        blame.apply_line_diffs(vec![(100..102, 100..102, 2017), (150..151, 150..151, 2017)]);
         assert_eq!(blame.total_lines(), old_total);
         blame.validate().unwrap();
     }
 
     #[test]
     fn test_apply_line_diffs_resume_would_land_at_final_end() {
-        // Earlier hunk resumes at position X, later hunk deletes tail starting at X,
-        // so final total becomes exactly X. Resume at X must not be inserted.
         let mut blame = FileBlame::new(100, 1);
-
-        // Hunk 1: equal-length replacement 90..95 -> 90..95 (delta 0)
+        // Hunk 1: simple replacement 90..95 -> 90..95 (delta 0)
         // Hunk 2: delete tail 95..100 -> 95..95 (delta -5)
         let diffs = vec![(90..95, 90..95, 2), (95..100, 95..95, 3)];
         blame.apply_line_diffs(diffs);
         assert_eq!(blame.total_lines(), 95);
-        // Ensure no change-point at or beyond 95
         blame.validate().unwrap();
+    }
+
+    // Reference implementation that stores each line as an entry in a Vec.
+    // So 3 lines of 2022 -> [2022, 2022, 2022]. Deleting 2 lines at pos X means
+    // literally going to pos X and removing 2 items. No fancy bookkeeping.
+    #[derive(Clone, Debug)]
+    struct NaiveBlame<CohortKey: Keyable> {
+        lines: Vec<CohortKey>,
+    }
+
+    impl<CohortKey: Keyable> NaiveBlame<CohortKey> {
+        fn new(total_lines: u32, cohort: CohortKey) -> Self {
+            Self {
+                lines: vec![cohort; total_lines as usize],
+            }
+        }
+
+        fn total_lines(&self) -> u32 {
+            self.lines.len() as u32
+        }
+
+        fn apply_line_diffs(
+            &mut self,
+            mut line_diffs: Vec<(std::ops::Range<u32>, std::ops::Range<u32>, CohortKey)>,
+        ) {
+            // Apply from bottom to top so indices of earlier hunks are unaffected
+            line_diffs.sort_by_key(|(before, _, _)| before.start);
+            line_diffs.reverse();
+            for (before, after, cohort) in line_diffs.into_iter() {
+                //TODO we should just throw here if given a range that is out of bounds
+                let start = before.start.min(self.lines.len() as u32) as usize;
+                let before_len = (before.end - before.start) as usize;
+
+                // delete
+                if before_len > 0 {
+                    let available = self.lines.len() - start;
+                    let to_delete = before_len.min(available);
+                    if to_delete > 0 {
+                        self.lines.drain(start..start + to_delete);
+                    }
+                }
+                // insert
+                let after_len = (after.end - after.start) as usize;
+                if after_len > 0 {
+                    self.lines.splice(start..start, vec![cohort; after_len]);
+                }
+            }
+        }
+
+        fn expand(&self) -> Vec<CohortKey> {
+            self.lines.clone()
+        }
+        fn cohort_stats(&self) -> std::collections::HashMap<CohortKey, u64> {
+            let mut stats = std::collections::HashMap::new();
+            for &cohort in self.lines.iter() {
+                *stats.entry(cohort).or_insert(0) += 1;
+            }
+            stats
+        }
+    }
+
+    fn expand_file_blame<C: Keyable + Eq>(fb: &FileBlame<C>) -> Vec<C> {
+        let mut out: Vec<C> = Vec::with_capacity(fb.total_lines() as usize);
+        for (start, end, cohort) in fb.ranges() {
+            let count = end - start;
+            for _ in 0..count {
+                out.push(cohort);
+            }
+        }
+        out
+    }
+
+    const FILE_START_LEN: u32 = 500;
+    const NUM_COHORTS: u32 = 20;
+    const TOTAL_GENERATED_HUNKS: usize = 1000;
+    const BATCH_AVG_LEN: u32 = 5;
+
+    proptest! {
+        #[test]
+        fn pbt_apply_line_diffs_matches_naive(
+            initial_len in 0u32..FILE_START_LEN,
+            initial_cohort in 0u32..NUM_COHORTS,
+            ops in proptest::collection::vec((any::<u32>(), any::<u32>(), any::<u32>(), any::<u32>()), 0..TOTAL_GENERATED_HUNKS)
+        ) {
+            let mut fb: FileBlame<u32> = FileBlame::new(initial_len, initial_cohort);
+            let mut naive: NaiveBlame<u32> = NaiveBlame::new(initial_len, initial_cohort);
+
+            let mut pending: Vec<(std::ops::Range<u32>, std::ops::Range<u32>, u32)> = Vec::new();
+            let mut current_len: u32;
+            let mut batch_old_len: u32 = initial_len;
+            let mut batch_last_end: u32 = 0;
+
+            for (pos_seed, del_seed, ins_seed, cohort_seed) in ops.into_iter() {
+                // Choose non-overlapping start positions within the snapshot (batch_old_len)
+                let remaining_space = batch_old_len - batch_last_end;
+                let gap = if remaining_space == 0 { 0 } else { pos_seed % (remaining_space + 1) };
+                let position = batch_last_end + gap;
+                // Deletion up to 7 lines, bounded by the snapshot length from position
+                let max_del = batch_old_len - position;
+                let before_len = if max_del == 0 { 0 } else { del_seed % (max_del + 1) };
+                // Insertion up to 7 lines
+                let after_len = ins_seed % 8;
+                let cohort = (cohort_seed % 11) + 1000; // avoid 0 to reduce accidental equality with prev cohort
+
+                let before = position..(position + before_len);
+                let after = position..(position + after_len);
+                pending.push((before, after, cohort));
+                batch_last_end = position + before_len; // enforce non-overlap and ascending order
+
+                if pos_seed % BATCH_AVG_LEN == 0 {
+                    fb.apply_line_diffs(pending.clone());
+                    naive.apply_line_diffs(pending.clone());
+                    pending.clear();
+
+                    current_len = naive.total_lines();
+                    prop_assert_eq!(fb.total_lines(), current_len);
+
+                    let fb_lines = expand_file_blame(&fb);
+                    let naive_lines = naive.expand();
+                    prop_assert_eq!(fb_lines, naive_lines);
+
+                    prop_assert_eq!(fb.cohort_stats(), naive.cohort_stats());
+
+                    batch_old_len = current_len;
+                    batch_last_end = 0;
+                }
+            }
+
+            if !pending.is_empty() {
+                fb.apply_line_diffs(pending.clone());
+                naive.apply_line_diffs(pending.clone());
+            }
+
+            prop_assert_eq!(fb.total_lines(), naive.total_lines());
+            let fb_lines = expand_file_blame(&fb);
+            let naive_lines = naive.expand();
+            prop_assert_eq!(fb_lines, naive_lines);
+            prop_assert!(fb.validate().is_ok());
+            prop_assert_eq!(fb.cohort_stats(), naive.cohort_stats());
+        }
     }
 }
