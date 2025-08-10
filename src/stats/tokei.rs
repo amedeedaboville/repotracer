@@ -52,7 +52,6 @@ impl AddAssign for TokeiStat {
 pub struct TokeiCollector {
     languages: Option<Vec<LanguageType>>,
     top_n: Option<usize>,
-    failed_extensions: Vec<String>,
     tokei_config: Config,
 }
 impl Default for TokeiCollector {
@@ -79,7 +78,6 @@ impl TokeiCollector {
                     .collect()
             }),
             top_n,
-            failed_extensions: Vec::new(),
             tokei_config: Config {
                 treat_doc_strings_as_comments: Some(true),
                 ..Config::default()
