@@ -1,3 +1,4 @@
+use crate::blame::file_blame::Keyable;
 use crate::blame::FileBlame;
 use crate::collectors::list_in_range::list_commits_with_granularity;
 use crate::collectors::list_in_range::Granularity;
@@ -15,20 +16,7 @@ use gix::object::tree;
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use std::path::Path;
-use std::time::Instant;
 use thread_local::ThreadLocal;
-
-#[derive(Debug, Default)]
-struct ActionApplicationTimes {
-    add_file_duration: std::time::Duration,
-    delete_file_duration: std::time::Duration,
-    apply_line_diffs_duration: std::time::Duration,
-    rename_file_duration: std::time::Duration,
-    add_file_count: u32,
-    delete_file_count: u32,
-    apply_line_diffs_count: u32,
-    rename_file_count: u32,
-}
 
 #[derive(Debug, Clone)]
 pub struct TheseusConfig {
@@ -41,7 +29,7 @@ pub struct TheseusConfig {
 #[derive(Debug, Clone)]
 pub struct RepositoryBlameSnapshot<CohortKey>
 where
-    CohortKey: Copy + PartialEq,
+    CohortKey: Keyable,
 {
     pub commit_id: gix::ObjectId,
     pub file_blames: AHashMap<BString, FileBlame<CohortKey>>,
@@ -49,7 +37,7 @@ where
 
 impl<CohortKey> RepositoryBlameSnapshot<CohortKey>
 where
-    CohortKey: Copy + PartialEq,
+    CohortKey: Keyable,
 {
     pub fn new(commit_id: gix::ObjectId) -> Self {
         Self {
@@ -100,18 +88,6 @@ where
             .collect()
     }
 
-    /// Get total lines across all files
-    pub fn total_repository_lines(&self) -> u32 {
-        self.file_blames
-            .values()
-            .map(|blame| blame.total_lines())
-            .sum()
-    }
-    pub fn list_files(&self) -> Vec<&BString> {
-        self.file_blames.keys().collect()
-    }
-
-    /// Apply a SnapshotAction to this repository snapshot
     pub fn apply_action(&mut self, action: SnapshotAction<CohortKey>) -> Result<(), String> {
         match action {
             SnapshotAction::AddFile {
@@ -150,7 +126,7 @@ where
 
 pub enum SnapshotDiff<CohortKey>
 where
-    CohortKey: Copy + PartialEq,
+    CohortKey: Keyable,
 {
     Addition {
         location: BString,
@@ -209,7 +185,6 @@ impl Default for TheseusConfig {
 }
 
 pub fn theseus_command(repo_path: &str) {
-    // Verify the path exists
     if !Path::new(repo_path).exists() {
         eprintln!("Error: Repository path does not exist or is not accessible.");
         return;
@@ -231,9 +206,7 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
 
     let repo = gix::open(repo_path)?;
     let weekly_commits = list_commits_with_granularity(&repo, Granularity::Weekly, None, None)?;
-    println!("Found {} weekly commit snapshots", weekly_commits.len());
     let mut platform = repo.diff_resource_cache_for_tree_diff()?;
-    let mut platform2 = repo.diff_resource_cache_for_tree_diff()?;
     let mut _previous_commit_id: Option<gix::ObjectId> = None;
     let mut _previous_tree: Option<gix::Tree> = None;
     let mut previous_tree_id: Option<gix::ObjectId> = None;
@@ -262,7 +235,6 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             None
         };
 
-        platform2.clear_resource_cache_keep_allocation();
         let mut tree_diff_state = gix::diff::tree::State::default();
         let mut objects = &repo.objects;
         let cohort: u32 = commit
@@ -331,17 +303,7 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             for_each,
             options,
         );
-        // progress_bar.set_message(format!(
-        //     "number of changes for commit: {:?} {:?}",
-        //     commit
-        //         .time()
-        //         .unwrap()
-        //         .format(gix::date::time::CustomFormat::new("%Y-%m-%d")),
-        //     work_todo.len(),
-        // ));
 
-        // Process changes in parallel to create SnapshotActions
-        // Create thread-local storage for repository and diff platform
         let safe_repo = repo.clone().into_sync();
         let repo_tl = ThreadLocal::new();
         let platform_tl = ThreadLocal::new();
@@ -387,22 +349,33 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                             let mut line_diffs = Vec::new();
                             let mut platform_borrow = thread_platform.borrow_mut();
 
-                            // If file type changed, treat as delete+add to avoid line-diff corner cases
+                            // Mode-aware handling
                             if previous_mode != new_mode {
-                                let old_blob = thread_repo.find_blob(*previous_id)?;
-                                let new_blob = thread_repo.find_blob(*id)?;
-                                let old_lines = old_blob.data.lines().count() as u32;
-                                let new_lines = new_blob.data.lines().count() as u32;
-                                if old_lines > 0 {
-                                    line_diffs.push((0..old_lines, 0..0, *cohort));
+                                let prev_is_blob = previous_mode.is_blob();
+                                let new_is_blob = new_mode.is_blob();
+                                if !prev_is_blob && new_is_blob {
+                                    // Treat as AddFile at this path
+                                    let new_blob = thread_repo.find_blob(*id)?;
+                                    let new_lines = new_blob.data.lines().count() as u32;
+                                    return Ok(SnapshotAction::AddFile {
+                                        location: location.clone(),
+                                        total_lines: new_lines,
+                                        cohort: *cohort,
+                                    });
+                                } else if prev_is_blob && !new_is_blob {
+                                    // Treat as DeleteFile at this path
+                                    return Ok(SnapshotAction::DeleteFile {
+                                        location: location.clone(),
+                                    });
+                                } else {
+                                    // Both blob (replacement) or both non-blob. If both blob, fall through to normal diff.
+                                    if !prev_is_blob && !new_is_blob {
+                                        // Non-blob → non-blob: ignore for blame by returning a no-op deletion (will do nothing if absent)
+                                        return Ok(SnapshotAction::DeleteFile {
+                                            location: location.clone(),
+                                        });
+                                    }
                                 }
-                                if new_lines > 0 {
-                                    line_diffs.push((0..0, 0..new_lines, *cohort));
-                                }
-                                return Ok(SnapshotAction::ApplyLineDiffs {
-                                    location: location.clone(),
-                                    line_diffs,
-                                });
                             }
 
                             platform_borrow.set_resource(
@@ -457,7 +430,6 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
 
         // Apply actions in dependency-safe order within this commit:
         // 1) Renames, 2) Additions, 3) Modifications, 4) Deletions
-        let mut timing_stats = ActionApplicationTimes::default();
         let mut rename_actions = Vec::new();
         let mut add_actions = Vec::new();
         let mut modify_actions = Vec::new();
@@ -500,10 +472,6 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         }
         previous_tree_id = current_tree_id;
         _previous_commit_id = current_commit_id;
-        // progress_bar.set_message(format!(
-        //     "Current snapshot: {:?}",
-        //     current_snapshot.repository_cohort_stats()
-        // ));
     }
 
     Ok(())
