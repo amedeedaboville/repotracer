@@ -4,7 +4,8 @@ use std::{
     hash::Hash,
 };
 
-type LineNumber = u32;
+pub type LineNumber = u32;
+pub type LineDelta = i64;
 
 pub trait Keyable: Copy + PartialEq + Display + Debug + Eq + Hash {}
 impl<T: Copy + PartialEq + Display + Debug + Eq + Hash> Keyable for T {}
@@ -174,7 +175,11 @@ impl<CohortKey: Keyable> FileBlame<CohortKey> {
     // We have property tests against a reference implementation to validate correctness.
     pub fn apply_line_diffs(
         &mut self,
-        line_diffs: Vec<(std::ops::Range<u32>, std::ops::Range<u32>, CohortKey)>,
+        line_diffs: Vec<(
+            std::ops::Range<LineNumber>,
+            std::ops::Range<LineNumber>,
+            CohortKey,
+        )>,
     ) {
         if line_diffs.is_empty() {
             return;
@@ -185,30 +190,31 @@ impl<CohortKey: Keyable> FileBlame<CohortKey> {
         let old_total = self.total_lines;
         let mut new_change_points: BTreeMap<LineNumber, CohortKey> = BTreeMap::new();
         let mut cp_iter = self.change_points.iter().peekable();
-        let mut offset: i64 = 0;
+        let mut offset: LineDelta = 0;
 
         // Push change-point only if cohort changed from the last emitted
-        let push_cp = |pos: u32, cohort: CohortKey, map: &mut BTreeMap<u32, CohortKey>| {
-            if let Some((_, &last_cohort)) = map.last_key_value() {
-                if last_cohort == cohort {
-                    return;
+        let push_cp =
+            |pos: LineNumber, cohort: CohortKey, map: &mut BTreeMap<LineNumber, CohortKey>| {
+                if let Some((_, &last_cohort)) = map.last_key_value() {
+                    if last_cohort == cohort {
+                        return;
+                    }
                 }
-            }
-            map.insert(pos, cohort);
-        };
+                map.insert(pos, cohort);
+            };
 
         for (before, after, cohort) in diffs.into_iter() {
             let before_start = before.start;
             let before_end = before.end;
             let before_len = before_end - before_start;
-            let after_len = after.len() as u32;
-            let delta = after_len as i64 - before_len as i64;
+            let after_len = after.len() as LineNumber;
+            let delta = after_len as LineDelta - before_len as LineDelta;
 
             // 1) Emit unaffected change-points before b0, shifted by current offset
             while let Some((&line, &line_cohort)) = cp_iter.peek().copied() {
                 if line < before_start {
                     push_cp(
-                        (line as i64 + offset) as LineNumber,
+                        (line as LineDelta + offset) as LineNumber,
                         line_cohort,
                         &mut new_change_points,
                     );
@@ -221,7 +227,7 @@ impl<CohortKey: Keyable> FileBlame<CohortKey> {
             // 2) Insert the new block's cohort at before_start if any insertion
             if after_len > 0 {
                 push_cp(
-                    (before_start as i64 + offset) as LineNumber,
+                    (before_start as LineDelta + offset) as LineNumber,
                     cohort,
                     &mut new_change_points,
                 );
@@ -240,7 +246,7 @@ impl<CohortKey: Keyable> FileBlame<CohortKey> {
             if before_end < old_total {
                 if let Some(resume_cohort) = self.cohort_at_index(before_end) {
                     push_cp(
-                        (before_start as i64 + after_len as i64 + offset) as LineNumber,
+                        (before_start as LineDelta + after_len as LineDelta + offset) as LineNumber,
                         resume_cohort,
                         &mut new_change_points,
                     );
@@ -253,13 +259,13 @@ impl<CohortKey: Keyable> FileBlame<CohortKey> {
         // Emit the remaining original change-points after the last hunk, shifted by final offset
         while let Some((&line, &line_cohort)) = cp_iter.next() {
             push_cp(
-                (line as i64 + offset) as LineNumber,
+                (line as LineDelta + offset) as LineNumber,
                 line_cohort,
                 &mut new_change_points,
             );
         }
 
-        let new_total = (old_total as i64 + offset) as u32;
+        let new_total = (old_total as LineDelta + offset) as LineNumber;
         self.change_points = new_change_points;
         self.total_lines = new_total;
         self.merge_adjacent_ranges();
@@ -379,26 +385,30 @@ mod tests {
     }
 
     impl<CohortKey: Keyable> NaiveBlame<CohortKey> {
-        fn new(total_lines: u32, cohort: CohortKey) -> Self {
+        fn new(total_lines: LineNumber, cohort: CohortKey) -> Self {
             Self {
                 lines: vec![cohort; total_lines as usize],
             }
         }
 
-        fn total_lines(&self) -> u32 {
-            self.lines.len() as u32
+        fn total_lines(&self) -> LineNumber {
+            self.lines.len() as LineNumber
         }
 
         fn apply_line_diffs(
             &mut self,
-            mut line_diffs: Vec<(std::ops::Range<u32>, std::ops::Range<u32>, CohortKey)>,
+            mut line_diffs: Vec<(
+                std::ops::Range<LineNumber>,
+                std::ops::Range<LineNumber>,
+                CohortKey,
+            )>,
         ) {
             // Apply from bottom to top so indices of earlier hunks are unaffected
             line_diffs.sort_by_key(|(before, _, _)| before.start);
             line_diffs.reverse();
             for (before, after, cohort) in line_diffs.into_iter() {
                 //TODO we should just throw here if given a range that is out of bounds
-                let start = before.start.min(self.lines.len() as u32) as usize;
+                let start = before.start.min(self.lines.len() as LineNumber) as usize;
                 let before_len = (before.end - before.start) as usize;
 
                 // delete
@@ -440,7 +450,7 @@ mod tests {
         out
     }
 
-    const FILE_START_LEN: u32 = 500;
+    const FILE_START_LEN: LineNumber = 500;
     const NUM_COHORTS: u32 = 20;
     const TOTAL_GENERATED_HUNKS: usize = 1000;
     const BATCH_AVG_LEN: u32 = 5;

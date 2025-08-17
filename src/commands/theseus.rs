@@ -1,4 +1,5 @@
 use crate::blame::file_blame::Keyable;
+use crate::blame::file_blame::LineNumber;
 use crate::blame::FileBlame;
 use crate::collectors::list_in_range::list_commits_with_granularity;
 use crate::collectors::list_in_range::Granularity;
@@ -159,7 +160,7 @@ where
 {
     AddFile {
         location: BString,
-        total_lines: u32,
+        total_lines: LineNumber,
         cohort: CohortKey,
     },
     DeleteFile {
@@ -167,7 +168,11 @@ where
     },
     ApplyLineDiffs {
         location: BString,
-        line_diffs: Vec<(std::ops::Range<u32>, std::ops::Range<u32>, CohortKey)>, // (before, after, cohort)
+        line_diffs: Vec<(
+            std::ops::Range<LineNumber>,
+            std::ops::Range<LineNumber>,
+            CohortKey,
+        )>, // (before, after, cohort)
     },
     RenameFile {
         source_location: BString,
@@ -207,12 +212,8 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let repo = gix::open(repo_path)?;
     let weekly_commits = list_commits_with_granularity(&repo, Granularity::Weekly, None, None)?;
     let mut platform = repo.diff_resource_cache_for_tree_diff()?;
-    let mut _previous_commit_id: Option<gix::ObjectId> = None;
-    let mut _previous_tree: Option<gix::Tree> = None;
-    let mut previous_tree_id: Option<gix::ObjectId> = None;
-    let mut current_commit_id: Option<gix::ObjectId>;
+    let mut previous_tree: Option<gix::Tree> = None;
     let mut current_tree: gix::Tree;
-    let mut current_tree_id: Option<gix::ObjectId>;
     let mut current_snapshot = RepositoryBlameSnapshot::<u32>::new(weekly_commits[0].id);
 
     let progress_bar = ProgressBar::new(weekly_commits.len() as u64);
@@ -225,25 +226,15 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     progress_bar.set_message("Processing commits");
 
     for commit in progress_bar.wrap_iter(weekly_commits.iter()) {
-        let current_commit = repo.find_commit(commit.id)?;
-        current_commit_id = Some(commit.id);
-        current_tree = current_commit.tree()?;
-        current_tree_id = Some(current_tree.id().into());
-        _previous_tree = if let Some(previous_tree_id) = previous_tree_id {
-            Some(repo.find_tree(previous_tree_id)?)
-        } else {
-            None
-        };
-
-        let mut tree_diff_state = gix::diff::tree::State::default();
-        let mut objects = &repo.objects;
-        let cohort: u32 = commit
+        current_tree = commit.tree()?;
+        let cohort = commit
             .time()
             .unwrap()
             .format(gix::date::time::CustomFormat::new("%Y"))
             .parse()
             .expect("Could not parse year of commit");
-        let mut work_todo: Vec<SnapshotDiff<u32>> = Vec::new();
+
+        let mut work_todo = Vec::new();
         let for_each =
             |change: ChangeRef<'_>| -> Result<Action, Box<dyn std::error::Error + Send + Sync>> {
                 if !change.entry_mode().is_blob() {
@@ -291,8 +282,11 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         };
 
         let previous_tree_iter =
-            TreeRefIter::from_bytes(_previous_tree.as_ref().map_or(&[], |tree| &tree.data));
+            TreeRefIter::from_bytes(previous_tree.as_ref().map_or(&[], |tree| &tree.data));
         let current_tree_iter = TreeRefIter::from_bytes(&current_tree.data);
+
+        let mut objects = &repo.objects;
+        let mut tree_diff_state = gix::diff::tree::State::default();
 
         let tree_changes = tree_with_rewrites(
             previous_tree_iter,
@@ -308,10 +302,10 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         let repo_tl = ThreadLocal::new();
         let platform_tl = ThreadLocal::new();
 
-        let snapshot_actions: Result<Vec<SnapshotAction<u32>>, _> = work_todo
+        let snapshot_actions: Result<Vec<SnapshotAction<_>>, _> = work_todo
             .par_iter()
             .map(
-                |change| -> Result<SnapshotAction<u32>, Box<dyn std::error::Error + Send + Sync>> {
+                |change| -> Result<SnapshotAction<_>, Box<dyn std::error::Error + Send + Sync>> {
                     // Get thread-local repository and platform (reused per thread)
                     let thread_repo = repo_tl.get_or(|| safe_repo.clone().to_thread_local());
                     let thread_platform = platform_tl.get_or(|| {
@@ -331,7 +325,7 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                             let num_lines = content.lines().count();
                             Ok(SnapshotAction::AddFile {
                                 location: location.clone(),
-                                total_lines: num_lines as u32,
+                                total_lines: num_lines as LineNumber,
                                 cohort: *cohort,
                             })
                         }
@@ -398,7 +392,7 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                             gix::diff::blob::diff(
                                 gix::diff::blob::Algorithm::Myers,
                                 &input,
-                                |before: std::ops::Range<u32>, after: std::ops::Range<u32>| {
+                                |before: std::ops::Range<LineNumber>, after: std::ops::Range<LineNumber>| {
                                     line_diffs.push((before, after, *cohort));
                                 },
                             );
@@ -470,8 +464,7 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             println!("  {:?}", tree_changes.err().unwrap());
             continue;
         }
-        previous_tree_id = current_tree_id;
-        _previous_commit_id = current_commit_id;
+        previous_tree = Some(current_tree);
     }
 
     Ok(())
