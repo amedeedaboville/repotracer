@@ -5,8 +5,7 @@ use crate::collectors::list_in_range::list_commits_with_granularity;
 use crate::collectors::list_in_range::Granularity;
 use ahash::AHashMap;
 use anyhow::Result;
-use std::collections::HashMap;
-
+use dashmap::DashMap;
 use gix::bstr::BString;
 use gix::bstr::ByteSlice;
 use gix::diff::object::TreeRefIter;
@@ -16,6 +15,7 @@ use gix::diff::tree_with_rewrites::ChangeRef;
 use gix::object::tree;
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
+use std::collections::HashMap;
 use std::path::Path;
 use thread_local::ThreadLocal;
 
@@ -33,7 +33,7 @@ where
     CohortKey: Keyable,
 {
     pub commit_id: gix::ObjectId,
-    pub file_blames: AHashMap<BString, FileBlame<CohortKey>>,
+    pub file_blames: DashMap<BString, FileBlame<CohortKey>>,
 }
 
 impl<CohortKey> RepositoryBlameSnapshot<CohortKey>
@@ -43,43 +43,43 @@ where
     pub fn new(commit_id: gix::ObjectId) -> Self {
         Self {
             commit_id,
-            file_blames: AHashMap::new(),
+            file_blames: DashMap::new(),
         }
     }
 
-    fn add_file(&mut self, path: &BString, total_lines: LineNumber, cohort: CohortKey) {
+    fn add_file(&self, path: &BString, total_lines: LineNumber, cohort: CohortKey) {
         let file_blame = FileBlame::new(total_lines, cohort);
         self.file_blames.insert(path.clone(), file_blame);
     }
 
-    fn delete_file(&mut self, path: &BString) -> Option<FileBlame<CohortKey>> {
-        self.file_blames.remove(path)
+    fn delete_file(&self, path: &BString) -> Option<FileBlame<CohortKey>> {
+        self.file_blames.remove(path).map(|(_, v)| v)
     }
 
-    fn rename_file(&mut self, old_path: &BString, new_path: &BString) -> Result<(), String> {
+    fn rename_file(&self, old_path: &BString, new_path: &BString) -> Result<(), String> {
         let file_blame = self
             .file_blames
             .remove(old_path)
             .ok_or_else(|| format!("File not found for rename: {:?}", old_path))?;
-        self.file_blames.insert(new_path.clone(), file_blame);
+        self.file_blames.insert(new_path.clone(), file_blame.1);
         Ok(())
     }
 
     fn modify_file(
-        &mut self,
+        &self,
         location: &BString,
         new_blame: FileBlame<CohortKey>,
     ) -> Result<(), String> {
-        let blame = self
-            .file_blames
-            .get_mut(location)
-            .ok_or_else(|| format!("File blame not found for {:?}", location))?;
-        *blame = new_blame;
-        Ok(())
+        if let Some(mut blame) = self.file_blames.get_mut(location) {
+            *blame = new_blame;
+            Ok(())
+        } else {
+            Err(format!("File blame not found for {:?}", location))
+        }
     }
 
-    pub fn get_file_blame(&self, path: &BString) -> Option<&FileBlame<CohortKey>> {
-        self.file_blames.get(path)
+    pub fn get_file_blame(&self, path: &BString) -> Option<FileBlame<CohortKey>> {
+        self.file_blames.get(path).map(|r| r.value().clone())
     }
 
     pub fn repository_cohort_stats(&self) -> AHashMap<CohortKey, u64>
@@ -88,7 +88,7 @@ where
     {
         self.file_blames
             .par_iter()
-            .map(|(_, file_blame)| file_blame.cohort_stats())
+            .map(|ref_multi| ref_multi.value().cohort_stats())
             .reduce(
                 || HashMap::new(),
                 |mut acc, file_stats| {
@@ -102,7 +102,7 @@ where
             .collect()
     }
 
-    pub fn apply_action(&mut self, action: SnapshotAction<CohortKey>) -> Result<(), String> {
+    pub fn apply_action(&self, action: SnapshotAction<CohortKey>) -> Result<(), String> {
         match action {
             SnapshotAction::AddFile {
                 location,
@@ -215,9 +215,8 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let mut platform = repo.diff_resource_cache_for_tree_diff()?;
     let mut previous_tree: Option<gix::Tree> = None;
     let mut current_tree: gix::Tree;
-    let mut current_snapshot = RepositoryBlameSnapshot::<u32>::new(weekly_commits[0].id);
+    let current_snapshot = RepositoryBlameSnapshot::<u32>::new(weekly_commits[0].id);
 
-    let safe_repo = repo.clone().into_sync();
     let repo_tl = ThreadLocal::new();
     let platform_tl = ThreadLocal::new();
     let repo_path_str = repo_path.to_string();
@@ -310,6 +309,7 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                 |change| -> Result<SnapshotAction<_>, Box<dyn std::error::Error + Send + Sync>> {
                     // Get thread-local repository and platform (reused per thread)
                     // let thread_repo = repo_tl.get_or(|| safe_repo.clone().to_thread_local());
+                    // give each thread a full repo instead of sharing anything
                     let thread_repo = repo_tl
                         .get_or(|| gix::open(repo_path_str.clone()).unwrap().into_sync())
                         .to_thread_local();
@@ -431,6 +431,7 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                 continue;
             }
         };
+        /*
 
         // Apply actions in dependency-safe order within this commit:
         // 1) Renames, 2) Additions, 3) Modifications, 4) Deletions
@@ -447,27 +448,35 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                 SnapshotAction::DeleteFile { .. } => delete_actions.push(action),
             }
         }
+        */
 
-        for a in rename_actions {
+        snapshot_actions.into_par_iter().for_each(|a| {
+            if let Err(e) = current_snapshot.apply_action(a) {
+                println!("Error applying snapshot action: {}", e);
+            }
+        });
+        /*
+        rename_actions.into_par_iter().for_each(|a| {
             if let Err(e) = current_snapshot.apply_action(a) {
                 println!("Error applying rename action: {}", e);
             }
-        }
-        for a in add_actions {
+        });
+        add_actions.into_par_iter().for_each(|a| {
             if let Err(e) = current_snapshot.apply_action(a) {
                 println!("Error applying add action: {}", e);
             }
-        }
-        for a in modify_actions {
+        });
+        modify_actions.into_par_iter().for_each(|a| {
             if let Err(e) = current_snapshot.apply_action(a) {
                 println!("Error applying modify action: {}", e);
             }
-        }
-        for a in delete_actions {
+        });
+        delete_actions.into_par_iter().for_each(|a| {
             if let Err(e) = current_snapshot.apply_action(a) {
                 println!("Error applying delete action: {}", e);
             }
-        }
+        });
+        */
 
         if tree_changes.is_err() {
             println!("Error in tree changes {}", commit.id.to_string());
