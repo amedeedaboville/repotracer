@@ -324,12 +324,7 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             .par_iter()
             .map(
                 |change| -> Result<SnapshotAction<_>, Box<dyn std::error::Error + Send + Sync>> {
-                    // Get thread-local repository and platform (reused per thread)
                     let thread_repo = repo_tl.get_or(|| safe_repo.clone()).to_thread_local();
-                    // give each thread a full repo instead of sharing anything
-                    // let thread_repo = repo_tl
-                    //     .get_or(|| gix::open(repo_path_str.clone()).unwrap().into_sync())
-                    //     .to_thread_local();
                     let thread_platform = platform_tl.get_or(|| {
                         std::cell::RefCell::new(
                             thread_repo.diff_resource_cache_for_tree_diff().unwrap(),
@@ -459,20 +454,8 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             println!("  {:?}", tree_changes.err().unwrap());
             continue;
         }
-        if commit_idx % 10 == 0 {
-            rayon::broadcast(|_| {
-                if let Some(platform) = platform_tl.get() {
-                    platform.borrow_mut().clear_resource_cache();
-                }
-            });
-        }
         previous_tree = Some(current_tree);
     }
-    rayon::broadcast(|_| {
-        if let Some(platform) = platform_tl.get() {
-            std::mem::forget(platform.borrow_mut());
-        }
-    });
 
     Ok(())
 }
