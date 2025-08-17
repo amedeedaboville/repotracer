@@ -60,7 +60,6 @@ pub fn list_commits_with_granularity(
     for info_result in revwalk {
         let info = info_result?;
         let commit = info.object().unwrap();
-        let _tree = commit.tree().unwrap();
         let commit_time = commit.time()?;
         let datetime = DateTime::from_timestamp(commit_time.seconds, 0).unwrap();
 

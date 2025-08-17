@@ -229,15 +229,31 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             .progress_chars("=>-"),
     );
     progress_bar.set_message("Processing commits");
-
-    for (commit_idx, commit) in progress_bar.wrap_iter(weekly_commits.iter()).enumerate() {
-        current_tree = commit.tree()?;
-        let cohort = commit
-            .time()
-            .unwrap()
-            .format(gix::date::time::CustomFormat::new("%Y"))
-            .parse()
-            .expect("Could not parse year of commit");
+    let detached_commits = weekly_commits
+        .into_iter()
+        .map(|c| c.detach())
+        .collect::<Vec<_>>();
+    let commits_with_info = detached_commits
+        .into_par_iter()
+        .map(|commit| {
+            let repo = repo_tl
+                .get_or(|| gix::open(repo_path_str.clone()).unwrap().into_sync())
+                .to_thread_local();
+            let commit = commit.attach(&repo).into_commit();
+            let tree = commit.tree().unwrap().detach();
+            let cohort = commit
+                .time()
+                .unwrap()
+                .format(gix::date::time::CustomFormat::new("%Y"))
+                .parse::<u32>()
+                .expect("Could not parse year of commit");
+            (tree, cohort)
+        })
+        .collect::<Vec<_>>();
+    for (commit_idx, (tree, cohort)) in progress_bar.wrap_iter(commits_with_info.iter()).enumerate()
+    {
+        let cohort = *cohort;
+        current_tree = tree.clone().attach(&repo).into_tree();
 
         let mut work_todo = Vec::new();
         let for_each =
@@ -438,7 +454,7 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         //     }
         // });
         if tree_changes.is_err() {
-            println!("Error in tree changes {}", commit.id.to_string());
+            println!("Error in tree changes {}", commit_idx.to_string());
             println!("  {:?}", tree_changes.err().unwrap());
             continue;
         }
