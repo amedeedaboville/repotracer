@@ -172,15 +172,15 @@ impl<CohortKey: Keyable> FileBlame<CohortKey> {
     //
     // We have property tests against a reference implementation to validate correctness.
     pub fn apply_line_diffs(
-        &mut self,
+        &self,
         line_diffs: Vec<(
             std::ops::Range<LineNumber>,
             std::ops::Range<LineNumber>,
             CohortKey,
         )>,
-    ) {
+    ) -> Self {
         if line_diffs.is_empty() {
-            return;
+            return self.clone();
         }
         // Order the diffs by the start of the delete range, in case they aren't.
         // Shouldn't be needed, but typically sorting a presorted list is not
@@ -277,29 +277,34 @@ impl<CohortKey: Keyable> FileBlame<CohortKey> {
         }
 
         let new_total = (old_total as LineDelta + offset) as LineNumber;
-        self.change_points = new_change_points;
-        self.total_lines = new_total;
+        let mut new_blame = Self {
+            change_points: new_change_points,
+            total_lines: new_total,
+        };
         //"Compact" the change points by removing adjacent ones with the same cohort
         // This used to be needed all the time, now cp_helper mostly handles it, but
         // I think there are some edge cases where it's not enough. I don't think it
         // fully breaks anything to not have it, but it's nice to have the invariant
         // of no adjacent change ranges.
-        self.merge_adjacent_ranges();
+        new_blame.merge_adjacent_ranges();
         // Drop any change-points that landed at or beyond new total
         // (can happen if a resume position coincides with the final end after deletions)
         // I'm not sure exactly the cases causing this and would like to remove it one day.
-        if self.total_lines > 0 {
-            self.change_points.retain(|&k, _| k < self.total_lines);
+        if new_blame.total_lines > 0 {
+            new_blame
+                .change_points
+                .retain(|&k, _| k < new_blame.total_lines);
         } else {
-            self.change_points.clear();
+            new_blame.change_points.clear();
         }
         debug_assert!(
-            self.validate().is_ok(),
+            new_blame.validate().is_ok(),
             "invalid blame after applying line diffs: {:?}.\n old total: {:?}.\n offset: {:?}",
-            self.total_lines(),
+            new_blame.total_lines(),
             old_total,
             offset.abs(),
         );
+        new_blame
     }
 }
 
@@ -312,8 +317,8 @@ mod tests {
     // implemented against the reference implementation to be more thorough.
     #[test]
     fn test_cohort_stats() {
-        let mut blame = FileBlame::new(0, 2022);
-        blame.apply_line_diffs(vec![(0..0, 0..10, 2022), (0..0, 5..10, 2023)]);
+        let blame = FileBlame::new(0, 2022);
+        let blame = blame.apply_line_diffs(vec![(0..0, 0..10, 2022), (0..0, 5..10, 2023)]);
 
         let stats = blame.cohort_stats();
         assert_eq!(stats.get(&2022), Some(&10));
@@ -322,7 +327,7 @@ mod tests {
 
     #[test]
     fn test_apply_line_diffs_equal_length_hunks_near_end() {
-        let mut blame = FileBlame::new(160, 2000);
+        let blame = FileBlame::new(160, 2000);
 
         // Multiple replacements near the end; total_lines must stay unchanged
         let diffs = vec![
@@ -340,44 +345,45 @@ mod tests {
         ];
 
         let old_total = blame.total_lines();
-        blame.apply_line_diffs(diffs);
+        let blame = blame.apply_line_diffs(diffs);
         assert_eq!(blame.total_lines(), old_total);
         blame.validate().unwrap();
     }
 
     #[test]
     fn test_apply_line_diffs_insertion_then_deletion_tail() {
-        let mut blame = FileBlame::new(200, 1999);
+        let blame = FileBlame::new(200, 1999);
         // Insert 5 lines at position 50
-        blame.apply_line_diffs(vec![(50..50, 50..55, 2001)]);
+        let blame = blame.apply_line_diffs(vec![(50..50, 50..55, 2001)]);
         assert_eq!(blame.total_lines(), 205);
         blame.validate().unwrap();
         // Now delete last 10 lines (from position 195..205 -> 195..195)
-        blame.apply_line_diffs(vec![(195..205, 195..195, 2002)]);
+        let blame = blame.apply_line_diffs(vec![(195..205, 195..195, 2002)]);
         assert_eq!(blame.total_lines(), 195);
         blame.validate().unwrap();
     }
 
     #[test]
     fn test_apply_line_diffs_insertion_and_followup_replacements() {
-        let mut blame = FileBlame::new(150, 2015);
+        let blame = FileBlame::new(150, 2015);
         // Insert 4 lines at 20
-        blame.apply_line_diffs(vec![(20..20, 20..24, 2016)]);
+        let blame = blame.apply_line_diffs(vec![(20..20, 20..24, 2016)]);
         assert_eq!(blame.total_lines(), 154);
         // Multiple replacements later in the file
         let old_total = blame.total_lines();
-        blame.apply_line_diffs(vec![(100..102, 100..102, 2017), (150..151, 150..151, 2017)]);
+        let blame =
+            blame.apply_line_diffs(vec![(100..102, 100..102, 2017), (150..151, 150..151, 2017)]);
         assert_eq!(blame.total_lines(), old_total);
         blame.validate().unwrap();
     }
 
     #[test]
     fn test_apply_line_diffs_resume_would_land_at_final_end() {
-        let mut blame = FileBlame::new(100, 1);
+        let blame = FileBlame::new(100, 1);
         // Hunk 1: simple replacement 90..95 -> 90..95 (delta 0)
         // Hunk 2: delete tail 95..100 -> 95..95 (delta -5)
         let diffs = vec![(90..95, 90..95, 2), (95..100, 95..95, 3)];
-        blame.apply_line_diffs(diffs);
+        let blame = blame.apply_line_diffs(diffs);
         assert_eq!(blame.total_lines(), 95);
         blame.validate().unwrap();
     }
@@ -509,7 +515,7 @@ mod tests {
                 batch_last_end = position + before_len; // enforce non-overlap and ascending order
 
                 if pos_seed % BATCH_AVG_LEN == 0 {
-                    fb.apply_line_diffs(pending.clone());
+                    fb = fb.apply_line_diffs(pending.clone());
                     naive.apply_line_diffs(pending.clone());
                     pending.clear();
 
@@ -528,7 +534,7 @@ mod tests {
             }
 
             if !pending.is_empty() {
-                fb.apply_line_diffs(pending.clone());
+                fb = fb.apply_line_diffs(pending.clone());
                 naive.apply_line_diffs(pending.clone());
             }
 

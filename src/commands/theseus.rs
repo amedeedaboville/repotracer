@@ -47,16 +47,16 @@ where
         }
     }
 
-    pub fn add_file(&mut self, path: &BString, total_lines: LineNumber, cohort: CohortKey) {
+    fn add_file(&mut self, path: &BString, total_lines: LineNumber, cohort: CohortKey) {
         let file_blame = FileBlame::new(total_lines, cohort);
         self.file_blames.insert(path.clone(), file_blame);
     }
 
-    pub fn delete_file(&mut self, path: &BString) -> Option<FileBlame<CohortKey>> {
+    fn delete_file(&mut self, path: &BString) -> Option<FileBlame<CohortKey>> {
         self.file_blames.remove(path)
     }
 
-    pub fn rename_file(&mut self, old_path: &BString, new_path: &BString) -> Result<(), String> {
+    fn rename_file(&mut self, old_path: &BString, new_path: &BString) -> Result<(), String> {
         let file_blame = self
             .file_blames
             .remove(old_path)
@@ -65,8 +65,21 @@ where
         Ok(())
     }
 
-    pub fn get_file_blame_mut(&mut self, path: &BString) -> Option<&mut FileBlame<CohortKey>> {
-        self.file_blames.get_mut(path)
+    fn modify_file(
+        &mut self,
+        location: &BString,
+        new_blame: FileBlame<CohortKey>,
+    ) -> Result<(), String> {
+        let blame = self
+            .file_blames
+            .get_mut(location)
+            .ok_or_else(|| format!("File blame not found for {:?}", location))?;
+        *blame = new_blame;
+        Ok(())
+    }
+
+    pub fn get_file_blame(&self, path: &BString) -> Option<&FileBlame<CohortKey>> {
+        self.file_blames.get(path)
     }
 
     pub fn repository_cohort_stats(&self) -> AHashMap<CohortKey, u64>
@@ -101,19 +114,10 @@ where
             SnapshotAction::DeleteFile { location } => {
                 self.delete_file(&location);
             }
-            SnapshotAction::ApplyLineDiffs {
+            SnapshotAction::UpdateFile {
                 location,
-                line_diffs,
-            } => {
-                if let Some(file_blame) = self.get_file_blame_mut(&location) {
-                    file_blame.apply_line_diffs(line_diffs);
-                } else {
-                    return Err(format!(
-                        "Could not find blame info for path {:?}, most likely it was moved",
-                        location
-                    ));
-                }
-            }
+                new_blame,
+            } => self.modify_file(&location, new_blame)?,
             SnapshotAction::RenameFile {
                 source_location,
                 location,
@@ -153,10 +157,11 @@ where
 
 /// Represents an action to be applied to a RepositoryBlameSnapshot
 /// after parallel processing of git diffs
+/// Maybe we could simply clone gix's ChangeRef instead, but this works for now
 #[derive(Debug, Clone)]
 pub enum SnapshotAction<CohortKey>
 where
-    CohortKey: Copy + PartialEq,
+    CohortKey: Keyable,
 {
     AddFile {
         location: BString,
@@ -166,9 +171,9 @@ where
     DeleteFile {
         location: BString,
     },
-    ApplyLineDiffs {
+    UpdateFile {
         location: BString,
-        line_diffs: Vec<(std::ops::Range<u32>, std::ops::Range<u32>, CohortKey)>, // (before, after, cohort)
+        new_blame: FileBlame<CohortKey>,
     },
     RenameFile {
         source_location: BString,
@@ -392,10 +397,15 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                                     line_diffs.push((before, after, *cohort));
                                 },
                             );
+                            let current_blame =
+                                current_snapshot.get_file_blame(&location).ok_or_else(|| {
+                                    format!("File blame not found for {:?}", location)
+                                })?;
+                            let new_blame = current_blame.apply_line_diffs(line_diffs);
 
-                            Ok(SnapshotAction::ApplyLineDiffs {
+                            Ok(SnapshotAction::UpdateFile {
                                 location: location.clone(),
-                                line_diffs,
+                                new_blame,
                             })
                         }
                         SnapshotDiff::Rewrite {
@@ -429,7 +439,7 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             match &action {
                 SnapshotAction::RenameFile { .. } => rename_actions.push(action),
                 SnapshotAction::AddFile { .. } => add_actions.push(action),
-                SnapshotAction::ApplyLineDiffs { .. } => modify_actions.push(action),
+                SnapshotAction::UpdateFile { .. } => modify_actions.push(action),
                 SnapshotAction::DeleteFile { .. } => delete_actions.push(action),
             }
         }
