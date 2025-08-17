@@ -217,6 +217,11 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let mut current_tree: gix::Tree;
     let mut current_snapshot = RepositoryBlameSnapshot::<u32>::new(weekly_commits[0].id);
 
+    let safe_repo = repo.clone().into_sync();
+    let repo_tl = ThreadLocal::new();
+    let platform_tl = ThreadLocal::new();
+    let repo_path_str = repo_path.to_string();
+
     let progress_bar = ProgressBar::new(weekly_commits.len() as u64);
     progress_bar.set_style(
         ProgressStyle::default_bar()
@@ -226,7 +231,7 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     );
     progress_bar.set_message("Processing commits");
 
-    for commit in progress_bar.wrap_iter(weekly_commits.iter()) {
+    for (commit_idx, commit) in progress_bar.wrap_iter(weekly_commits.iter()).enumerate() {
         current_tree = commit.tree()?;
         let cohort = commit
             .time()
@@ -299,16 +304,15 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             options,
         );
 
-        let safe_repo = repo.clone().into_sync();
-        let repo_tl = ThreadLocal::new();
-        let platform_tl = ThreadLocal::new();
-
         let snapshot_actions: Result<Vec<SnapshotAction<_>>, _> = work_todo
             .par_iter()
             .map(
                 |change| -> Result<SnapshotAction<_>, Box<dyn std::error::Error + Send + Sync>> {
                     // Get thread-local repository and platform (reused per thread)
-                    let thread_repo = repo_tl.get_or(|| safe_repo.clone().to_thread_local());
+                    // let thread_repo = repo_tl.get_or(|| safe_repo.clone().to_thread_local());
+                    let thread_repo = repo_tl
+                        .get_or(|| gix::open(repo_path_str.clone()).unwrap().into_sync())
+                        .to_thread_local();
                     let thread_platform = platform_tl.get_or(|| {
                         std::cell::RefCell::new(
                             thread_repo.diff_resource_cache_for_tree_diff().unwrap(),
@@ -469,6 +473,13 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             println!("Error in tree changes {}", commit.id.to_string());
             println!("  {:?}", tree_changes.err().unwrap());
             continue;
+        }
+        if commit_idx % 100 == 0 {
+            rayon::broadcast(|_| {
+                if let Some(platform) = platform_tl.get() {
+                    platform.borrow_mut().clear_resource_cache();
+                }
+            });
         }
         previous_tree = Some(current_tree);
     }
