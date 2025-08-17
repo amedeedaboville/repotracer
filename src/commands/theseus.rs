@@ -211,6 +211,7 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     println!("  Branch: {}", config.branch);
 
     let repo = gix::open(repo_path)?;
+    let safe_repo = repo.clone().into_sync();
     let weekly_commits = list_commits_with_granularity(&repo, Granularity::Weekly, None, None)?;
     let mut platform = repo.diff_resource_cache_for_tree_diff()?;
     let mut previous_tree: Option<gix::Tree> = None;
@@ -324,11 +325,11 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             .map(
                 |change| -> Result<SnapshotAction<_>, Box<dyn std::error::Error + Send + Sync>> {
                     // Get thread-local repository and platform (reused per thread)
-                    // let thread_repo = repo_tl.get_or(|| safe_repo.clone().to_thread_local());
+                    let thread_repo = repo_tl.get_or(|| safe_repo.clone()).to_thread_local();
                     // give each thread a full repo instead of sharing anything
-                    let thread_repo = repo_tl
-                        .get_or(|| gix::open(repo_path_str.clone()).unwrap().into_sync())
-                        .to_thread_local();
+                    // let thread_repo = repo_tl
+                    //     .get_or(|| gix::open(repo_path_str.clone()).unwrap().into_sync())
+                    //     .to_thread_local();
                     let thread_platform = platform_tl.get_or(|| {
                         std::cell::RefCell::new(
                             thread_repo.diff_resource_cache_for_tree_diff().unwrap(),
