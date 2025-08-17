@@ -303,7 +303,7 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             options,
         );
 
-        let snapshot_actions: Result<Vec<SnapshotAction<_>>, _> = work_todo
+        work_todo
             .par_iter()
             .map(
                 |change| -> Result<SnapshotAction<_>, Box<dyn std::error::Error + Send + Sync>> {
@@ -422,68 +422,27 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                     }
                 },
             )
-            .collect();
+            .map(|r| current_snapshot.apply_action(r.unwrap()))
+            .collect::<Vec<_>>();
 
-        let snapshot_actions = match snapshot_actions {
-            Ok(actions) => actions,
-            Err(e) => {
-                println!("Error processing changes in parallel: {}", e);
-                continue;
-            }
-        };
-        /*
-
-        // Apply actions in dependency-safe order within this commit:
-        // 1) Renames, 2) Additions, 3) Modifications, 4) Deletions
-        let mut rename_actions = Vec::new();
-        let mut add_actions = Vec::new();
-        let mut modify_actions = Vec::new();
-        let mut delete_actions = Vec::new();
-
-        for action in snapshot_actions {
-            match &action {
-                SnapshotAction::RenameFile { .. } => rename_actions.push(action),
-                SnapshotAction::AddFile { .. } => add_actions.push(action),
-                SnapshotAction::UpdateFile { .. } => modify_actions.push(action),
-                SnapshotAction::DeleteFile { .. } => delete_actions.push(action),
-            }
-        }
-        */
-
-        snapshot_actions.into_par_iter().for_each(|a| {
-            if let Err(e) = current_snapshot.apply_action(a) {
-                println!("Error applying snapshot action: {}", e);
-            }
-        });
-        /*
-        rename_actions.into_par_iter().for_each(|a| {
-            if let Err(e) = current_snapshot.apply_action(a) {
-                println!("Error applying rename action: {}", e);
-            }
-        });
-        add_actions.into_par_iter().for_each(|a| {
-            if let Err(e) = current_snapshot.apply_action(a) {
-                println!("Error applying add action: {}", e);
-            }
-        });
-        modify_actions.into_par_iter().for_each(|a| {
-            if let Err(e) = current_snapshot.apply_action(a) {
-                println!("Error applying modify action: {}", e);
-            }
-        });
-        delete_actions.into_par_iter().for_each(|a| {
-            if let Err(e) = current_snapshot.apply_action(a) {
-                println!("Error applying delete action: {}", e);
-            }
-        });
-        */
-
+        // let snapshot_actions = match snapshot_actions {
+        //     Ok(actions) => actions,
+        //     Err(e) => {
+        //         println!("Error processing changes in parallel: {}", e);
+        //         continue;
+        //     }
+        // };
+        // snapshot_actions.into_par_iter().for_each(|a| {
+        //     if let Err(e) = current_snapshot.apply_action(a) {
+        //         println!("Error applying snapshot action: {}", e);
+        //     }
+        // });
         if tree_changes.is_err() {
             println!("Error in tree changes {}", commit.id.to_string());
             println!("  {:?}", tree_changes.err().unwrap());
             continue;
         }
-        if commit_idx % 100 == 0 {
+        if commit_idx % 10 == 0 {
             rayon::broadcast(|_| {
                 if let Some(platform) = platform_tl.get() {
                     platform.borrow_mut().clear_resource_cache();
