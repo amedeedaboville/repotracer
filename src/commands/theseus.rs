@@ -467,6 +467,11 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         }
         previous_tree = Some(current_tree);
     }
+    rayon::broadcast(|_| {
+        if let Some(platform) = platform_tl.get() {
+            std::mem::forget(platform.borrow_mut());
+        }
+    });
 
     Ok(())
 }
