@@ -47,7 +47,7 @@ where
         }
     }
 
-    pub fn add_file(&mut self, path: &BString, total_lines: u32, cohort: CohortKey) {
+    pub fn add_file(&mut self, path: &BString, total_lines: LineNumber, cohort: CohortKey) {
         let file_blame = FileBlame::new(total_lines, cohort);
         self.file_blames.insert(path.clone(), file_blame);
     }
@@ -168,11 +168,7 @@ where
     },
     ApplyLineDiffs {
         location: BString,
-        line_diffs: Vec<(
-            std::ops::Range<LineNumber>,
-            std::ops::Range<LineNumber>,
-            CohortKey,
-        )>, // (before, after, cohort)
+        line_diffs: Vec<(std::ops::Range<u32>, std::ops::Range<u32>, CohortKey)>, // (before, after, cohort)
     },
     RenameFile {
         source_location: BString,
@@ -219,7 +215,7 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let progress_bar = ProgressBar::new(weekly_commits.len() as u64);
     progress_bar.set_style(
         ProgressStyle::default_bar()
-            .template("[{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta_precise}) {msg}")
+            .template("[{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta_precise}) {per_sec:0.1} {msg}")
             .unwrap()
             .progress_chars("=>-"),
     );
@@ -350,7 +346,7 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                                 if !prev_is_blob && new_is_blob {
                                     // Treat as AddFile at this path
                                     let new_blob = thread_repo.find_blob(*id)?;
-                                    let new_lines = new_blob.data.lines().count() as u32;
+                                    let new_lines = new_blob.data.lines().count() as LineNumber;
                                     return Ok(SnapshotAction::AddFile {
                                         location: location.clone(),
                                         total_lines: new_lines,
@@ -392,7 +388,7 @@ fn run_theseus(repo_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                             gix::diff::blob::diff(
                                 gix::diff::blob::Algorithm::Myers,
                                 &input,
-                                |before: std::ops::Range<LineNumber>, after: std::ops::Range<LineNumber>| {
+                                |before: std::ops::Range<u32>, after: std::ops::Range<u32>| {
                                     line_diffs.push((before, after, *cohort));
                                 },
                             );

@@ -4,6 +4,7 @@ use std::{
     hash::Hash,
 };
 
+// Has to be u32 bc gix returns Ranges of u32s in its diff output
 pub type LineNumber = u32;
 pub type LineDelta = i64;
 
@@ -30,7 +31,10 @@ impl<CohortKey: Keyable> BlameRange<CohortKey> {
     }
 }
 
-/// FileBlame stores change-points: a mapping from starting line to cohort.
+/// FileBlame stores the data for a "git blame" for a file.
+/// This means intervals of line numbers pointing to which commit introduced those lines.
+/// Internally the line numbers are stored as "change points" mapping the start of
+/// the interval to a "cohort" (any information you want to associate with the line).
 /// The end of each interval is implicit: the next key, or `total_lines` for the last one.
 #[derive(Debug, Clone)]
 pub struct FileBlame<CohortKey: Keyable> {
@@ -68,24 +72,6 @@ impl<CohortKey: Keyable> FileBlame<CohortKey> {
             .map(|(_, cohort)| *cohort)
     }
 
-    pub fn blame_for_line(&self, line: LineNumber) -> Option<(LineNumber, LineNumber, CohortKey)> {
-        if line >= self.total_lines {
-            return None;
-        }
-        let (&start, &cohort) = self
-            .change_points
-            .range(..=line)
-            .next_back()
-            .expect("there must be a change-point before any valid line");
-        let next_end = self
-            .change_points
-            .range((start + 1)..)
-            .next()
-            .map(|(&k, _)| k)
-            .unwrap_or(self.total_lines);
-        Some((start, next_end - start, cohort))
-    }
-
     pub fn merge_adjacent_ranges(&mut self) {
         if self.change_points.is_empty() {
             return;
@@ -115,12 +101,14 @@ impl<CohortKey: Keyable> FileBlame<CohortKey> {
                 } else {
                     self.total_lines
                 };
-                if end < start {
-                    panic!(
-                        "start is after end for range: {}, end: {}. next start: {:?}, total lines: {}",
-                        start, end, iter.peek().map(|(k, _)| *k), self.total_lines
-                    );
-                }
+                debug_assert!(
+                    end >= start,
+                    "start is after end for range: {}, end: {}. next start: {:?}, total lines: {}",
+                    start,
+                    end,
+                    iter.peek().map(|(k, _)| *k),
+                    self.total_lines
+                );
                 Some((start, end, cohort))
             } else {
                 None
@@ -161,16 +149,26 @@ impl<CohortKey: Keyable> FileBlame<CohortKey> {
             }
             prev_key = Some(key);
         }
+
+        if let Some(bad_cps) = self.change_points.range(self.total_lines..).next() {
+            return Err(format!(
+                "Found these change points beyond total_lines ({}): {:?}",
+                self.total_lines, bad_cps
+            ));
+        }
+
         Ok(())
     }
 
-    // The main, and most important method in this file.
-    // It applies a vector of line diffs to the file blame.
+    // The main method of this struct: it applies a vector of line diffs to the file blame.
     // The diffs are given as a vector of tuples, where each tuple contains:
     // - A range of lines to delete
     // - A range of lines to insert
     // - The cohort to apply to the lines in the range after the diff
-    // The diffs are applied in order, from bottom to top.
+    // The diffs are applied in order, from top to bottom, so we only go through
+    // them once. As we go through them, we keep track of where we are in the file
+    // so we also go through the whole file once. We keep a running offset
+    // to track the delta we need to update the line numbers by.
     //
     // We have property tests against a reference implementation to validate correctness.
     pub fn apply_line_diffs(
@@ -184,15 +182,23 @@ impl<CohortKey: Keyable> FileBlame<CohortKey> {
         if line_diffs.is_empty() {
             return;
         }
+        // Order the diffs by the start of the delete range, in case they aren't.
+        // Shouldn't be needed, but typically sorting a presorted list is not
+        // very expensive.
         let mut diffs = line_diffs.clone();
         diffs.sort_by_key(|(before, _, _)| before.start);
 
-        let old_total = self.total_lines;
+        // This algorithm works by building a new version of the change points,
+        // copying them over. Instead of mutating the blame in place, we apply
+        // modifications as we copy. For example, to delete lines, we simply don't
+        // copy the change points that lie within the delete range into the new blame.
+        // As we copy change points into the new blame, we also apply the offset to the line numbers.
         let mut new_change_points: BTreeMap<LineNumber, CohortKey> = BTreeMap::new();
         let mut cp_iter = self.change_points.iter().peekable();
+        let old_total = self.total_lines;
         let mut offset: LineDelta = 0;
 
-        // Push change-point only if cohort changed from the last emitted
+        // Helper to append a change point to the new blame only if it's different than the current last one
         let push_cp =
             |pos: LineNumber, cohort: CohortKey, map: &mut BTreeMap<LineNumber, CohortKey>| {
                 if let Some((_, &last_cohort)) = map.last_key_value() {
@@ -203,16 +209,19 @@ impl<CohortKey: Keyable> FileBlame<CohortKey> {
                 map.insert(pos, cohort);
             };
 
-        for (before, after, cohort) in diffs.into_iter() {
-            let before_start = before.start;
-            let before_end = before.end;
-            let before_len = before_end - before_start;
-            let after_len = after.len() as LineNumber;
-            let delta = after_len as LineDelta - before_len as LineDelta;
+        // This is the hot loop. IME performance improvements are more likely to be found
+        // by optimizing code in this loop than outside of it.
+        for (delete, insert, cohort) in diffs.into_iter() {
+            let delete_start = delete.start;
+            let delete_end = delete.end;
+            let delete_len = delete_end - delete_start;
+            let insert_len = insert.len() as LineNumber;
+            let delta = insert_len as LineDelta - delete_len as LineDelta;
 
-            // 1) Emit unaffected change-points before b0, shifted by current offset
+            // Go through change points that are before the delete, and simply apply the
+            // offset to them.
             while let Some((&line, &line_cohort)) = cp_iter.peek().copied() {
-                if line < before_start {
+                if line < delete_start {
                     push_cp(
                         (line as LineDelta + offset) as LineNumber,
                         line_cohort,
@@ -224,29 +233,31 @@ impl<CohortKey: Keyable> FileBlame<CohortKey> {
                 }
             }
 
-            // 2) Insert the new block's cohort at before_start if any insertion
-            if after_len > 0 {
+            // Insert the new lines' cohort at delete_start
+            if insert_len > 0 {
                 push_cp(
-                    (before_start as LineDelta + offset) as LineNumber,
+                    (delete_start as LineDelta + offset) as LineNumber,
                     cohort,
                     &mut new_change_points,
                 );
             }
 
-            // 3) Skip original change-points that lie within [before_start, before_end)
+            // Skip change points that lie within [delete_start, delete_end)
+            // This deletes them from the new blame.
             while let Some((&line, _)) = cp_iter.peek().copied() {
-                if line < before_end {
+                if line < delete_end {
                     cp_iter.next();
                 } else {
                     break;
                 }
             }
 
-            // 4) Resume cohort after the block, if there is a file after before_end
-            if before_end < old_total {
-                if let Some(resume_cohort) = self.cohort_at_index(before_end) {
+            // Copy over the part of the current block that lies after the delete
+            if delete_end < old_total {
+                if let Some(resume_cohort) = self.cohort_at_index(delete_end) {
                     push_cp(
-                        (before_start as LineDelta + after_len as LineDelta + offset) as LineNumber,
+                        (delete_start as LineDelta + insert_len as LineDelta + offset)
+                            as LineNumber,
                         resume_cohort,
                         &mut new_change_points,
                     );
@@ -256,7 +267,7 @@ impl<CohortKey: Keyable> FileBlame<CohortKey> {
             offset += delta;
         }
 
-        // Emit the remaining original change-points after the last hunk, shifted by final offset
+        // Copy over the remaining change points after the last delete
         while let Some((&line, &line_cohort)) = cp_iter.next() {
             push_cp(
                 (line as LineDelta + offset) as LineNumber,
@@ -268,31 +279,26 @@ impl<CohortKey: Keyable> FileBlame<CohortKey> {
         let new_total = (old_total as LineDelta + offset) as LineNumber;
         self.change_points = new_change_points;
         self.total_lines = new_total;
+        //"Compact" the change points by removing adjacent ones with the same cohort
+        // This used to be needed all the time, now cp_helper mostly handles it, but
+        // I think there are some edge cases where it's not enough. I don't think it
+        // fully breaks anything to not have it, but it's nice to have the invariant
+        // of no adjacent change ranges.
         self.merge_adjacent_ranges();
         // Drop any change-points that landed at or beyond new total
         // (can happen if a resume position coincides with the final end after deletions)
+        // I'm not sure exactly the cases causing this and would like to remove it one day.
         if self.total_lines > 0 {
-            let mut to_remove: Vec<LineNumber> = Vec::new();
-            for &k in self.change_points.keys() {
-                if k >= self.total_lines {
-                    to_remove.push(k);
-                }
-            }
-            for k in to_remove {
-                self.change_points.remove(&k);
-            }
+            self.change_points.retain(|&k, _| k < self.total_lines);
         } else {
             self.change_points.clear();
         }
-        self.validate().expect(
-            format!(
-                "invalid blame after applying line diffs: {:?}.\n old total: {:?}.\n offset: {:?}.\n line diffs: {:?}",
-                self.total_lines(),
-                old_total,
-                offset.abs(),
-                line_diffs
-            )
-            .as_str(),
+        debug_assert!(
+            self.validate().is_ok(),
+            "invalid blame after applying line diffs: {:?}.\n old total: {:?}.\n offset: {:?}",
+            self.total_lines(),
+            old_total,
+            offset.abs(),
         );
     }
 }
@@ -393,6 +399,21 @@ mod tests {
 
         fn total_lines(&self) -> LineNumber {
             self.lines.len() as LineNumber
+        }
+
+        fn range_count(&self) -> usize {
+            if self.lines.is_empty() {
+                return 0;
+            }
+            let mut prev_cohort = self.lines[0];
+            let mut count = 1;
+            for &cohort in self.lines.iter().skip(1) {
+                if cohort != prev_cohort {
+                    count += 1;
+                    prev_cohort = cohort;
+                }
+            }
+            count
         }
 
         fn apply_line_diffs(
@@ -512,11 +533,13 @@ mod tests {
             }
 
             prop_assert_eq!(fb.total_lines(), naive.total_lines());
+            prop_assert_eq!(fb.range_count(), naive.range_count());
             let fb_lines = expand_file_blame(&fb);
             let naive_lines = naive.expand();
             prop_assert_eq!(fb_lines, naive_lines);
             prop_assert!(fb.validate().is_ok());
             prop_assert_eq!(fb.cohort_stats(), naive.cohort_stats());
+            prop_assert_eq!(fb.range_count(), naive.range_count());
         }
     }
 }
