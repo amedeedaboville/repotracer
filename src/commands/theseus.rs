@@ -55,7 +55,7 @@ where
         Ok(())
     }
 
-    pub fn apply_diffs_to_file(&self, path: &BString, line_diffs: LineDiffs<CohortKey>) {
+    pub fn modify_file(&self, path: &BString, line_diffs: LineDiffs<CohortKey>) {
         self.file_blames.view(path, |_key, old_blame| {
             old_blame.apply_line_diffs(line_diffs)
         });
@@ -97,14 +97,13 @@ fn run_theseus(repo_path: &str) -> Result<Vec<HashMap<String, u64>>, Box<dyn std
     let repo = gix::open(repo_path)?;
     let safe_repo = repo.clone().into_sync();
     let weekly_commits = list_commits_with_granularity(&repo, Granularity::Weekly, None, None)?;
-    let mut platform = repo.diff_resource_cache_for_tree_diff()?;
-    let mut previous_tree_data = Vec::new();
+    // let mut platform = repo.diff_resource_cache_for_tree_diff()?;
+    // let mut previous_tree_data = Vec::new();
     let current_snapshot = RepositoryBlameSnapshot::<u32>::new(weekly_commits[0].id);
 
     //used for the tree-diffing algorithm, reused between calls
-    let mut tree_diff_state = gix::diff::tree::State::default();
-    let mut objects = &repo.objects;
-
+    // let mut tree_diff_state = gix::diff::tree::State::default();
+    // let mut objects = &repo.objects;
     let repo_tl = ThreadLocal::new();
     let platform_tl = ThreadLocal::new();
     //initialize thread-local repos and platforms
@@ -141,27 +140,47 @@ fn run_theseus(repo_path: &str) -> Result<Vec<HashMap<String, u64>>, Box<dyn std
             (tree.data, cohort)
         })
         .collect::<Vec<_>>();
-    let mut results = Vec::new();
-    for (tree_data, cohort) in progress_bar.wrap_iter(commit_trees_and_cohorts.into_iter()) {
-        let mut work_todo = Vec::new();
-        tree_with_rewrites(
-            TreeRefIter::from_bytes(previous_tree_data.as_slice()),
-            TreeRefIter::from_bytes(tree_data.as_slice()),
-            &mut platform,
-            &mut tree_diff_state,
-            &mut objects,
-            |change: ChangeRef<'_>| -> Result<Action, Box<dyn std::error::Error + Send + Sync>> {
-                if change.entry_mode().is_blob() {
-                    work_todo.push(change.into_owned());
-                }
-                Ok(Action::Continue)
-            },
-            gix::diff::tree_with_rewrites::Options {
-                location: Some(gix::diff::tree::recorder::Location::Path),
-                rewrites: Some(gix::diff::Rewrites::default()),
-            },
-        )?;
 
+    let commit_changes_and_cohorts: Vec<(Vec<Change>, u32)> = (0..commit_trees_and_cohorts.len())
+        .into_par_iter()
+        .map(|i| {
+            let repo = repo_tl.get().unwrap().to_thread_local();
+            let mut platform = platform_tl.get().unwrap().borrow_mut();
+            let mut tree_diff_state = gix::diff::tree::State::default();
+            let mut objects = &repo.objects;
+
+            let (current_tree_data, cohort) = &commit_trees_and_cohorts[i];
+            let previous_tree_data = if i > 0 {
+                commit_trees_and_cohorts[i - 1].0.as_slice()
+            } else {
+                &[]
+            };
+
+            let mut work_todo = Vec::new();
+            tree_with_rewrites(
+                TreeRefIter::from_bytes(previous_tree_data),
+                TreeRefIter::from_bytes(current_tree_data.as_slice()),
+                &mut platform,
+                &mut tree_diff_state,
+                &mut objects,
+                |change: ChangeRef<'_>| -> Result<Action, Box<dyn std::error::Error + Send + Sync>> {
+                    if change.entry_mode().is_blob() {
+                        work_todo.push(change.into_owned());
+                    }
+                    Ok(Action::Continue)
+                },
+                gix::diff::tree_with_rewrites::Options {
+                    location: Some(gix::diff::tree::recorder::Location::Path),
+                    rewrites: Some(gix::diff::Rewrites::default()),
+                },
+            )
+            .expect("tree diff failed");
+            (work_todo, *cohort)
+        })
+        .collect();
+
+    let mut results = Vec::new();
+    for (work_todo, cohort) in progress_bar.wrap_iter(commit_changes_and_cohorts.into_iter()) {
         work_todo
             .into_par_iter()
             .map(
@@ -237,7 +256,7 @@ fn run_theseus(repo_path: &str) -> Result<Vec<HashMap<String, u64>>, Box<dyn std
                                     line_diffs.push((before, after, cohort));
                                 },
                             );
-                            current_snapshot.apply_diffs_to_file(&location, line_diffs);
+                            current_snapshot.modify_file(&location, line_diffs);
                         }
                         Change::Rewrite {
                             source_location,
@@ -261,7 +280,6 @@ fn run_theseus(repo_path: &str) -> Result<Vec<HashMap<String, u64>>, Box<dyn std
             let mut platform = platform_tl.get().unwrap().borrow_mut();
             platform.clear_resource_cache_keep_allocation();
         });
-        previous_tree_data = tree_data;
         results.push(current_snapshot.repository_cohort_stats());
     }
 
