@@ -11,7 +11,6 @@ use gix::diff::tree_with_rewrites;
 use gix::diff::tree_with_rewrites::{Action, Change, ChangeRef};
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
-use std::collections::HashMap;
 use std::path::Path;
 use thread_local::ThreadLocal;
 
@@ -24,6 +23,7 @@ where
 {
     pub commit_id: gix::ObjectId,
     pub file_blames: DashMap<BString, FileBlame<CohortKey>>,
+    pub running_cohort_stats: DashMap<CohortKey, u64>,
 }
 
 impl<CohortKey> RepositoryBlameSnapshot<CohortKey>
@@ -34,49 +34,66 @@ where
         Self {
             commit_id,
             file_blames: DashMap::new(),
+            running_cohort_stats: DashMap::new(),
         }
     }
 
     fn add_file(&self, path: &BString, total_lines: LineNumber, cohort: CohortKey) {
         let file_blame = FileBlame::new(total_lines, cohort);
+        for (cohort, line_count) in file_blame.cohort_stats() {
+            self.running_cohort_stats
+                .entry(cohort)
+                .and_modify(|v| *v += line_count)
+                .or_insert(line_count);
+        }
         self.file_blames.insert(path.clone(), file_blame);
     }
 
     fn delete_file(&self, path: &BString) {
-        self.file_blames.remove(path);
+        if let Some((_, file_blame)) = self.file_blames.remove(path) {
+            for (cohort, line_count) in file_blame.cohort_stats() {
+                self.running_cohort_stats
+                    .entry(cohort)
+                    .and_modify(|v| *v -= line_count);
+            }
+        }
     }
 
     fn rename_file(&self, old_path: BString, new_path: BString) -> Result<(), String> {
-        let file_blame = self
+        let (_old_path, file_blame) = self
             .file_blames
             .remove(&old_path)
             .ok_or_else(|| format!("File not found for rename: {:?}", old_path))?;
-        self.file_blames.insert(new_path.clone(), file_blame.1);
+        self.file_blames.insert(new_path.clone(), file_blame);
         Ok(())
     }
 
     pub fn modify_file(&self, path: &BString, line_diffs: LineDiffs<CohortKey>) {
-        self.file_blames.view(path, |_key, old_blame| {
-            old_blame.apply_line_diffs(line_diffs)
-        });
+        self.file_blames
+            .view(path, |_key, old_blame| {
+                let new_blame = old_blame.apply_line_diffs(line_diffs);
+                for (cohort, line_count) in old_blame.cohort_stats() {
+                    self.running_cohort_stats
+                        .entry(cohort)
+                        .and_modify(|v| *v -= line_count);
+                }
+                for (cohort, line_count) in new_blame.cohort_stats() {
+                    self.running_cohort_stats
+                        .entry(cohort)
+                        .and_modify(|v| *v += line_count)
+                        .or_insert(line_count);
+                }
+                new_blame
+            })
+            .unwrap();
     }
-    pub fn repository_cohort_stats(&self) -> HashMap<String, u64>
+    pub fn repository_cohort_stats(&self) -> Vec<(String, u64)>
     where
         CohortKey: Keyable + Send + Sync,
     {
-        self.file_blames
-            .par_iter()
-            .map(|ref_multi| ref_multi.value().cohort_stats_str())
-            .reduce(
-                || HashMap::new(),
-                |mut acc, file_stats| {
-                    for (cohort, line_count) in file_stats {
-                        *acc.entry(cohort.to_string()).or_insert(0) += line_count;
-                    }
-                    acc
-                },
-            )
-            .into_iter()
+        self.running_cohort_stats
+            .iter()
+            .map(|ref_multi| (ref_multi.key().to_string(), *ref_multi.value()))
             .collect()
     }
 }
@@ -93,17 +110,13 @@ pub fn theseus_command(repo_path: &str) {
     }
 }
 
-fn run_theseus(repo_path: &str) -> Result<Vec<HashMap<String, u64>>, Box<dyn std::error::Error>> {
+fn run_theseus(repo_path: &str) -> Result<Vec<Vec<(String, u64)>>, Box<dyn std::error::Error>> {
     let repo = gix::open(repo_path)?;
     let safe_repo = repo.clone().into_sync();
     let weekly_commits = list_commits_with_granularity(&repo, Granularity::Weekly, None, None)?;
-    // let mut platform = repo.diff_resource_cache_for_tree_diff()?;
-    // let mut previous_tree_data = Vec::new();
     let current_snapshot = RepositoryBlameSnapshot::<u32>::new(weekly_commits[0].id);
 
     //used for the tree-diffing algorithm, reused between calls
-    // let mut tree_diff_state = gix::diff::tree::State::default();
-    // let mut objects = &repo.objects;
     let repo_tl = ThreadLocal::new();
     let platform_tl = ThreadLocal::new();
     //initialize thread-local repos and platforms

@@ -13,8 +13,8 @@ pub type LineDiffs<CohortKey> = Vec<(
     CohortKey,
 )>;
 
-pub trait Keyable: Copy + PartialEq + Display + Debug + Eq + Hash {}
-impl<T: Copy + PartialEq + Display + Debug + Eq + Hash> Keyable for T {}
+pub trait Keyable: Copy + PartialEq + Display + Debug + Eq + Hash + Send + Sync {}
+impl<T: Copy + PartialEq + Display + Debug + Eq + Hash + Send + Sync> Keyable for T {}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BlameRange<CohortKey>
@@ -45,17 +45,21 @@ impl<CohortKey: Keyable> BlameRange<CohortKey> {
 pub struct FileBlame<CohortKey: Keyable> {
     change_points: BTreeMap<LineNumber, CohortKey>,
     total_lines: LineNumber,
+    cohort_stats: std::collections::HashMap<CohortKey, u64>,
 }
 
 impl<CohortKey: Keyable> FileBlame<CohortKey> {
     pub fn new(total_lines: LineNumber, cohort: CohortKey) -> Self {
         let mut change_points = BTreeMap::new();
+        let mut cohort_stats = std::collections::HashMap::new();
         if total_lines > 0 {
             change_points.insert(0, cohort);
+            cohort_stats.insert(cohort, total_lines as u64);
         }
         Self {
             change_points,
             total_lines,
+            cohort_stats,
         }
     }
 
@@ -121,7 +125,7 @@ impl<CohortKey: Keyable> FileBlame<CohortKey> {
         })
     }
 
-    pub fn cohort_stats(&self) -> std::collections::HashMap<CohortKey, u64> {
+    fn compute_cohort_stats(&self) -> std::collections::HashMap<CohortKey, u64> {
         let mut stats = std::collections::HashMap::new();
         for (start, end, cohort) in self.ranges() {
             *stats.entry(cohort).or_insert(0) += (end - start) as u64;
@@ -129,12 +133,8 @@ impl<CohortKey: Keyable> FileBlame<CohortKey> {
         stats
     }
 
-    pub fn cohort_stats_str(&self) -> std::collections::HashMap<String, u64> {
-        let mut stats = std::collections::HashMap::new();
-        for (start, end, cohort) in self.ranges() {
-            *stats.entry(cohort.to_string()).or_insert(0) += (end - start) as u64;
-        }
-        stats
+    pub fn cohort_stats(&self) -> std::collections::HashMap<CohortKey, u64> {
+        self.cohort_stats.clone()
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -286,6 +286,7 @@ impl<CohortKey: Keyable> FileBlame<CohortKey> {
         let mut new_blame = Self {
             change_points: new_change_points,
             total_lines: new_total,
+            cohort_stats: std::collections::HashMap::new(),
         };
         //"Compact" the change points by removing adjacent ones with the same cohort
         // This used to be needed all the time, now cp_helper mostly handles it, but
@@ -303,6 +304,7 @@ impl<CohortKey: Keyable> FileBlame<CohortKey> {
         } else {
             new_blame.change_points.clear();
         }
+        new_blame.cohort_stats = new_blame.compute_cohort_stats();
         debug_assert!(
             new_blame.validate().is_ok(),
             "invalid blame after applying line diffs: {:?}.\n old total: {:?}.\n offset: {:?}",
