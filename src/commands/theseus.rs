@@ -11,6 +11,7 @@ use gix::diff::tree_with_rewrites;
 use gix::diff::tree_with_rewrites::{Action, Change, ChangeRef};
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
+use std::collections::HashMap;
 use std::path::Path;
 use thread_local::ThreadLocal;
 
@@ -40,13 +41,11 @@ where
 
     fn add_file(&self, path: &BString, total_lines: LineNumber, cohort: CohortKey) {
         let file_blame = FileBlame::new(total_lines, cohort);
-        for (cohort, line_count) in file_blame.cohort_stats() {
-            self.running_cohort_stats
-                .entry(cohort)
-                .and_modify(|v| *v += line_count)
-                .or_insert(line_count);
-        }
         self.file_blames.insert(path.clone(), file_blame);
+        self.running_cohort_stats
+            .entry(cohort)
+            .and_modify(|v| *v += total_lines as u64)
+            .or_insert(total_lines as u64);
     }
 
     fn delete_file(&self, path: &BString) {
@@ -72,16 +71,19 @@ where
         self.file_blames
             .view(path, |_key, old_blame| {
                 let new_blame = old_blame.apply_line_diffs(line_diffs);
+                let mut cohort_diff: HashMap<CohortKey, i64> = HashMap::new();
                 for (cohort, line_count) in old_blame.cohort_stats() {
-                    self.running_cohort_stats
-                        .entry(cohort)
-                        .and_modify(|v| *v -= line_count);
+                    *cohort_diff.entry(cohort).or_insert(0) -= line_count as i64;
                 }
                 for (cohort, line_count) in new_blame.cohort_stats() {
+                    *cohort_diff.entry(cohort).or_insert(0) += line_count as i64;
+                }
+
+                for (cohort, delta) in cohort_diff {
                     self.running_cohort_stats
                         .entry(cohort)
-                        .and_modify(|v| *v += line_count)
-                        .or_insert(line_count);
+                        .and_modify(|v| *v = (*v as i64 + delta) as u64)
+                        .or_insert(delta as u64);
                 }
                 new_blame
             })
