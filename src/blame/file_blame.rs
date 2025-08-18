@@ -7,6 +7,11 @@ use std::{
 // Has to be u32 bc gix returns Ranges of u32s in its diff output
 pub type LineNumber = u32;
 pub type LineDelta = i64;
+pub type LineDiffs<CohortKey> = Vec<(
+    std::ops::Range<LineNumber>,
+    std::ops::Range<LineNumber>,
+    CohortKey,
+)>;
 
 pub trait Keyable: Copy + PartialEq + Display + Debug + Eq + Hash {}
 impl<T: Copy + PartialEq + Display + Debug + Eq + Hash> Keyable for T {}
@@ -124,6 +129,14 @@ impl<CohortKey: Keyable> FileBlame<CohortKey> {
         stats
     }
 
+    pub fn cohort_stats_str(&self) -> std::collections::HashMap<String, u64> {
+        let mut stats = std::collections::HashMap::new();
+        for (start, end, cohort) in self.ranges() {
+            *stats.entry(cohort.to_string()).or_insert(0) += (end - start) as u64;
+        }
+        stats
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         if self.total_lines == 0 {
             if !self.change_points.is_empty() {
@@ -171,14 +184,7 @@ impl<CohortKey: Keyable> FileBlame<CohortKey> {
     // to track the delta we need to update the line numbers by.
     //
     // We have property tests against a reference implementation to validate correctness.
-    pub fn apply_line_diffs(
-        &self,
-        line_diffs: Vec<(
-            std::ops::Range<LineNumber>,
-            std::ops::Range<LineNumber>,
-            CohortKey,
-        )>,
-    ) -> Self {
+    pub fn apply_line_diffs(&self, line_diffs: LineDiffs<CohortKey>) -> Self {
         if line_diffs.is_empty() {
             return self.clone();
         }
